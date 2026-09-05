@@ -114,5 +114,7 @@
       "scope:risk-authorizer"
     ]
   },
-  "dependencies": {}
+  "dependencies": {
+    "@sol-agent-trader/contracts": "workspace:*"
+  }
 }

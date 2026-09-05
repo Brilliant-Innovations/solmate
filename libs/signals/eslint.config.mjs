@@ -1,7 +1,7 @@
-import baseConfig from '../../eslint.config.mjs';
+import baseConfig, { clockDisciplineConfig } from '../../eslint.config.mjs';
 
 export default [
-  ...baseConfig,
+  ...baseConfig, ...clockDisciplineConfig,
   {
     files: ['**/*.json'],
     rules: {

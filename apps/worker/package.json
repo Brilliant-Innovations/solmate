@@ -114,5 +114,7 @@
       "scope:worker"
     ]
   },
-  "dependencies": {}
+  "dependencies": {
+    "@sol-agent-trader/contracts": "workspace:*"
+  }
 }

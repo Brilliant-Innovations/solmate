@@ -147,3 +147,30 @@ export default [
     rules: {},
   },
 ];
+
+/**
+ * §18.2 clock discipline. Strategy, signal, agent, skill, risk, intelligence, market, on-chain,
+ * replay and execution code reads time from a Clock, never from the wall clock, so replay can
+ * supply simulated time without look-ahead. Each clock-bound project spreads this fragment into
+ * its own eslint.config.mjs (flat-config `files` globs resolve relative to that file).
+ */
+export const clockDisciplineConfig = [
+  {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    ignores: ['**/*.spec.ts', '**/*.test.ts', '**/*.spec.tsx', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        { object: 'Date', property: 'now', message: 'Read time from a Clock (libs/contracts clock.ts), not Date.now() (blueprint §18.2).' },
+        { object: 'performance', property: 'now', message: 'Use a Clock for decision time; performance.now() is for latency metrics only via observability.' },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "NewExpression[callee.name='Date'][arguments.length=0]",
+          message: 'new Date() reads the wall clock. Use clock.now() (blueprint §18.2).',
+        },
+      ],
+    },
+  },
+];

@@ -59,8 +59,9 @@ invariants:
     owner_modules:
       - libs/contracts/src/signing
       - apps/execution-service/src/authority
-    tests: []
-    status: unmapped
+    tests:
+      - libs/contracts/src/signing/signing.spec.ts
+    status: mapped
 
   - id: INV-07
     statement: "DB-only tampering cannot create a valid newer/wider RiskStateProjection or cause entry authorization when independent D45/wallet chain reads disagree."
@@ -89,8 +90,9 @@ invariants:
     owner_modules:
       - libs/contracts/src/signing
       - apps/execution-service/src/authority/approval.ts
-    tests: []
-    status: unmapped
+    tests:
+      - libs/contracts/src/signing/signing.spec.ts
+    status: mapped
 
   - id: INV-11
     statement: "Our own wallet/vault flow cannot satisfy a smart-money or candidate trigger."
@@ -193,8 +195,9 @@ invariants:
     statement: "Cross-module encode/decode of every canonical live contract preserves semantic equality and the contract-set digest."
     owner_modules:
       - libs/contracts/src/digest
-    tests: []
-    status: unmapped
+    tests:
+      - libs/contracts/src/digest/contract-set-digest.spec.ts
+    status: mapped
 
   - id: INV-25
     statement: "Normal autonomous signing cannot bypass the external signer-side policy layer."
