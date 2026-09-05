@@ -78,6 +78,20 @@ describe('PROTECTION_ONLY handoff (INV-20)', () => {
     );
   });
 
+  it('IGNORE cannot be proposed on an open position, so a position can never be cleared without adversarial review', () => {
+    let c = openPositionCycle();
+    const r0 = transition(c, { type: 'CONTEXT_BUILT', at: T0 });
+    if (r0.ok) c = r0.cycle;
+    const r = transition(c, { type: 'PROPOSED', at: T0, runId: RUN, proposalId: null, action: 'IGNORE', cutoffVersion: 1 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.rejection.code).toBe('ACTION_NOT_ALLOWED');
+    // and even a cleared cycle whose action is not a position action is refused by the position machine
+    const refused = reviewTransition(initialPositionReview(T0, null), {
+      type: 'CYCLE_TERMINATED', at: T0, cycleId: c.id, terminal: 'CLEARED', action: 'IGNORE', unresolvedReason: null,
+    });
+    expect(refused.ok).toBe(false);
+  });
+
   it('a cleared HOLD is an affirmative reviewed decision', () => {
     const cycle = runHoldCycle('CONFIRM');
     expect(cycle.state).toBe('CLEARED');

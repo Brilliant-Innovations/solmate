@@ -201,6 +201,8 @@ Every project carries exactly one `type:` tag, one `trust:` tag and one `scope:`
 | `trust:execution-service` | Isolated transaction authority; no LLM, news or social SDKs |
 | `trust:shared` | Pure, dependency-light code importable by any trust level (`contracts`, `observability`, `testing`, `replay` clock) |
 | `trust:web-only` | Browser wallet code (`wallet-ui`); importable by `web` only |
+| `trust:risk` | Deterministic risk policy (`risk`): depends on `trust:shared` and `trust:risk` only; no LLM, signer, DEX or browser packages |
+| `trust:execution` | Execution abstractions and state machines (`execution`): depends on `trust:shared` and `trust:execution` only; no LLM or browser packages |
 | `scope:<domain>` | One per lib: `contracts`, `db`, `market`, `onchain`, `solana-hard-state`, `intelligence`, `signals`, `strategies`, `agents`, `skills`, `risk`, `execution`, `wallet-ui`, `replay`, `observability`, `testing` |
 
 ### Dependency constraints

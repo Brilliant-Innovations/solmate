@@ -11,6 +11,8 @@ import type { Amount, MintAddress, SolanaAddress, TransactionClass, Uuid } from 
 export interface RegisteredCustody {
   id: Uuid;
   address: SolanaAddress;
+  /** Set for token accounts and vaults bound to one mint; null for the wallet itself. */
+  mint: MintAddress | null;
   allowedMovementTypes: readonly TransactionClass[];
   active: boolean;
 }
@@ -27,13 +29,14 @@ export interface ObservedMovement {
 
 export type MovementClassification =
   | { kind: 'EXPECTED'; fromId: Uuid; toId: Uuid; lifecycleId: Uuid }
-  | { kind: 'UNKNOWN'; reason: 'UNREGISTERED_ENDPOINT' | 'INACTIVE_ACCOUNT' | 'NO_LIFECYCLE' | 'MOVEMENT_TYPE_NOT_ALLOWED' | 'UNTYPED_MOVEMENT' };
+  | { kind: 'UNKNOWN'; reason: 'UNREGISTERED_ENDPOINT' | 'INACTIVE_ACCOUNT' | 'MINT_MISMATCH' | 'NO_LIFECYCLE' | 'MOVEMENT_TYPE_NOT_ALLOWED' | 'UNTYPED_MOVEMENT' };
 
 export function classifyMovement(registry: readonly RegisteredCustody[], m: ObservedMovement, authorizedLifecycles: ReadonlySet<Uuid>): MovementClassification {
   const from = registry.find((c) => c.address === m.from);
   const to = registry.find((c) => c.address === m.to);
   if (!from || !to) return { kind: 'UNKNOWN', reason: 'UNREGISTERED_ENDPOINT' };
   if (!from.active || !to.active) return { kind: 'UNKNOWN', reason: 'INACTIVE_ACCOUNT' };
+  if ((from.mint !== null && from.mint !== m.mint) || (to.mint !== null && to.mint !== m.mint)) return { kind: 'UNKNOWN', reason: 'MINT_MISMATCH' };
   if (m.movementType === null) return { kind: 'UNKNOWN', reason: 'UNTYPED_MOVEMENT' };
   if (!from.allowedMovementTypes.includes(m.movementType) || !to.allowedMovementTypes.includes(m.movementType)) {
     return { kind: 'UNKNOWN', reason: 'MOVEMENT_TYPE_NOT_ALLOWED' };

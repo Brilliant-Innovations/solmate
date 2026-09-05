@@ -8,11 +8,13 @@ import { contractRegistry, type ContractRegistry } from './registry.js';
  *
  * Every live-capable deployable embeds this digest and reports it at startup and in readiness.
  * Two deployables with different digests may never both be live. The digest is the SHA-256 of
- * the canonical JSON of `{ name: sha256(canonical(JSON Schema of schema)) }` over every
- * registered schema, so any change to any wire shape changes it.
+ * the canonical JSON of `{ name: sha256(canonical(fingerprint of schema)) }` over every registered
+ * schema. The fingerprint is the JSON Schema plus an `x-zod` annotation on every node carrying the
+ * Zod node type, object strictness (catchall) and check kinds/parameters, so strict-vs-loose and
+ * refinements, which JSON Schema alone cannot express, still change the digest.
  */
 
-export const CONTRACT_SET_FORMAT = 'zod4-jsonschema-canonical-sha256-v1' as const;
+export const CONTRACT_SET_FORMAT = 'zod4-jsonschema-xzod-canonical-sha256-v2' as const;
 
 export interface ContractSetDigestReport {
   format: typeof CONTRACT_SET_FORMAT;
@@ -21,8 +23,52 @@ export interface ContractSetDigestReport {
   entries: ReadonlyArray<{ name: string; schemaHash: Sha256Hex }>;
 }
 
+type ZodInternals = { _zod?: { def?: Record<string, unknown> } };
+
+function describeValue(v: unknown): unknown {
+  if (v instanceof RegExp) return { regex: v.source, flags: v.flags };
+  if (typeof v === 'function' || typeof v === 'symbol') return undefined;
+  if (typeof v === 'bigint') return v.toString(10);
+  if (v !== null && typeof v === 'object') {
+    const def = (v as ZodInternals)._zod?.def;
+    if (def) return { zodType: def['type'] };
+    if (Array.isArray(v)) return v.map(describeValue);
+    return undefined;
+  }
+  return v;
+}
+
+const CHECK_KEYS = ['check', 'minimum', 'maximum', 'inclusive', 'format', 'pattern', 'when', 'abort', 'multipleOf', 'exact', 'length'] as const;
+
+function describeChecks(def: Record<string, unknown>): unknown[] {
+  const checks = def['checks'];
+  if (!Array.isArray(checks)) return [];
+  return checks.map((c) => {
+    const d = (c as ZodInternals)._zod?.def ?? {};
+    const out: Record<string, unknown> = {};
+    for (const k of CHECK_KEYS) if (k in d) out[k] = describeValue(d[k]);
+    return out;
+  });
+}
+
+function annotate(zodSchema: unknown, jsonSchema: Record<string, unknown>): void {
+  const def = (zodSchema as ZodInternals)._zod?.def;
+  if (!def) return;
+  const catchall = def['catchall'] as ZodInternals | undefined;
+  jsonSchema['x-zod'] = {
+    type: def['type'],
+    catchall: catchall?._zod?.def?.['type'] ?? null,
+    checks: describeChecks(def),
+    literal: 'values' in def ? describeValue(def['values']) : undefined,
+  };
+}
+
 export function schemaToJsonSchema(schema: z.ZodType): unknown {
-  return z.toJSONSchema(schema, { unrepresentable: 'any', io: 'output' });
+  return z.toJSONSchema(schema, {
+    unrepresentable: 'any',
+    io: 'output',
+    override: (ctx) => annotate(ctx.zodSchema, ctx.jsonSchema as Record<string, unknown>),
+  });
 }
 
 export async function computeContractSetDigest(registry: ContractRegistry = contractRegistry): Promise<ContractSetDigestReport> {

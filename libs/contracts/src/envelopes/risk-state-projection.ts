@@ -60,7 +60,7 @@ export const RiskStateProjection = z.strictObject({
   releaseId: Uuid,
   releaseDigest: Sha256Hex,
   policyVersion: VersionId,
-  sourceDigests: z.array(z.object({ source: z.string(), digest: Sha256Hex })),
+  sourceDigests: z.array(z.strictObject({ source: z.string(), digest: Sha256Hex })),
   settlementMint: MintAddress,
   custody: z.array(CustodyBalance),
   settlementAvailableBaseUnits: Amount,
@@ -70,7 +70,7 @@ export const RiskStateProjection = z.strictObject({
   signerDependentExposureBaseUnits: Amount,
   sleeves: z.array(SleeveUsage),
   openLots: z.array(OpenLotSummary),
-  drawdown: z.object({
+  drawdown: z.strictObject({
     dailyFraction: Fraction,
     rollingFraction: Fraction,
     circuitBreakerTripped: z.boolean(),
@@ -80,7 +80,7 @@ export const RiskStateProjection = z.strictObject({
   clusterCapacity: z.array(CapacityEntry),
   eligibilitySummary: z.array(EligibilitySummaryEntry),
   freshnessSummary: z.array(FreshnessSummaryEntry),
-  capitalAttestation: z.object({
+  capitalAttestation: z.strictObject({
     ceilingUsd: UsdValue,
     recognizedUsd: UsdValue,
     reattestRequired: z.boolean(),

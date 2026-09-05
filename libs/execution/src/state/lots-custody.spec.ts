@@ -54,8 +54,8 @@ describe('custody movement classification (D9)', () => {
   const V = '7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2' as SolanaAddress;
   const X = 'BPFLoaderUpgradeab1e11111111111111111111111' as SolanaAddress;
   const registry: RegisteredCustody[] = [
-    { id: uuid(1), address: A, allowedMovementTypes: ['SWAP_V2', 'TRIGGER_DEPOSIT', 'TRIGGER_CANCEL_WITHDRAW'], active: true },
-    { id: uuid(2), address: V, allowedMovementTypes: ['TRIGGER_DEPOSIT', 'TRIGGER_CANCEL_WITHDRAW'], active: true },
+    { id: uuid(1), address: A, mint: null, allowedMovementTypes: ['SWAP_V2', 'TRIGGER_DEPOSIT', 'TRIGGER_CANCEL_WITHDRAW'], active: true },
+    { id: uuid(2), address: V, mint: fixtures.MINTS.RISK as MintAddress, allowedMovementTypes: ['TRIGGER_DEPOSIT', 'TRIGGER_CANCEL_WITHDRAW'], active: true },
   ];
   const lifecycles = new Set<Uuid>([uuid(50)]);
   const base = { mint: fixtures.MINTS.RISK as MintAddress, amount: amt(10n) };

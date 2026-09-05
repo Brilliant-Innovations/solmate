@@ -47,6 +47,25 @@ describe('order attempt: persist-before-submit and staged confirmation', () => {
   });
 });
 
+describe('order attempt: crash after sign, before SUBMITTED was persisted (§14.5, review #0 F2)', () => {
+  it('a landed transaction is recognised from SIGNED_NOT_SUBMITTED and flagged as landed without a submission record', () => {
+    const signedOnly = run([signed, journaled]);
+    const c = run([observed('confirmed')], signedOnly);
+    expect(c.state).toBe('CONFIRMED_PROVISIONAL');
+    expect(c.landedWithoutSubmissionRecord).toBe(true);
+    expect(c.submittedAt).toBeNull();
+    expect(countsAsExposure(c)).toBe(true);
+    const f = run([observed('finalized', 11)], signedOnly);
+    expect(f.state).toBe('FINALIZED');
+    expect(finalAccountingAllowed(f)).toBe(true);
+    // a not-yet-confirmed missing observation is not a reorg; the transaction may still land
+    expect(run([missing], signedOnly).state).toBe('SIGNED_NOT_SUBMITTED');
+    // the same signed bytes may be re-landed over another approved path
+    const twice = run([submitted, { type: 'SUBMITTED', at: T0, path: 'DIRECT_POOL_RPC' }], signedOnly);
+    expect(twice.submissionPaths).toEqual([PATH, 'DIRECT_POOL_RPC']);
+  });
+});
+
 describe('order attempt: reorg handling (INV-23)', () => {
   it('confirmed-then-missing enters REORG_PENDING and blocks retry until death is proven by both facts', () => {
     const c = run([signed, journaled, submitted, observed('confirmed')]);

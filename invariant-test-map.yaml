@@ -91,9 +91,11 @@ invariants:
     statement: "A stale or replayed approval cannot authorize a changed or expired envelope."
     owner_modules:
       - libs/contracts/src/signing
+      - libs/contracts/src/envelopes/approval.ts
       - apps/execution-service/src/authority/approval.ts
     tests:
       - libs/contracts/src/signing/signing.spec.ts
+      - libs/contracts/src/envelopes/approval.spec.ts
     status: mapped
 
   - id: INV-11

@@ -13,7 +13,11 @@ import { z } from 'zod';
 
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
 
-export const Uuid = z.uuid().brand<'Uuid'>();
+/** Lowercase only, so one id has exactly one canonical byte form. */
+export const Uuid = z
+  .uuid()
+  .refine((v) => v === v.toLowerCase(), 'uuid must be lowercase')
+  .brand<'Uuid'>();
 export type Uuid = z.infer<typeof Uuid>;
 
 /** ISO 8601 UTC instant, e.g. `2026-09-05T14:02:11.123Z`. */
@@ -32,10 +36,14 @@ export type MintAddress = z.infer<typeof MintAddress>;
 export const TxSignature = z.string().regex(BASE58).min(86).max(88).brand<'TxSignature'>();
 export type TxSignature = z.infer<typeof TxSignature>;
 
-/** Non-negative integer token quantity in base units (lamports, token atoms) as a decimal string. */
+const U64_MAX = 18_446_744_073_709_551_615n;
+
+/** Non-negative integer token quantity in base units (lamports, token atoms) as a decimal string, bounded to u64 like SPL. */
 export const Amount = z
   .string()
   .regex(/^(0|[1-9][0-9]*)$/, 'base-unit amount must be a non-negative integer decimal string')
+  .max(20)
+  .refine((v) => BigInt(v) <= U64_MAX, 'base-unit amount exceeds u64')
   .brand<'Amount'>();
 export type Amount = z.infer<typeof Amount>;
 

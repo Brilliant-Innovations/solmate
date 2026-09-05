@@ -21,6 +21,8 @@ export type ProtectionIntent = z.infer<typeof ProtectionIntent>;
  */
 export const TradingActionProposal = z.strictObject({
   actionType: TradingActionType,
+  /** v1 is spot long only (§6.11). */
+  direction: z.literal('LONG'),
   candidateId: Uuid.nullable(),
   positionId: Uuid.nullable(),
   strategyVersionId: VersionId,

@@ -29,6 +29,16 @@ describe('position review state (D39, INV-20)', () => {
     );
   });
 
+  it('a CLEARED cycle whose action is not an open-position decision does not review the position', () => {
+    for (const action of ['IGNORE', 'ENTER', 'ADD', null] as const) {
+      const r = reviewTransition(
+        { ...initialPositionReview(T0, null), reviewState: 'PROTECTION_ONLY' },
+        { type: 'CYCLE_TERMINATED', at: T0, cycleId: 'c9', terminal: 'CLEARED', action, unresolvedReason: null },
+      );
+      expect(r.ok, String(action)).toBe(false);
+    }
+  });
+
   it('an UNRESOLVED terminal without a reason is rejected', () => {
     const r = reviewTransition(initialPositionReview(T0, null), {
       type: 'CYCLE_TERMINATED', at: T0, cycleId: 'c1', terminal: 'UNRESOLVED', action: 'HOLD', unresolvedReason: null,
@@ -36,14 +46,21 @@ describe('position review state (D39, INV-20)', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('the unreviewed stop can only tighten', () => {
+  it('the unreviewed stop can only tighten; NaN, infinities and negatives are rejected and cannot poison the guard', () => {
+    const levelArb = fc.oneof(
+      { weight: 8, arbitrary: fc.double({ min: 0, max: 1000, noNaN: true }) },
+      { weight: 1, arbitrary: fc.constantFrom(Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, -0.5) },
+    );
     fc.assert(
-      fc.property(fc.array(fc.double({ min: 0, max: 1000, noNaN: true }), { minLength: 1, maxLength: 20 }), (levels) => {
+      fc.property(fc.array(levelArb, { minLength: 1, maxLength: 20 }), (levels) => {
         let review = initialPositionReview(T0, null);
         let current: number | null = null;
         for (const level of levels) {
           const r = reviewTransition(review, { type: 'TIGHTEN_UNREVIEWED_STOP', at: T0, level });
-          if (current === null || level >= current) {
+          if (!Number.isFinite(level) || level < 0) {
+            expect(r.ok).toBe(false);
+            if (!r.ok) expect(r.rejection.code).toBe('INVALID_STOP_LEVEL');
+          } else if (current === null || level >= current) {
             expect(r.ok).toBe(true);
             if (r.ok) { review = r.review; current = level; }
           } else {

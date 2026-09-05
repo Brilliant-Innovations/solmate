@@ -70,14 +70,38 @@ describe('action cycle: evidence cutoffs (INV-19)', () => {
 });
 
 describe('action cycle: revision bound and unresolved outcomes', () => {
-  it('allows one revision; a second CHALLENGE is DISAGREEMENT', () => {
+  it('allows one revision; a second CHALLENGE exhausts the revision budget', () => {
     let c = apply(fresh(), [{ type: 'CONTEXT_BUILT', at: T0 }]);
     c = apply(c, [propose(c), review(c, 'CHALLENGE')]);
     expect(c.revisionRound).toBe(1);
     c = apply(c, [propose(c), review(c, 'CHALLENGE')]);
     expect(c.state).toBe('UNRESOLVED');
-    expect(c.unresolvedReason).toBe('DISAGREEMENT');
+    expect(c.unresolvedReason).toBe('REVISION_EXHAUSTED');
     expect(canAuthorize(c)).toBe(false);
+  });
+
+  it('gates the proposed action by target: candidates may ENTER or IGNORE, positions may HOLD/REDUCE/EXIT/ADJUST_PROTECTION, ADD only when enabled', () => {
+    const candidate = apply(fresh(), [{ type: 'CONTEXT_BUILT', at: T0 }]);
+    for (const action of ['HOLD', 'REDUCE', 'EXIT', 'ADJUST_PROTECTION', 'ADD'] as TradingActionType[]) {
+      const r = transition(candidate, propose(candidate, action));
+      expect(r.ok, action).toBe(false);
+      if (!r.ok) expect(r.rejection).toEqual({ code: 'ACTION_NOT_ALLOWED', action, target: 'CANDIDATE' });
+    }
+    expect(transition(candidate, propose(candidate, 'ADD'), { allowAdd: true }).ok).toBe(true);
+
+    const position = apply(
+      newActionCycle({ ...fresh(), id: fixtures.IDS.cycle as Uuid, triggerId: fixtures.IDS.trigger as Uuid, strategyVersionId: fresh().strategyVersionId, speedTier: 'T2_CONTEXTUAL', decisionBudgetMs: 1000, startedAt: T0, candidateId: null, positionId: fixtures.IDS.position as Uuid }),
+      [{ type: 'CONTEXT_BUILT', at: T0 }],
+    );
+    for (const action of ['ENTER', 'IGNORE'] as TradingActionType[]) {
+      const r = transition(position, propose(position, action));
+      expect(r.ok, action).toBe(false);
+      if (!r.ok) expect(r.rejection).toEqual({ code: 'ACTION_NOT_ALLOWED', action, target: 'POSITION' });
+    }
+    // an open position can never be "cleared" without an adversary run: HOLD must go through review
+    const held = apply(position, [propose(position, 'HOLD')]);
+    expect(held.state).toBe('PROPOSED');
+    expect(canAuthorize(held)).toBe(false);
   });
 
   it.each([

@@ -41,14 +41,16 @@ export type AdversaryVerdict = z.infer<typeof AdversaryVerdict>;
 export const AgentRole = z.enum(['TRADING_PROPOSER', 'ACTION_ADVERSARY', 'EVENT_CLASSIFIER', 'SUMMARIZER']);
 export type AgentRole = z.infer<typeof AgentRole>;
 
-/** Action cycle machine states (ADR-0001). Terminal: CLEARED, REJECTED, EXPIRED, UNRESOLVED. */
+/**
+ * Action cycle machine states (ADR-0001). Terminal: CLEARED, REJECTED, EXPIRED, UNRESOLVED.
+ * PROPOSED means "awaiting adversarial review"; REVISION_REQUESTED means "awaiting the single
+ * permitted proposer revision". Every value here is entered by the machine in libs/agents.
+ */
 export const ActionCycleState = z.enum([
   'TRIGGERED',
   'CONTEXT_BUILT',
   'PROPOSED',
-  'ADVERSARY_REVIEW',
   'REVISION_REQUESTED',
-  'REVISED',
   'CLEARED',
   'REJECTED',
   'EXPIRED',

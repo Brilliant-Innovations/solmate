@@ -56,6 +56,7 @@ type Of<S extends z.ZodType> = z.output<S>;
 export const tradingActionProposal = (): Of<typeof TradingActionProposal> =>
   TradingActionProposal.parse({
     actionType: 'ENTER',
+    direction: 'LONG',
     candidateId: IDS.candidate,
     positionId: null,
     strategyVersionId: 'S1@1.0.0',
@@ -165,6 +166,7 @@ export const emergencyCommand = (): Of<typeof EmergencyCommand> =>
   EmergencyCommand.parse({
     commandId: IDS.message,
     type: 'EMERGENCY_CLOSE_ASSET',
+    cluster: 'mainnet-beta',
     mint: MINTS.RISK,
     maxAmount: null,
     issuer: 'OPERATOR_OUT_OF_BAND',

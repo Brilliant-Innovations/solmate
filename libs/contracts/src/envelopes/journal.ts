@@ -47,7 +47,7 @@ export const ShadowPosition = z.strictObject({
   mint: MintAddress,
   lastConfirmedQuantity: Amount,
   lots: z.array(ShadowLot),
-  stop: z.object({ model: StopModel, level: z.number().nonnegative().nullable() }).nullable(),
+  stop: z.strictObject({ model: StopModel, level: z.number().nonnegative().nullable() }).nullable(),
   trailingLevel: z.number().nonnegative().nullable(),
   timeStopAt: Instant.nullable(),
   /** D39 deterministic unreviewed stop; may only tighten. */

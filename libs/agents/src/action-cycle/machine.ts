@@ -13,19 +13,30 @@ import {
 /**
  * Action-cycle state machine (blueprint §11.8–§11.9, D30, D40, ADR-0001).
  *
- * Pure: `transition(cycle, event)` returns a new cycle or a typed rejection. It owns no position
- * behavior; a position's reaction to an UNRESOLVED terminal lives in the position-review machine
- * (`libs/execution/src/state/position-review.ts`).
+ * Pure: `transition(cycle, event, options)` returns a new cycle or a typed rejection. It owns no
+ * position behavior; a position's reaction to a non-cleared terminal lives in the position-review
+ * machine (`libs/execution/src/state/position-review.ts`).
  *
  * Rules encoded here:
+ * - the proposed action must fit the cycle's target: a candidate cycle may propose ENTER or IGNORE,
+ *   an open-position cycle may propose HOLD, REDUCE, EXIT or ADJUST_PROTECTION; ADD only when the
+ *   strategy explicitly permits it (§11.6, §11.3). IGNORE is never valid on an open position: the
+ *   agent must affirmatively HOLD, and that HOLD is adversarially reviewed (§11.11, review #0 F1);
  * - one revision round at most (§11.9);
  * - proposer and adversary must share the current evidence cutoff; a refresh creates a new cutoff
  *   and invalidates any proposal made under the old one (D40, INV-19);
- * - CONFIRM clears, REJECT rejects, a CHALLENGE after the revision budget is spent is DISAGREEMENT;
- * - outage, timeout, budget exhaustion and malformed output terminate UNRESOLVED with the D39 reason;
+ * - CONFIRM clears, REJECT rejects, a CHALLENGE after the revision budget is spent ends
+ *   UNRESOLVED(REVISION_EXHAUSTED); outage, timeout, budget exhaustion and malformed output end
+ *   UNRESOLVED with the matching D39 reason;
  * - terminal states are absorbing;
- * - only a CLEARED cycle whose cleared cutoff is the latest cutoff can feed authorization (INV-14).
+ * - only a CLEARED cycle with a CONFIRM verdict whose cleared cutoff is the latest cutoff can feed
+ *   authorization (INV-14).
  */
+
+export interface TransitionOptions {
+  /** Strategy explicitly enables ADD (disabled by default, §11.6). */
+  readonly allowAdd?: boolean;
+}
 
 export type ActionCycleEvent =
   | { type: 'CONTEXT_BUILT'; at: Instant }
@@ -42,12 +53,28 @@ export type TransitionRejection =
   | { code: 'TERMINAL_STATE'; state: ActionCycleState }
   | { code: 'INVALID_FROM_STATE'; state: ActionCycleState; event: ActionCycleEvent['type'] }
   | { code: 'CUTOFF_MISMATCH'; expected: number; got: number }
-  | { code: 'ACTION_NOT_ALLOWED'; action: TradingActionType };
+  | { code: 'ACTION_NOT_ALLOWED'; action: TradingActionType; target: 'CANDIDATE' | 'POSITION' | 'NONE' };
 
 export type TransitionResult = { ok: true; cycle: ActionCycle } | { ok: false; rejection: TransitionRejection };
 
 const TERMINAL: ReadonlySet<ActionCycleState> = new Set(['CLEARED', 'REJECTED', 'EXPIRED', 'UNRESOLVED']);
 export const MAX_REVISION_ROUNDS = 1;
+
+const CANDIDATE_ACTIONS: ReadonlySet<TradingActionType> = new Set(['ENTER', 'IGNORE']);
+const POSITION_ACTIONS: ReadonlySet<TradingActionType> = new Set(['HOLD', 'REDUCE', 'EXIT', 'ADJUST_PROTECTION']);
+
+export function cycleTarget(cycle: Pick<ActionCycle, 'candidateId' | 'positionId'>): 'CANDIDATE' | 'POSITION' | 'NONE' {
+  if (cycle.positionId !== null) return 'POSITION';
+  if (cycle.candidateId !== null) return 'CANDIDATE';
+  return 'NONE';
+}
+
+export function allowedActions(cycle: Pick<ActionCycle, 'candidateId' | 'positionId'>, options: TransitionOptions = {}): ReadonlySet<TradingActionType> {
+  const target = cycleTarget(cycle);
+  if (target === 'NONE') return new Set();
+  const base = target === 'POSITION' ? POSITION_ACTIONS : CANDIDATE_ACTIONS;
+  return options.allowAdd ? new Set([...base, 'ADD']) : base;
+}
 
 export function isTerminal(cycle: Pick<ActionCycle, 'state'>): boolean {
   return TERMINAL.has(cycle.state);
@@ -67,11 +94,8 @@ function terminate(cycle: ActionCycle, state: ActionCycleState, at: Instant, ext
   return { ok: true, cycle: { ...cycle, ...extra, state, terminalAt: at } };
 }
 
-function unresolved(cycle: ActionCycle, reason: UnresolvedReason, at: Instant, reasonCodes: string[] = []): TransitionResult {
-  return terminate(cycle, 'UNRESOLVED', at, {
-    unresolvedReason: reason,
-    reasonCodes: [...cycle.reasonCodes, ...reasonCodes],
-  });
+function unresolved(cycle: ActionCycle, reason: UnresolvedReason, at: Instant): TransitionResult {
+  return terminate(cycle, 'UNRESOLVED', at, { unresolvedReason: reason });
 }
 
 function consume(cycle: ActionCycle, runId: Uuid | null): EvidenceCutoff[] {
@@ -80,7 +104,7 @@ function consume(cycle: ActionCycle, runId: Uuid | null): EvidenceCutoff[] {
   return [...cycle.cutoffs.slice(0, -1), { ...last, consumedByRunIds: [...last.consumedByRunIds, runId] }];
 }
 
-export function transition(cycle: ActionCycle, event: ActionCycleEvent): TransitionResult {
+export function transition(cycle: ActionCycle, event: ActionCycleEvent, options: TransitionOptions = {}): TransitionResult {
   if (isTerminal(cycle)) return reject({ code: 'TERMINAL_STATE', state: cycle.state });
 
   switch (event.type) {
@@ -107,14 +131,26 @@ export function transition(cycle: ActionCycle, event: ActionCycleEvent): Transit
         return reject({ code: 'INVALID_FROM_STATE', state: cycle.state, event: event.type });
       }
       const next: EvidenceCutoff = { version: latestCutoff(cycle).version + 1, at: event.at, consumedByRunIds: [] };
-      const state: ActionCycleState = cycle.state === 'PROPOSED' ? 'CONTEXT_BUILT' : cycle.state;
-      return { ok: true, cycle: { ...cycle, state, cutoffs: [...cycle.cutoffs, next], proposedAction: state === 'CONTEXT_BUILT' ? null : cycle.proposedAction, proposalId: state === 'CONTEXT_BUILT' ? null : cycle.proposalId } };
+      const invalidated = cycle.state === 'PROPOSED';
+      return {
+        ok: true,
+        cycle: {
+          ...cycle,
+          state: invalidated ? 'CONTEXT_BUILT' : cycle.state,
+          cutoffs: [...cycle.cutoffs, next],
+          proposedAction: invalidated ? null : cycle.proposedAction,
+          proposalId: invalidated ? null : cycle.proposalId,
+        },
+      };
     }
 
     case 'PROPOSED': {
       const from = cycle.state;
       if (from !== 'CONTEXT_BUILT' && from !== 'REVISION_REQUESTED') {
         return reject({ code: 'INVALID_FROM_STATE', state: from, event: event.type });
+      }
+      if (!allowedActions(cycle, options).has(event.action)) {
+        return reject({ code: 'ACTION_NOT_ALLOWED', action: event.action, target: cycleTarget(cycle) });
       }
       const current = latestCutoff(cycle).version;
       if (event.cutoffVersion !== current) return reject({ code: 'CUTOFF_MISMATCH', expected: current, got: event.cutoffVersion });
@@ -125,7 +161,8 @@ export function transition(cycle: ActionCycle, event: ActionCycleEvent): Transit
         proposedAction: event.action,
         proposalId: event.proposalId,
       };
-      // IGNORE is an explicit no-trade decision; the adversary reviews exposure decisions only (§11.9).
+      // IGNORE on a candidate is an explicit no-trade decision; the adversary reviews exposure
+      // decisions only (§11.9). It is unreachable for position cycles (allowedActions above).
       if (event.action === 'IGNORE') {
         return terminate(base, 'CLEARED', event.at, { verdict: null, clearedCutoffVersion: current });
       }
@@ -149,17 +186,22 @@ export function transition(cycle: ActionCycle, event: ActionCycleEvent): Transit
         case 'REJECT':
           return terminate(reviewed, 'REJECTED', event.at);
         case 'CHALLENGE':
-          if (cycle.revisionRound >= MAX_REVISION_ROUNDS) return unresolved(reviewed, 'DISAGREEMENT', event.at);
+          if (cycle.revisionRound >= MAX_REVISION_ROUNDS) return unresolved(reviewed, 'REVISION_EXHAUSTED', event.at);
           return { ok: true, cycle: { ...reviewed, state: 'REVISION_REQUESTED', revisionRound: cycle.revisionRound + 1 } };
       }
     }
   }
 }
 
-/** A cycle may feed deterministic risk authorization only under these exact conditions (INV-14, INV-19). */
+/**
+ * A cycle may feed deterministic risk authorization only under these exact conditions (INV-14,
+ * INV-19). Safe to call on rows loaded from Postgres: it requires the CONFIRM verdict, not just
+ * the CLEARED label.
+ */
 export function canAuthorize(cycle: ActionCycle): boolean {
-  if (cycle.state !== 'CLEARED') return false;
+  if (cycle.state !== 'CLEARED' || cycle.verdict !== 'CONFIRM') return false;
   if (cycle.proposedAction === null || !DiscretionaryExposureAction.options.includes(cycle.proposedAction as never)) return false;
+  if (!allowedActions(cycle, { allowAdd: true }).has(cycle.proposedAction)) return false;
   return cycle.clearedCutoffVersion !== null && cycle.clearedCutoffVersion === latestCutoff(cycle).version;
 }
 

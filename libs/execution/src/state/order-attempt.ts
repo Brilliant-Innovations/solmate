@@ -4,14 +4,21 @@ import type { ChainCommitment, ExecutionPath, Instant, OrderAttemptState, Sha256
  * Order-attempt state machine (blueprint D12, D49, §6.18, §14.5, §14.7, §15.4).
  *
  * PREPARED → SIGNED_NOT_SUBMITTED → SUBMITTED → CONFIRMED_PROVISIONAL → FINALIZED
- *                                  ↘ NOT_LANDED          ↘ REORG_PENDING ↗ / ↘ NOT_LANDED
+ *                 │                     ↘ NOT_LANDED          ↘ REORG_PENDING ↗ / ↘ NOT_LANDED
+ *                 └─(landed anyway)──→ CONFIRMED_PROVISIONAL / FINALIZED
  *
  * - `processed` observations are telemetry only and never change state;
  * - `confirmed` advances provisional operational state (protection may be installed);
  * - only a `finalized` observation permits final accounting (INV-22);
+ * - a signed transaction is durably identified before submission, so a transaction that lands
+ *   after the process died between `/execute` and persisting SUBMITTED is still recognised from
+ *   SIGNED_NOT_SUBMITTED by its signature (§6.18, §14.5; review #0 F2). `submittedAt` stays null and
+ *   `landedWithoutSubmissionRecord` is set so reconciliation can flag the gap;
  * - a confirmed-then-missing transaction enters REORG_PENDING and may not be replaced or retried
  *   until it is conclusively non-landable (INV-23), which needs both an expired last-valid block
  *   height and an empty signature history;
+ * - the same signed bytes may be re-landed over another approved path (§14.6 step 7); a new
+ *   transaction always needs a new attempt;
  * - submission requires the SIGNED_NOT_SUBMITTED record to have been durably journaled first.
  */
 
@@ -23,6 +30,7 @@ export interface OrderAttemptRecord {
   journaled: boolean;
   submittedAt: Instant | null;
   submissionPaths: ExecutionPath[];
+  landedWithoutSubmissionRecord: boolean;
   confirmedSlot: Slot | null;
   finalizedSlot: Slot | null;
   reorgDetectedAt: Instant | null;
@@ -53,6 +61,7 @@ export function newOrderAttempt(): OrderAttemptRecord {
     journaled: false,
     submittedAt: null,
     submissionPaths: [],
+    landedWithoutSubmissionRecord: false,
     confirmedSlot: null,
     finalizedSlot: null,
     reorgDetectedAt: null,
@@ -64,6 +73,9 @@ const invalid = (state: OrderAttemptState, event: OrderAttemptEvent['type']): Or
   ok: false,
   rejection: { code: 'INVALID_FROM_STATE', state, event },
 });
+
+/** States in which the signed transaction may still land on chain. */
+const LANDABLE: ReadonlySet<OrderAttemptState> = new Set(['SIGNED_NOT_SUBMITTED', 'SUBMITTED', 'CONFIRMED_PROVISIONAL', 'REORG_PENDING']);
 
 export function attemptTransition(a: OrderAttemptRecord, event: OrderAttemptEvent): OrderAttemptResult {
   const s = a.state;
@@ -80,27 +92,24 @@ export function attemptTransition(a: OrderAttemptRecord, event: OrderAttemptEven
       return { ok: true, attempt: { ...a, journaled: true } };
 
     case 'SUBMITTED':
-      if (s !== 'SIGNED_NOT_SUBMITTED') return invalid(s, event.type);
+      if (s !== 'SIGNED_NOT_SUBMITTED' && s !== 'SUBMITTED') return invalid(s, event.type);
       if (!a.journaled) return { ok: false, rejection: { code: 'NOT_JOURNALED' } };
-      return { ok: true, attempt: { ...a, state: 'SUBMITTED', submittedAt: event.at, submissionPaths: [...a.submissionPaths, event.path] } };
+      return { ok: true, attempt: { ...a, state: 'SUBMITTED', submittedAt: a.submittedAt ?? event.at, submissionPaths: [...a.submissionPaths, event.path] } };
 
     case 'OBSERVED': {
       if (event.commitment === 'processed') return { ok: true, attempt: a }; // telemetry only (D49)
+      if (!LANDABLE.has(s)) return invalid(s, event.type);
+      const landedUnrecorded = s === 'SIGNED_NOT_SUBMITTED';
+      const base = { ...a, landedWithoutSubmissionRecord: a.landedWithoutSubmissionRecord || landedUnrecorded };
       if (event.commitment === 'confirmed') {
-        if (s === 'SUBMITTED') return { ok: true, attempt: { ...a, state: 'CONFIRMED_PROVISIONAL', confirmedSlot: event.slot } };
-        if (s === 'CONFIRMED_PROVISIONAL' || s === 'REORG_PENDING') return { ok: true, attempt: { ...a, state: 'CONFIRMED_PROVISIONAL', confirmedSlot: event.slot } };
-        return invalid(s, event.type);
+        return { ok: true, attempt: { ...base, state: 'CONFIRMED_PROVISIONAL', confirmedSlot: event.slot } };
       }
-      // finalized
-      if (s === 'SUBMITTED' || s === 'CONFIRMED_PROVISIONAL' || s === 'REORG_PENDING') {
-        return { ok: true, attempt: { ...a, state: 'FINALIZED', finalizedSlot: event.slot, confirmedSlot: a.confirmedSlot ?? event.slot } };
-      }
-      return invalid(s, event.type);
+      return { ok: true, attempt: { ...base, state: 'FINALIZED', finalizedSlot: event.slot, confirmedSlot: a.confirmedSlot ?? event.slot } };
     }
 
     case 'MISSING_OR_CONFLICTING':
       if (s === 'CONFIRMED_PROVISIONAL') return { ok: true, attempt: { ...a, state: 'REORG_PENDING', reorgDetectedAt: event.at } };
-      if (s === 'SUBMITTED' || s === 'REORG_PENDING') return { ok: true, attempt: a }; // still potentially landable
+      if (LANDABLE.has(s)) return { ok: true, attempt: a }; // not yet confirmed: still potentially landable, nothing to roll back
       return invalid(s, event.type);
 
     case 'CONCLUSIVELY_DEAD':

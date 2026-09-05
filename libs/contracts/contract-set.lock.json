@@ -1,5 +1,5 @@
 {
-  "format": "zod4-jsonschema-canonical-sha256-v1",
-  "digest": "4444342b14775baaef0191acb0a19114d6f16cbf66a8dc337a6c889ae005751c",
+  "format": "zod4-jsonschema-xzod-canonical-sha256-v2",
+  "digest": "5302b93d2941344a0c0f9f258bc83133904fcadf70b0099e7ce28b087e7c7525",
   "schemaCount": 187
 }

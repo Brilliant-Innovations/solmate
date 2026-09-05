@@ -3,9 +3,11 @@ import type { IdempotencyKey, Uuid } from '@sol-agent-trader/contracts';
 /**
  * Intent lifecycle and idempotency registry (blueprint D12, §6.13, INV-04).
  *
- * An intent's idempotency key is stable across worker redeliveries. At most one *active* intent
- * may exist per key; a duplicate delivery returns the existing intent instead of creating another.
- * A new intent under the same key is allowed only after the previous one reached a terminal state.
+ * An intent's idempotency key is stable across worker redeliveries and is claimed **permanently**
+ * once used: a redelivery returns the existing intent whatever its state, including COMPLETED,
+ * so the canonical queue failure (execute, die before ack, redeliver) can never create a second
+ * entry (review #0 F3). A retry after a conclusively failed attempt is a new attempt of the same
+ * intent, never a new intent under the same key.
  */
 
 export type IntentLifecycleState = 'CREATED' | 'AUTHORIZED' | 'APPROVED' | 'EXECUTING' | 'COMPLETED' | 'EXPIRED' | 'CANCELLED' | 'FAILED';
@@ -30,12 +32,12 @@ export function isIntentTerminal(state: IntentLifecycleState): boolean {
 
 export type RegisterResult =
   | { outcome: 'CREATED'; registry: IntentRegistry; entry: IntentEntry }
-  | { outcome: 'DUPLICATE_ACTIVE'; registry: IntentRegistry; existing: IntentEntry };
+  | { outcome: 'DUPLICATE'; registry: IntentRegistry; existing: IntentEntry };
 
-/** Register a new intent. A redelivery with an active key returns the existing entry unchanged. */
+/** Register a new intent. Any redelivery of a known key returns the existing entry unchanged. */
 export function registerIntent(registry: IntentRegistry, intentId: Uuid, idempotencyKey: IdempotencyKey): RegisterResult {
   const existing = registry.get(idempotencyKey);
-  if (existing && !isIntentTerminal(existing.state)) return { outcome: 'DUPLICATE_ACTIVE', registry, existing };
+  if (existing) return { outcome: 'DUPLICATE', registry, existing };
   const entry: IntentEntry = { intentId, idempotencyKey, state: 'CREATED' };
   const next = new Map(registry);
   next.set(idempotencyKey, entry);

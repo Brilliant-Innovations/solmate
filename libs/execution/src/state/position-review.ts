@@ -7,6 +7,10 @@ import type { ActionCycleTerminalState, Instant, PositionReviewState, TradingAct
  * reassessment cycle and to budget events. Independent of the action-cycle machine, which owns
  * no position behavior. Deterministic protection (stops, trails, circuit breakers, provider orders)
  * is unaffected by this state; it only gates *discretionary* agent actions.
+ *
+ * A position becomes REVIEWED only through a CLEARED cycle whose action is an affirmative
+ * open-position decision (HOLD, REDUCE, EXIT, ADJUST_PROTECTION). A cleared IGNORE, ENTER or
+ * missing action is not a review of the position and is rejected (review #0 F1).
  */
 
 export interface PositionReview {
@@ -33,9 +37,13 @@ export type PositionReviewEvent =
 
 export type PositionReviewRejection =
   | { code: 'STOP_WOULD_LOOSEN'; current: number; requested: number }
-  | { code: 'MISSING_UNRESOLVED_REASON' };
+  | { code: 'INVALID_STOP_LEVEL'; requested: number }
+  | { code: 'MISSING_UNRESOLVED_REASON' }
+  | { code: 'NOT_A_POSITION_REVIEW_ACTION'; action: TradingActionType | null };
 
 export type PositionReviewResult = { ok: true; review: PositionReview } | { ok: false; rejection: PositionReviewRejection };
+
+const POSITION_REVIEW_ACTIONS: ReadonlySet<TradingActionType> = new Set(['HOLD', 'REDUCE', 'EXIT', 'ADJUST_PROTECTION']);
 
 export function initialPositionReview(openedAt: Instant, openingCycleId: string | null): PositionReview {
   return { reviewState: 'REVIEWED', reason: null, since: openedAt, lastReviewedCycleId: openingCycleId, unreviewedStop: null, consecutiveUnresolved: 0 };
@@ -50,6 +58,7 @@ export function reviewTransition(review: PositionReview, event: PositionReviewEv
       };
 
     case 'TIGHTEN_UNREVIEWED_STOP': {
+      if (!Number.isFinite(event.level) || event.level < 0) return { ok: false, rejection: { code: 'INVALID_STOP_LEVEL', requested: event.level } };
       if (review.unreviewedStop !== null && event.level < review.unreviewedStop) {
         return { ok: false, rejection: { code: 'STOP_WOULD_LOOSEN', current: review.unreviewedStop, requested: event.level } };
       }
@@ -58,6 +67,9 @@ export function reviewTransition(review: PositionReview, event: PositionReviewEv
 
     case 'CYCLE_TERMINATED': {
       if (event.terminal === 'CLEARED') {
+        if (event.action === null || !POSITION_REVIEW_ACTIONS.has(event.action)) {
+          return { ok: false, rejection: { code: 'NOT_A_POSITION_REVIEW_ACTION', action: event.action } };
+        }
         // A cleared HOLD/REDUCE/EXIT/ADJUST_PROTECTION is an affirmative, reviewed decision (§11.11).
         return {
           ok: true,

@@ -18,7 +18,7 @@ describe('contract registry', () => {
     }
   });
 
-  it('every registered schema is JSON-Schema representable', () => {
+  it('every registered schema is fingerprintable', () => {
     for (const [name, schema] of contractRegistry) {
       expect(() => canonicalize(schemaToJsonSchema(schema)), name).not.toThrow();
     }
@@ -34,7 +34,7 @@ describe('contract-set digest (INV-24)', () => {
     expect((await getContractSetDigest()).digest).toBe(a.digest);
   });
 
-  it('changes when any schema changes', async () => {
+  it('changes when any schema changes, is added, or is removed', async () => {
     const base = await computeContractSetDigest();
     const mutated = new Map(contractRegistry);
     mutated.set('entities.TradeIntent', z.object({ id: z.string() }));
@@ -42,6 +42,20 @@ describe('contract-set digest (INV-24)', () => {
     const added = new Map(contractRegistry);
     added.set('entities.Extra', z.object({}));
     expect((await computeContractSetDigest(added)).digest).not.toBe(base.digest);
+    const removed = new Map(contractRegistry);
+    removed.delete('entities.TradeIntent');
+    expect((await computeContractSetDigest(removed)).digest).not.toBe(base.digest);
+  });
+
+  it('sees strictness, refinements and check parameters that JSON Schema alone cannot express', async () => {
+    const d = async (s: z.ZodType) => (await computeContractSetDigest(new Map([['x', s]]))).digest;
+    const loose = z.object({ a: z.string() });
+    const strict = z.strictObject({ a: z.string() });
+    const refined = z.object({ a: z.string() }).refine(() => true);
+    const bounded = z.object({ a: z.string().max(20) });
+    const boundedTighter = z.object({ a: z.string().max(10) });
+    const results = await Promise.all([loose, strict, refined, bounded, boundedTighter].map(d));
+    expect(new Set(results).size).toBe(results.length);
   });
 
   it('matches contract-set.lock.json (run with UPDATE_CONTRACT_LOCK=1 to accept a deliberate change)', async () => {
@@ -55,19 +69,67 @@ describe('contract-set digest (INV-24)', () => {
   });
 });
 
+/** Every plain-object node in a value, as [path, object] pairs (arrays descended, objects yielded). */
+function* objectNodes(value: unknown, path: string[] = []): Generator<[string[], Record<string, unknown>]> {
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) yield* objectNodes(value[i], [...path, String(i)]);
+  } else if (value !== null && typeof value === 'object') {
+    yield [path, value as Record<string, unknown>];
+    for (const [k, v] of Object.entries(value)) yield* objectNodes(v, [...path, k]);
+  }
+}
+
+function withInjectedAt(root: unknown, path: string[]): unknown {
+  if (path.length === 0) return { ...(root as Record<string, unknown>), __injected: 1 };
+  const [head, ...rest] = path;
+  if (Array.isArray(root)) {
+    const copy = [...root];
+    copy[Number(head)] = withInjectedAt(copy[Number(head)], rest);
+    return copy;
+  }
+  const obj = root as Record<string, unknown>;
+  return { ...obj, [head]: withInjectedAt(obj[head], rest) };
+}
+
 describe('cross-boundary encode/decode (INV-24)', () => {
   it.each(fixtureCatalog().map((f) => [f.name, f] as const))('%s survives a JSON round trip with semantic equality', (_n, f) => {
     const encoded = JSON.stringify(f.value);
     const decoded = f.schema.parse(JSON.parse(encoded));
     expect(canonicalize(decoded)).toBe(canonicalize(f.value));
-    // parsing the decoded value again is a fixed point
     expect(canonicalize(f.schema.parse(decoded))).toBe(canonicalize(decoded));
   });
 
-  it('signed payload schemas are strict: an unknown key is rejected rather than silently stripped', () => {
+  /**
+   * Deliberately open `JsonRecord` fields. A record keeps every key on parse, so there is no
+   * strip-then-rehash ambiguity; they are free-form by design (§15.10 journal payload, §5.4 queue payload).
+   */
+  const OPEN_RECORD_PATHS: Record<string, string[][]> = {
+    'envelopes.ExecutorJournalEntry': [['payload']],
+    'envelopes.QueueMessageEnvelope': [['payload']],
+  };
+  const under = (path: string[], prefix: string[]) => prefix.every((p, i) => path[i] === p);
+
+  it('signed payload schemas are strict at every nesting level: an unknown key anywhere is rejected, never stripped', () => {
     for (const f of fixtureCatalog().filter((x) => x.name.startsWith('envelopes.'))) {
-      const withExtra = { ...(f.value as Record<string, unknown>), __injected: 1 };
-      expect(f.schema.safeParse(withExtra).success, f.name).toBe(false);
+      const open = OPEN_RECORD_PATHS[f.name] ?? [];
+      for (const [path] of objectNodes(f.value)) {
+        if (open.some((prefix) => under(path, prefix))) continue;
+        const tampered = withInjectedAt(f.value, path);
+        expect(f.schema.safeParse(tampered).success, `${f.name} at /${path.join('/')}`).toBe(false);
+      }
+    }
+  });
+
+  it('open record fields keep unknown keys intact on parse (no silent stripping, so the hash is unambiguous)', () => {
+    for (const [name, paths] of Object.entries(OPEN_RECORD_PATHS)) {
+      const f = fixtureCatalog().find((x) => x.name === name);
+      expect(f, name).toBeDefined();
+      if (!f) continue;
+      for (const path of paths) {
+        const tampered = withInjectedAt(f.value, path);
+        const parsed = f.schema.parse(tampered);
+        expect(canonicalize(parsed)).toBe(canonicalize(tampered));
+      }
     }
   });
 });
