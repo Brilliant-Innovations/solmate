@@ -1,1 +1,1 @@
-export * from './lib/signals.js';
+export * from './candidate/index.js';

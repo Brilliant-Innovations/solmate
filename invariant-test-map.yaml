@@ -43,16 +43,18 @@ invariants:
     owner_modules:
       - libs/execution/src/state/intent.ts
       - apps/execution-service/src/idempotency
-    tests: []
-    status: unmapped
+    tests:
+      - libs/execution/src/state/intent.spec.ts
+    status: mapped
 
   - id: INV-05
     statement: "No live trade while PAUSED or in OBSERVE/PAPER."
     owner_modules:
       - libs/risk/src/runtime-session
       - apps/execution-service/src/authority/mode-gate.ts
-    tests: []
-    status: unmapped
+    tests:
+      - libs/risk/src/runtime-session/runtime-session.spec.ts
+    status: mapped
 
   - id: INV-06
     statement: "DB tampering after authorization cannot change executable amount, mint, side, slippage or expiry."
@@ -121,15 +123,17 @@ invariants:
     owner_modules:
       - libs/agents/src/action-cycle
       - apps/risk-authorizer/src/authorize
-    tests: []
-    status: unmapped
+    tests:
+      - libs/agents/src/action-cycle/action-cycle.spec.ts
+    status: mapped
 
   - id: INV-15
     statement: "No mandatory risk-reduction action can be blocked by an adversary."
     owner_modules:
       - libs/risk/src/mandatory-exit
-    tests: []
-    status: unmapped
+    tests:
+      - libs/risk/src/mandatory-exit/mandatory-exit.spec.ts
+    status: mapped
 
   - id: INV-16
     statement: "No Trading Skill tool invocation can reach an unregistered tool."
@@ -157,39 +161,45 @@ invariants:
     statement: "A proposal under cutoff v1 cannot be adversarially cleared under cutoff v2 without proposer revision."
     owner_modules:
       - libs/agents/src/action-cycle
-    tests: []
-    status: unmapped
+    tests:
+      - libs/agents/src/action-cycle/action-cycle.spec.ts
+    status: mapped
 
   - id: INV-20
     statement: "An unresolved open-position discretionary cycle cannot persist a cleared HOLD; the position enters PROTECTION_ONLY (ADR-0001: tested across the action-cycle and position-review machines together)."
     owner_modules:
       - libs/agents/src/action-cycle
       - libs/execution/src/state/position-review.ts
-    tests: []
-    status: unmapped
+    tests:
+      - libs/agents/src/action-cycle/protection-only.spec.ts
+      - libs/execution/src/state/position-review.spec.ts
+    status: mapped
 
   - id: INV-21
     statement: "Budget exhaustion cannot suppress deterministic mandatory exits."
     owner_modules:
       - libs/risk/src/mandatory-exit
       - libs/agents/src/budget
-    tests: []
-    status: unmapped
+    tests:
+      - libs/risk/src/mandatory-exit/mandatory-exit.spec.ts
+    status: mapped
 
   - id: INV-22
     statement: "No transition can promote CONFIRMED_PROVISIONAL execution/accounting state to final P&L without finalized evidence."
     owner_modules:
       - libs/execution/src/state/order-attempt.ts
-    tests: []
-    status: unmapped
+    tests:
+      - libs/execution/src/state/order-attempt.spec.ts
+    status: mapped
 
   - id: INV-23
     statement: "A REORG_PENDING attempt cannot be replaced or retried while the original transaction remains potentially landable."
     owner_modules:
       - libs/execution/src/state/order-attempt.ts
       - apps/execution-service/src/submission
-    tests: []
-    status: unmapped
+    tests:
+      - libs/execution/src/state/order-attempt.spec.ts
+    status: mapped
 
   - id: INV-24
     statement: "Cross-module encode/decode of every canonical live contract preserves semantic equality and the contract-set digest."

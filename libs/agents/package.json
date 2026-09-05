@@ -23,6 +23,10 @@
     ]
   },
   "dependencies": {
+    "@sol-agent-trader/contracts": "workspace:*",
     "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@sol-agent-trader/execution": "workspace:*"
   }
 }
