@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nx:
+    name: lint · typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NX_DAEMON: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable corepack (pnpm pinned by packageManager)
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Invariant map
+        run: node tools/check-invariant-map.mjs
+      - name: Boundary rules are live (deliberate forbidden import must fail lint)
+        run: |
+          cp apps/risk-authorizer/src/main.ts /tmp/main.bak
+          printf "import * as r from 'react';\nconsole.log(r);\n" >> apps/risk-authorizer/src/main.ts
+          if pnpm nx lint @sol-agent-trader/risk-authorizer --skip-nx-cache >/tmp/lint.log 2>&1; then
+            echo "::error::boundary lint did not reject a banned import in risk-authorizer"; cat /tmp/lint.log; exit 1
+          fi
+          grep -q 'enforce-module-boundaries' /tmp/lint.log || { echo "::error::lint failed for a different reason"; cat /tmp/lint.log; exit 1; }
+          cp /tmp/main.bak apps/risk-authorizer/src/main.ts
+      - name: Nx targets
+        run: pnpm nx run-many -t lint typecheck test build --parallel=3 --output-style=static

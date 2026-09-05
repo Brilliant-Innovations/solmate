@@ -2,4 +2,5 @@
 
 One line per session, newest first. Format: `date · milestone · what landed · evidence`.
 
+- 2026-09-05 · M1 · Nx 23.2 workspace scaffolded: 4 apps + 16 libs with trust/scope tags, `@nx/enforce-module-boundaries` constraints and package bans from GUARDRAILS.md Part 4 (negative tests: lib import and `react` import into risk-authorizer both rejected), ADR-0005 pinned versions (TS 6.0, Vitest 4.1, ESLint 9.39 after ESLint 10 broke `eslint-plugin-react`), zod 4 + fast-check 4 added · `nx run-many -t lint typecheck test build` green for 20 projects
 - 2026-09-05 · M0 · Repo bootstrapped: git, docs layout, GUARDRAILS.md (§31/§32 verbatim + ground rules + trust tags) imported by CLAUDE.md and pointed to by AGENTS.md, ADR-0001–0004, invariant-test-map.yaml with 28 §24.6 invariants and checker, guardrails CI workflow, Node 24/pnpm pins · `node tools/check-invariant-map.mjs` OK

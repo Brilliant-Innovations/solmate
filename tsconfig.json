@@ -1,0 +1,68 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compileOnSave": false,
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/web"
+    },
+    {
+      "path": "./apps/worker"
+    },
+    {
+      "path": "./apps/risk-authorizer"
+    },
+    {
+      "path": "./apps/execution-service"
+    },
+    {
+      "path": "./libs/contracts"
+    },
+    {
+      "path": "./libs/db"
+    },
+    {
+      "path": "./libs/solana-hard-state"
+    },
+    {
+      "path": "./libs/observability"
+    },
+    {
+      "path": "./libs/testing"
+    },
+    {
+      "path": "./libs/replay"
+    },
+    {
+      "path": "./libs/market"
+    },
+    {
+      "path": "./libs/onchain"
+    },
+    {
+      "path": "./libs/intelligence"
+    },
+    {
+      "path": "./libs/signals"
+    },
+    {
+      "path": "./libs/strategies"
+    },
+    {
+      "path": "./libs/agents"
+    },
+    {
+      "path": "./libs/skills"
+    },
+    {
+      "path": "./libs/risk"
+    },
+    {
+      "path": "./libs/execution"
+    },
+    {
+      "path": "./libs/wallet-ui"
+    }
+  ],
+  "compilerOptions": {}
+}

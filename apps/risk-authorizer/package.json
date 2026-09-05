@@ -1,0 +1,118 @@
+{
+  "name": "@sol-agent-trader/risk-authorizer",
+  "version": "0.0.1",
+  "private": true,
+  "nx": {
+    "targets": {
+      "build": {
+        "executor": "@nx/esbuild:esbuild",
+        "outputs": [
+          "{options.outputPath}"
+        ],
+        "defaultConfiguration": "production",
+        "options": {
+          "platform": "node",
+          "outputPath": "apps/risk-authorizer/dist",
+          "format": [
+            "cjs"
+          ],
+          "bundle": false,
+          "main": "apps/risk-authorizer/src/main.ts",
+          "tsConfig": "apps/risk-authorizer/tsconfig.app.json",
+          "assets": [
+            "apps/risk-authorizer/src/assets"
+          ],
+          "esbuildOptions": {
+            "sourcemap": true,
+            "outExtension": {
+              ".js": ".js"
+            }
+          }
+        },
+        "configurations": {
+          "development": {},
+          "production": {
+            "esbuildOptions": {
+              "sourcemap": false,
+              "outExtension": {
+                ".js": ".js"
+              }
+            }
+          }
+        }
+      },
+      "prune-lockfile": {
+        "dependsOn": [
+          "build"
+        ],
+        "cache": true,
+        "executor": "@nx/js:prune-lockfile",
+        "inputs": [
+          "default",
+          "^default",
+          "{workspaceRoot}/pnpm-workspace.yaml",
+          "{workspaceRoot}/package.json",
+          {
+            "runtime": "node -e \"try{console.log('pnpm major '+require('child_process').execSync('pnpm --version',{stdio:['ignore','pipe','ignore']}).toString().trim().split('.')[0])}catch{console.log('pnpm major unavailable')}\""
+          }
+        ],
+        "outputs": [
+          "{workspaceRoot}/apps/risk-authorizer/dist/package.json",
+          "{workspaceRoot}/apps/risk-authorizer/dist/pnpm-lock.yaml",
+          "{workspaceRoot}/apps/risk-authorizer/dist/pnpm-workspace.yaml",
+          "{workspaceRoot}/apps/risk-authorizer/dist/patches",
+          "{workspaceRoot}/apps/risk-authorizer/dist/local_path_modules"
+        ],
+        "options": {
+          "buildTarget": "build"
+        }
+      },
+      "copy-workspace-modules": {
+        "dependsOn": [
+          "build"
+        ],
+        "cache": true,
+        "outputs": [
+          "{workspaceRoot}/apps/risk-authorizer/dist/workspace_modules"
+        ],
+        "executor": "@nx/js:copy-workspace-modules",
+        "options": {
+          "buildTarget": "build"
+        }
+      },
+      "prune": {
+        "dependsOn": [
+          "prune-lockfile",
+          "copy-workspace-modules"
+        ],
+        "executor": "nx:noop"
+      },
+      "serve": {
+        "continuous": true,
+        "executor": "@nx/js:node",
+        "defaultConfiguration": "development",
+        "dependsOn": [
+          "build"
+        ],
+        "options": {
+          "buildTarget": "@sol-agent-trader/risk-authorizer:build",
+          "runBuildTargetDependencies": false
+        },
+        "configurations": {
+          "development": {
+            "buildTarget": "@sol-agent-trader/risk-authorizer:build:development"
+          },
+          "production": {
+            "buildTarget": "@sol-agent-trader/risk-authorizer:build:production"
+          }
+        }
+      }
+    },
+    "tags": [
+      "type:app",
+      "trust:risk-authorizer",
+      "scope:risk-authorizer"
+    ]
+  },
+  "dependencies": {}
+}
