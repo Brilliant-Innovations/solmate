@@ -1,0 +1,31 @@
+name: guardrails
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  invariant-map:
+    name: invariant map (blueprint §24.6, ground rule 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: node tools/check-invariant-map.mjs
+
+  guardrails-present:
+    name: canonical guardrails imported
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: GUARDRAILS.md exists and CLAUDE.md imports it
+        run: |
+          test -f docs/implementation/GUARDRAILS.md
+          grep -qx '@docs/implementation/GUARDRAILS.md' CLAUDE.md
+          grep -q 'GUARDRAILS.md' AGENTS.md
+      - name: the four M0 ADRs exist
+        run: |
+          for n in 0001 0002 0003 0004; do ls docs/decisions/ADR-$n-*.md >/dev/null; done

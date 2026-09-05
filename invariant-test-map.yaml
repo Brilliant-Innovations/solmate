@@ -1,0 +1,228 @@
+# Invariant test map — blueprint §24.6
+#
+# Every critical invariant has a stable id, the modules that own it, the executable
+# property/adversarial tests that prove it, and a status.
+#
+# status: unmapped  -> no test yet. Allowed only while none of the owner_modules exists on disk.
+# status: mapped    -> every path in `tests` exists and runs in CI.
+# status: waived    -> never valid for a §24.6 invariant; the checker rejects it.
+#
+# Checker: node tools/check-invariant-map.mjs  (execution plan ground rule 2)
+# Paths are repository-relative. owner_modules are the planned Nx projects from blueprint §4.1.
+
+version: 1
+invariants:
+  - id: INV-01
+    statement: "No live signature without an allowed, unexpired intent."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-02
+    statement: "No intent amount greater than the risk-evaluated maximum."
+    owner_modules:
+      - libs/risk
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped
+
+  - id: INV-03
+    statement: "No entry for an ineligible asset."
+    owner_modules:
+      - libs/risk
+      - libs/onchain
+    tests: []
+    status: unmapped
+
+  - id: INV-04
+    statement: "No duplicate active entry from the same idempotency key."
+    owner_modules:
+      - libs/execution
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-05
+    statement: "No live trade while PAUSED or in OBSERVE/PAPER."
+    owner_modules:
+      - apps/execution-service
+      - libs/risk
+    tests: []
+    status: unmapped
+
+  - id: INV-06
+    statement: "DB tampering after authorization cannot change executable amount, mint, side, slippage or expiry."
+    owner_modules:
+      - apps/execution-service
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped
+
+  - id: INV-07
+    statement: "DB-only tampering cannot create a valid newer/wider RiskStateProjection or cause entry authorization when independent D45/wallet chain reads disagree."
+    owner_modules:
+      - apps/risk-authorizer
+      - libs/solana-hard-state
+    tests: []
+    status: unmapped
+
+  - id: INV-08
+    statement: "Executor absolute cap cannot be exceeded by database policy; aggregate exposure enforcement continues from the local ExecutorExposureLedger when DB market projections are unavailable."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-09
+    statement: "No new LIVE_AUTO entry may exceed the signer-outage unprotected-exposure cap for MONITORED_EXIT lots."
+    owner_modules:
+      - apps/execution-service
+      - libs/risk
+    tests: []
+    status: unmapped
+
+  - id: INV-10
+    statement: "A stale or replayed approval cannot authorize a changed or expired envelope."
+    owner_modules:
+      - apps/execution-service
+      - libs/risk
+    tests: []
+    status: unmapped
+
+  - id: INV-11
+    statement: "Our own wallet/vault flow cannot satisfy a smart-money or candidate trigger."
+    owner_modules:
+      - libs/signals
+      - libs/onchain
+    tests: []
+    status: unmapped
+
+  - id: INV-12
+    statement: "No DB-independent emergency command can increase exposure or send to an arbitrary address."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-13
+    statement: "No strategy sees evidence from the future in replay."
+    owner_modules:
+      - libs/replay
+      - libs/intelligence
+    tests: []
+    status: unmapped
+
+  - id: INV-14
+    statement: "No discretionary autonomous live intent exists without a cleared adversarial action cycle."
+    owner_modules:
+      - libs/agents
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped
+
+  - id: INV-15
+    statement: "No mandatory risk-reduction action can be blocked by an adversary."
+    owner_modules:
+      - libs/risk
+      - libs/agents
+    tests: []
+    status: unmapped
+
+  - id: INV-16
+    statement: "No Trading Skill tool invocation can reach an unregistered tool."
+    owner_modules:
+      - libs/skills
+      - libs/agents
+    tests: []
+    status: unmapped
+
+  - id: INV-17
+    statement: "No LIVE_AUTO strategy can run with a mutable or unversioned skill, guideline or automation set."
+    owner_modules:
+      - libs/strategies
+      - libs/skills
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped
+
+  - id: INV-18
+    statement: "The risk-authorizer cannot sign against an unattested or mismatched Release digest."
+    owner_modules:
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped
+
+  - id: INV-19
+    statement: "A proposal under cutoff v1 cannot be adversarially cleared under cutoff v2 without proposer revision."
+    owner_modules:
+      - libs/agents
+    tests: []
+    status: unmapped
+
+  - id: INV-20
+    statement: "An unresolved open-position discretionary cycle cannot persist a cleared HOLD; the position enters PROTECTION_ONLY (ADR-0001: tested across the action-cycle and position-review machines together)."
+    owner_modules:
+      - libs/agents
+      - libs/execution
+    tests: []
+    status: unmapped
+
+  - id: INV-21
+    statement: "Budget exhaustion cannot suppress deterministic mandatory exits."
+    owner_modules:
+      - libs/risk
+      - libs/agents
+    tests: []
+    status: unmapped
+
+  - id: INV-22
+    statement: "No transition can promote CONFIRMED_PROVISIONAL execution/accounting state to final P&L without finalized evidence."
+    owner_modules:
+      - libs/execution
+    tests: []
+    status: unmapped
+
+  - id: INV-23
+    statement: "A REORG_PENDING attempt cannot be replaced or retried while the original transaction remains potentially landable."
+    owner_modules:
+      - libs/execution
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-24
+    statement: "Cross-module encode/decode of every canonical live contract preserves semantic equality and the contract-set digest."
+    owner_modules:
+      - libs/contracts
+    tests: []
+    status: unmapped
+
+  - id: INV-25
+    statement: "Normal autonomous signing cannot bypass the external signer-side policy layer."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-26
+    statement: "Revoking the executor signer identity prevents further normal signatures without needing the executor or Postgres."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-27
+    statement: "SWEEP_TO_COLD_RECOVERY cannot target anything except the pinned cold-recovery wallet and its canonical token accounts."
+    owner_modules:
+      - apps/execution-service
+    tests: []
+    status: unmapped
+
+  - id: INV-28
+    statement: "Crossing the live capital attestation ceiling blocks new exposure until re-attestation or risk reduction."
+    owner_modules:
+      - libs/risk
+      - apps/risk-authorizer
+    tests: []
+    status: unmapped

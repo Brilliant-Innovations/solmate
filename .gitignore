@@ -1,0 +1,38 @@
+# dependencies / build
+node_modules/
+dist/
+.nx/cache
+.nx/workspace-data
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# environment and secrets — no credential of any kind is committed (GUARDRAILS.md Part 4)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keypair.json
+id.json
+
+# supabase local
+supabase/.branches
+supabase/.temp
+
+# terraform (M11)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# tooling
+.DS_Store
+Thumbs.db
+*.log
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/

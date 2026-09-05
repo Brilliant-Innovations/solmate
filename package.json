@@ -1,0 +1,15 @@
+{
+  "name": "sol-agent-trader",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Solana Autonomous Trader — Blueprint v1.10 implementation (see docs/implementation/Execution_Plan_v4.md)",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@10.28.2",
+  "type": "module",
+  "scripts": {
+    "check:invariants": "node tools/check-invariant-map.mjs"
+  }
+}
