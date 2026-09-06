@@ -51,3 +51,25 @@ jobs:
         run: pnpm nx test @sol-agent-trader/contracts --skip-nx-cache
       - name: Nx targets
         run: pnpm nx run-many -t lint typecheck test build --parallel=3 --output-style=static
+
+  database:
+    name: schema migrations · pgTAP · generated types in sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Start local Supabase (applies every migration)
+        run: pnpm exec supabase start -x studio,imgproxy,inbucket,mailpit,logflare,vector,edge-runtime
+      - name: pgTAP tests
+        run: pnpm exec supabase test db
+      - name: Generated database types match the migrations
+        run: |
+          pnpm exec supabase gen types typescript --local --schema core,market,intelligence,signals,agents,trading,risk,research,ops,audit,enums > /tmp/database.types.ts
+          diff -u libs/db/src/database.types.ts /tmp/database.types.ts || { echo "::error::libs/db/src/database.types.ts is stale; regenerate with supabase gen types"; exit 1; }
+      - if: always()
+        run: pnpm exec supabase stop --no-backup
