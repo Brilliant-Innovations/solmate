@@ -7,4 +7,5 @@ export * from './agents.js';
 export * from './research.js';
 export * from './trading.js';
 export * from './ops.js';
+export * from './step-up.js';
 export * from './audit.js';

@@ -40,8 +40,20 @@ export async function proxy(request: NextRequest) {
     redirect.searchParams.set('next', path);
     return NextResponse.redirect(redirect);
   }
-  if (user && path === '/sign-in') {
-    return NextResponse.redirect(new URL('/', request.url));
+  if (user) {
+    // §5.7: a session with an enrolled second factor must verify it before anything else.
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    const mfaPending = aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2';
+    if (mfaPending && path !== '/sign-in/mfa' && !path.startsWith('/api/')) {
+      const redirect = request.nextUrl.clone();
+      redirect.pathname = '/sign-in/mfa';
+      redirect.search = '';
+      redirect.searchParams.set('next', path);
+      return NextResponse.redirect(redirect);
+    }
+    if (path === '/sign-in' || (path === '/sign-in/mfa' && !mfaPending)) {
+      return NextResponse.redirect(new URL('/', request.url));
+    }
   }
   return response;
 }

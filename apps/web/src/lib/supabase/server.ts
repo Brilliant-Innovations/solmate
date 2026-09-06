@@ -36,6 +36,10 @@ export type OperatorSession = {
   email: string | null;
   role: Database['enums']['Enums']['operator_role'] | null;
   displayName: string | null;
+  /** Supabase authenticator assurance level of this session; controls need `aal2` (§5.7). */
+  aal: 'aal1' | 'aal2' | null;
+  /** True when a factor is enrolled but this session has not verified it yet. */
+  mfaPending: boolean;
 };
 
 /** The signed-in user and their operator role (null role = signed in but not an operator). */
@@ -46,6 +50,16 @@ export async function getOperatorSession(): Promise<OperatorSession | null> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return null;
-  const { data } = await supabase.schema('ops').from('operators').select('role, display_name').eq('user_id', user.id).maybeSingle();
-  return { userId: user.id, email: user.email ?? null, role: data?.role ?? null, displayName: data?.display_name ?? null };
+  const [{ data }, { data: aal }] = await Promise.all([
+    supabase.schema('ops').from('operators').select('role, display_name').eq('user_id', user.id).maybeSingle(),
+    supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+  ]);
+  return {
+    userId: user.id,
+    email: user.email ?? null,
+    role: data?.role ?? null,
+    displayName: data?.display_name ?? null,
+    aal: aal?.currentLevel === 'aal2' ? 'aal2' : aal?.currentLevel ? 'aal1' : null,
+    mfaPending: aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2',
+  };
 }

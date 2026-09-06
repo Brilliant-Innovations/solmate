@@ -271,5 +271,29 @@ export type ProviderHealth = z.infer<typeof ProviderHealth>;
 export const QueueName = z.enum(['trade-critical', 'reconciliation', 'trading-actions', 'research']);
 export type QueueName = z.infer<typeof QueueName>;
 
+/** ops.control_requests.kind: the only thing a browser session may ask for (§20.23, §23.3). */
+export const ControlRequestKind = z.enum([
+  'SET_REQUESTED_MODE',
+  'PAUSE_NEW_ENTRIES',
+  'RESUME_NEW_ENTRIES',
+  'APPROVE_AUTHORIZATION',
+  'REJECT_AUTHORIZATION',
+  'MANUAL_REDUCE',
+  'MANUAL_CLOSE',
+  'EMERGENCY_CLOSE_ALL',
+  'ACKNOWLEDGE_ALERT',
+  'PROMOTE_RELEASE',
+  'ARM_RELEASE',
+  'RUN_READINESS_DRILL',
+  'START_SESSION',
+  'END_SESSION',
+  'REGISTER_PASSKEY',
+  'REVOKE_PASSKEY',
+]);
+export type ControlRequestKind = z.infer<typeof ControlRequestKind>;
+
+export const ControlRequestState = z.enum(['PENDING', 'ACCEPTED', 'REJECTED', 'EXPIRED']);
+export type ControlRequestState = z.infer<typeof ControlRequestState>;
+
 export const ReplayFidelity = z.enum(['A_HISTORICAL', 'B_CAPTURED', 'C_LIVE_PAPER']);
 export type ReplayFidelity = z.infer<typeof ReplayFidelity>;

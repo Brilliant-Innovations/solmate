@@ -4,6 +4,8 @@ import {
   ActorKind,
   AlertSeverity,
   CapitalAuthority,
+  ControlRequestKind,
+  ControlRequestState,
   DeploymentProfile,
   FundingEventState,
   MarketRegime,
@@ -170,3 +172,24 @@ export const RuntimeSession = z.object({
   metadata: JsonRecord,
 });
 export type RuntimeSession = z.infer<typeof RuntimeSession>;
+
+// ops.control_requests (§20.23, §23.3, D41) ---------------------------------------------------
+
+/**
+ * The single browser write surface. Inserted by an authenticated operator under RLS (aal2 session
+ * required); validated and acted on by the worker, which records the outcome. A request whose kind
+ * widens financial authority carries step-up evidence (see policy/step-up.ts) and, once verified,
+ * a reference to the immutable ops.step_up_assertions row.
+ */
+export const ControlRequest = z.object({
+  id: Uuid,
+  requestedBy: Uuid,
+  kind: ControlRequestKind,
+  payload: JsonRecord,
+  stepUpAssertionRef: z.string().min(1).max(128).nullable(),
+  state: ControlRequestState,
+  resolution: JsonRecord.nullable(),
+  createdAt: Instant,
+  resolvedAt: Instant.nullable(),
+});
+export type ControlRequest = z.infer<typeof ControlRequest>;

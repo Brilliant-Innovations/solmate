@@ -11,13 +11,15 @@ import { createSupabaseServerClient } from '../../lib/supabase/server';
 export async function requestPauseNewEntries(): Promise<void> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return;
-  await supabase.schema('ops').from('control_requests').insert({ kind: 'PAUSE_NEW_ENTRIES', payload: { source: 'status-bar' } });
+  const { error } = await supabase.schema('ops').from('control_requests').insert({ kind: 'PAUSE_NEW_ENTRIES', payload: { source: 'status-bar' } });
+  if (error) throw new Error(`control request refused: ${error.message}`);
   revalidatePath('/');
 }
 
 export async function requestEndSession(): Promise<void> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return;
-  await supabase.schema('ops').from('control_requests').insert({ kind: 'END_SESSION', payload: { source: 'status-bar' } });
+  const { error } = await supabase.schema('ops').from('control_requests').insert({ kind: 'END_SESSION', payload: { source: 'status-bar' } });
+  if (error) throw new Error(`control request refused: ${error.message}`);
   revalidatePath('/');
 }

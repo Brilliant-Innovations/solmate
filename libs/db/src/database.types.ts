@@ -982,6 +982,8 @@ export type Database = {
         | "RUN_READINESS_DRILL"
         | "START_SESSION"
         | "END_SESSION"
+        | "REGISTER_PASSKEY"
+        | "REVOKE_PASSKEY"
       control_request_state: "PENDING" | "ACCEPTED" | "REJECTED" | "EXPIRED"
       custody_kind:
         | "TRADING_WALLET"
@@ -1915,6 +1917,51 @@ export type Database = {
         }
         Relationships: []
       }
+      operator_passkeys: {
+        Row: {
+          aaguid: string | null
+          backed_up: boolean
+          created_at: string
+          credential_id: string
+          id: string
+          label: string
+          last_used_at: string | null
+          public_key_cose: string
+          revoked_at: string | null
+          sign_count: number
+          transports: string[]
+          user_id: string
+        }
+        Insert: {
+          aaguid?: string | null
+          backed_up?: boolean
+          created_at?: string
+          credential_id: string
+          id?: string
+          label: string
+          last_used_at?: string | null
+          public_key_cose: string
+          revoked_at?: string | null
+          sign_count?: number
+          transports?: string[]
+          user_id: string
+        }
+        Update: {
+          aaguid?: string | null
+          backed_up?: boolean
+          created_at?: string
+          credential_id?: string
+          id?: string
+          label?: string
+          last_used_at?: string | null
+          public_key_cose?: string
+          revoked_at?: string | null
+          sign_count?: number
+          transports?: string[]
+          user_id?: string
+        }
+        Relationships: []
+      }
       operators: {
         Row: {
           created_at: string
@@ -2166,6 +2213,103 @@ export type Database = {
           },
         ]
       }
+      step_up_assertions: {
+        Row: {
+          binding_hash: string
+          challenge_id: string
+          control_request_id: string | null
+          expires_at: string
+          failure_reason: string | null
+          id: string
+          kind: Database["enums"]["Enums"]["control_request_kind"]
+          passkey_id: string | null
+          user_id: string
+          verified: boolean
+          verified_at: string
+        }
+        Insert: {
+          binding_hash: string
+          challenge_id: string
+          control_request_id?: string | null
+          expires_at: string
+          failure_reason?: string | null
+          id?: string
+          kind: Database["enums"]["Enums"]["control_request_kind"]
+          passkey_id?: string | null
+          user_id: string
+          verified: boolean
+          verified_at?: string
+        }
+        Update: {
+          binding_hash?: string
+          challenge_id?: string
+          control_request_id?: string | null
+          expires_at?: string
+          failure_reason?: string | null
+          id?: string
+          kind?: Database["enums"]["Enums"]["control_request_kind"]
+          passkey_id?: string | null
+          user_id?: string
+          verified?: boolean
+          verified_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "step_up_assertions_challenge_id_fkey"
+            columns: ["challenge_id"]
+            isOneToOne: true
+            referencedRelation: "step_up_challenges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "step_up_assertions_control_request_id_fkey"
+            columns: ["control_request_id"]
+            isOneToOne: false
+            referencedRelation: "control_requests"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "step_up_assertions_passkey_id_fkey"
+            columns: ["passkey_id"]
+            isOneToOne: false
+            referencedRelation: "operator_passkeys"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      step_up_challenges: {
+        Row: {
+          binding_hash: string
+          challenge: string
+          consumed_at: string | null
+          expires_at: string
+          id: string
+          issued_at: string
+          kind: Database["enums"]["Enums"]["control_request_kind"]
+          user_id: string
+        }
+        Insert: {
+          binding_hash: string
+          challenge: string
+          consumed_at?: string | null
+          expires_at: string
+          id?: string
+          issued_at?: string
+          kind: Database["enums"]["Enums"]["control_request_kind"]
+          user_id: string
+        }
+        Update: {
+          binding_hash?: string
+          challenge?: string
+          consumed_at?: string | null
+          expires_at?: string
+          id?: string
+          issued_at?: string
+          kind?: Database["enums"]["Enums"]["control_request_kind"]
+          user_id?: string
+        }
+        Relationships: []
+      }
       wallet_funding_events: {
         Row: {
           cluster: Database["enums"]["Enums"]["solana_cluster"]
@@ -2256,10 +2400,22 @@ export type Database = {
         Args: { p_holder: string; p_role: string; p_ttl_seconds: number }
         Returns: boolean
       }
+      begin_step_up: {
+        Args: {
+          p_binding_hash: unknown
+          p_kind: Database["enums"]["Enums"]["control_request_kind"]
+        }
+        Returns: {
+          challenge: string
+          expires_at: string
+          id: string
+        }[]
+      }
       current_operator_role: {
         Args: never
         Returns: Database["enums"]["Enums"]["operator_role"]
       }
+      has_aal2: { Args: never; Returns: boolean }
       has_role: {
         Args: { minimum: Database["enums"]["Enums"]["operator_role"] }
         Returns: boolean
@@ -2272,6 +2428,7 @@ export type Database = {
         Args: { p_holder: string; p_role: string }
         Returns: boolean
       }
+      session_aal: { Args: never; Returns: string }
     }
     Enums: {
       [_ in never]: never
@@ -3856,6 +4013,8 @@ export const Constants = {
         "RUN_READINESS_DRILL",
         "START_SESSION",
         "END_SESSION",
+        "REGISTER_PASSKEY",
+        "REVOKE_PASSKEY",
       ],
       control_request_state: ["PENDING", "ACCEPTED", "REJECTED", "EXPIRED"],
       custody_kind: [

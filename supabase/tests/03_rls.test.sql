@@ -27,7 +27,7 @@ reset role;
 
 -- authenticated operator: reads, may file a control request as themselves only, cannot write ledgers
 set local role authenticated;
-select set_config('request.jwt.claims', '{"sub":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"authenticated"}', true);
+select set_config('request.jwt.claims', '{"sub":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"authenticated","aal":"aal2"}', true);
 select is((select count(*) from ops.notifications)::int, 1, 'an operator reads notifications');
 select lives_ok(
   $$ insert into ops.control_requests (kind, payload) values ('PAUSE_NEW_ENTRIES', '{}') $$,

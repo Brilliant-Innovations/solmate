@@ -124,6 +124,7 @@
     ]
   },
   "dependencies": {
+    "@simplewebauthn/server": "^14.0.1",
     "@sol-agent-trader/contracts": "workspace:*",
     "@sol-agent-trader/observability": "workspace:*"
   }

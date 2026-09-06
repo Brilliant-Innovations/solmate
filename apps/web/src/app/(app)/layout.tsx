@@ -27,6 +27,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               Supabase is not configured for this deployment. Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>.
             </div>
           )}
+          {session && session.role !== null && session.aal !== 'aal2' && (
+            <div className="notice" role="alert">
+              Controls are locked: this session is <code>{session.aal ?? 'unverified'}</code>. Every control request needs a TOTP-verified (<code>aal2</code>) session (§5.7).{' '}
+              <a href="/settings">Enrol or verify an authenticator in Settings.</a>
+            </div>
+          )}
           {session && session.role === null && (
             <div className="notice" role="alert">
               Signed in as <code>{session.email}</code> but this user has no operator role. An admin adds a row to <code>ops.operators</code> for user id{' '}

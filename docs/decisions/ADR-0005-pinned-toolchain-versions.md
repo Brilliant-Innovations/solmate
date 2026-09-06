@@ -34,6 +34,8 @@ Execution Plan v4 §6 requires verifying current docs and pinning exact versions
 | `@turnkey/sdk-server` | 8.4.0 | ^8.4 | M3, execution-service only |
 | `@opentelemetry/api` | 1.9.1 | ^1.9 | |
 | `@sentry/nextjs` / `@sentry/node` | 10.73.0 | ^10.73 | |
+| `@simplewebauthn/server` | 14.0.1 (2026-09-05) | ^14.0.1 | worker only; passkey step-up verifier (ADR-0006, added 2026-09-06). Node ≥ 22 |
+| `@simplewebauthn/browser` | 14.0.0 (2026-09-02) | ^14.0.0 | web, from M9 (ADR-0006). `@simplewebauthn/types` is retired since v13; types ship in server/browser |
 
 ## Decision
 
