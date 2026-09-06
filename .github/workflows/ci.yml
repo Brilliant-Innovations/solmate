@@ -62,7 +62,7 @@ jobs:
             if node tools/check-artifacts.mjs --file /tmp/planted.js --policy risk-authorizer >/tmp/scan.log 2>&1; then
               echo "::error::artifact scan did not reject planted $1"; cat /tmp/scan.log; exit 1
             fi
-            grep -q "$3" /tmp/scan.log || { echo "::error::scan rejected planted $1 for a different reason"; cat /tmp/scan.log; exit 1; }
+            grep -qF -- "$3" /tmp/scan.log || { echo "::error::scan rejected planted $1 for a different reason"; cat /tmp/scan.log; exit 1; }
           }
           plant "pnpm path comment (openai)"      '// node_modules/.pnpm/openai@5.0.0/node_modules/openai/index.js' '"pattern": "openai"'
           plant "require of an LLM SDK"           'var p = require("@anthropic-ai/sdk");'                        '"pattern": "@anthropic-ai/*"'
@@ -96,7 +96,7 @@ jobs:
             set -e
             test "$code" = "1" || { echo "::error::$1 did not exit 1 with $2 set (exit $code)"; cat /tmp/standalone-$1/env.log; exit 1; }
             grep -q '"event":"env_invalid"' /tmp/standalone-$1/env.log || { echo "::error::$1: no env_invalid report"; cat /tmp/standalone-$1/env.log; exit 1; }
-            grep -q "$3" /tmp/standalone-$1/env.log || { echo "::error::$1: refusal did not name $2"; cat /tmp/standalone-$1/env.log; exit 1; }
+            grep -qF -- "$3" /tmp/standalone-$1/env.log || { echo "::error::$1: refusal did not name $2"; cat /tmp/standalone-$1/env.log; exit 1; }
             if grep -q plantedsecretvalue0001 /tmp/standalone-$1/env.log; then echo "::error::$1 echoed a credential value"; exit 1; fi
           }
           check worker            TURNKEY_API_PRIVATE_KEY      'worker must never hold TURNKEY_API_PRIVATE_KEY'
