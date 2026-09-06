@@ -1,0 +1,8 @@
+# Paths Nx must not scan for projects (Nx project-graph discovery).
+# Vercel writes its corepack/pnpm caches under apps/web/.vercel during builds.
+.vercel
+**/.vercel/**
+**/.next/**
+**/dist/**
+**/out-tsc/**
+**/node_modules/**
