@@ -7,17 +7,17 @@ import type { Database } from '@sol-agent-trader/db';
  * the operator's session cookie, so every read is subject to RLS and every write is limited to the
  * browser write surface (ops.control_requests). The service role never exists in this deployable.
  */
-export function supabaseConfig(): { url: string; anonKey: string } | null {
+export function supabaseConfig(): { url: string; publishableKey: string } | null {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
-  const anonKey = process.env['NEXT_PUBLIC_SUPABASE_ANON_KEY'];
-  return url && anonKey ? { url, anonKey } : null;
+  const publishableKey = process.env['NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'];
+  return url && publishableKey ? { url, publishableKey } : null;
 }
 
 export async function createSupabaseServerClient() {
   const cfg = supabaseConfig();
   if (!cfg) return null;
   const cookieStore = await cookies();
-  return createServerClient<Database>(cfg.url, cfg.anonKey, {
+  return createServerClient<Database>(cfg.url, cfg.publishableKey, {
     cookies: {
       getAll: () => cookieStore.getAll(),
       setAll: (list) => {

@@ -24,7 +24,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <main className="main">
           {!configured && (
             <div className="notice" data-tone="failed" role="alert">
-              Supabase is not configured for this deployment. Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
+              Supabase is not configured for this deployment. Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>.
             </div>
           )}
           {session && session.role === null && (

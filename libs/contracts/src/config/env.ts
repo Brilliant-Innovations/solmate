@@ -57,7 +57,7 @@ const Common = z.looseObject({
 
 export const WebEnv = Common.extend({
   NEXT_PUBLIC_SUPABASE_URL: Url,
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: NonEmpty,
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: NonEmpty,
   SENTRY_DSN_WEB: Url.optional(),
 });
 

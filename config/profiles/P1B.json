@@ -9,7 +9,7 @@
     "web": {
       "host": "vercel",
       "hostLabel": "vercel-web",
-      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SENTRY_DSN_WEB"],
+      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "SENTRY_DSN_WEB"],
       "egress": ["supabase", "sentry"],
       "durableJournal": "none"
     },

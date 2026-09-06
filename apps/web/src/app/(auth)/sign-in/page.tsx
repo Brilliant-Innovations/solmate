@@ -4,7 +4,7 @@ export const metadata = { title: 'Sign in · Solmate' };
 
 export default async function SignInPage({ searchParams }: { searchParams: Promise<{ error?: string; next?: string }> }) {
   const params = await searchParams;
-  const configured = Boolean(process.env['NEXT_PUBLIC_SUPABASE_URL'] && process.env['NEXT_PUBLIC_SUPABASE_ANON_KEY']);
+  const configured = Boolean(process.env['NEXT_PUBLIC_SUPABASE_URL'] && process.env['NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY']);
   return (
     <main className="main" style={{ maxWidth: '32rem', margin: '4rem auto' }}>
       <h1 style={{ marginTop: 0 }}>Solmate operator sign-in</h1>
@@ -14,7 +14,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
       </p>
       {!configured && (
         <div className="notice" data-tone="failed" role="alert">
-          Supabase is not configured for this deployment: set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
+          Supabase is not configured for this deployment: set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>.
         </div>
       )}
       {params.error && (

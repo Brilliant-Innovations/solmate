@@ -10,16 +10,16 @@ const PUBLIC_PATHS = ['/sign-in', '/api/health'];
 
 export async function proxy(request: NextRequest) {
   const url = process.env['NEXT_PUBLIC_SUPABASE_URL'];
-  const anonKey = process.env['NEXT_PUBLIC_SUPABASE_ANON_KEY'];
+  const publishableKey = process.env['NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'];
   const path = request.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path === p || path.startsWith(p + '/'));
 
   let response = NextResponse.next({ request });
-  if (!url || !anonKey) {
+  if (!url || !publishableKey) {
     return isPublic || path === '/' ? response : NextResponse.redirect(new URL('/sign-in', request.url));
   }
 
-  const supabase = createServerClient(url, anonKey, {
+  const supabase = createServerClient(url, publishableKey, {
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll: (list) => {

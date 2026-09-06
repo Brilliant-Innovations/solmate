@@ -65,7 +65,7 @@ describe('per-service environment schemas fail closed (§26.1, GUARDRAILS Part 4
   const common = { DEPLOYMENT_PROFILE: 'P0', SOLANA_CLUSTER: 'devnet' };
 
   it('web boots with anon credentials only and refuses a service-role key or a DB URL', () => {
-    const ok = { ...common, NEXT_PUBLIC_SUPABASE_URL: 'https://x.supabase.co', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'anon' };
+    const ok = { ...common, NEXT_PUBLIC_SUPABASE_URL: 'https://x.supabase.co', NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'anon' };
     expect(parseWebEnv(ok).DEPLOYMENT_PROFILE).toBe('P0');
     expect(() => parseWebEnv({ ...ok, SUPABASE_SERVICE_ROLE_KEY: 'svc' })).toThrow(/must never hold SUPABASE_SERVICE_ROLE_KEY/);
     expect(() => parseWebEnv({ ...ok, SUPABASE_DB_URL: 'postgres://x' })).toThrow(/must never hold SUPABASE_DB_URL/);
