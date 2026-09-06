@@ -1,0 +1,44 @@
+{
+  "profile": "P2",
+  "description": "Tiny attended live experiment. Logical isolation and Turnkey signer intact; live financial credentials run in a dedicated local VM that no coding-agent process can read (D65).",
+  "runtimeSubstrate": "workstation",
+  "physicalIsolation": false,
+  "liveCapitalAllowed": true,
+  "attendedRequired": true,
+  "services": {
+    "web": {
+      "host": "vercel",
+      "hostLabel": "vercel-web",
+      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SENTRY_DSN_WEB"],
+      "egress": ["supabase", "sentry"],
+      "durableJournal": "none"
+    },
+    "worker": {
+      "host": "workstation-isolated-vm",
+      "hostLabel": "isolated-vm",
+      "credentials": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_DB_URL", "PROJECTION_SIGNING_KEY_PKCS8", "PROJECTION_SIGNING_PUBLIC_KEY", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SENTRY_DSN_WORKER"],
+      "egress": ["supabase", "sentry", "birdeye", "helius", "jupiter", "lunarcrush", "cryptopanic", "llm-providers"],
+      "durableJournal": "local-disk"
+    },
+    "risk-authorizer": {
+      "host": "workstation-isolated-vm",
+      "hostLabel": "isolated-vm",
+      "credentials": ["SUPABASE_DB_URL", "RISK_AUTHORIZATION_KEY_PKCS8", "RISK_AUTHORIZATION_PUBLIC_KEY", "PROJECTION_VERIFICATION_PUBLIC_KEYS", "RELEASE_ATTESTATION_TRUST_FINGERPRINTS", "SOLANA_RPC_ALLOWLIST", "SENTRY_DSN_RISK_AUTHORIZER"],
+      "egress": ["supabase", "sentry", "solana-rpc-readonly"],
+      "durableJournal": "local-disk"
+    },
+    "execution-service": {
+      "host": "workstation-isolated-vm",
+      "hostLabel": "isolated-vm",
+      "credentials": ["SUPABASE_DB_URL", "EXECUTOR_GUARDRAILS_JSON", "RISK_AUTHORIZER_PUBLIC_KEYS", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SOLANA_RPC_PRIMARY", "SOLANA_RPC_SIMULATION", "EXECUTOR_JOURNAL_PATH", "TURNKEY_ORGANIZATION_ID", "TURNKEY_API_PUBLIC_KEY", "TURNKEY_API_PRIVATE_KEY", "TURNKEY_WALLET_ADDRESS", "SENTRY_DSN_EXECUTION_SERVICE"],
+      "egress": ["supabase", "sentry", "jupiter", "solana-rpc", "turnkey"],
+      "durableJournal": "local-disk"
+    }
+  },
+  "requiredChecks": ["ready_for_attended_tiny_live"],
+  "notes": [
+    "Operator-presence heartbeat required; loss pauses new entries (D65).",
+    "Capital attestation ceiling deliberately tiny (D56).",
+    "MONITORED_EXIT only unless the M8a Trigger lifecycle row is green (ADR-0004)."
+  ]
+}

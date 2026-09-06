@@ -1,0 +1,195 @@
+import { z } from 'zod';
+import { Bps, Ed25519PublicKeyHex, KeyId, MintAddress, SolanaAddress, SolanaCluster, Sha256Hex } from '../primitives.js';
+import { DeploymentProfile } from '../enums.js';
+
+/**
+ * Per-deployable environment schemas (blueprint §26.1 deployment secrets / trust roots, §26.2
+ * executor guardrails). Pure parsers over a string record; each service calls its own parser at
+ * startup and refuses to boot on failure.
+ *
+ * Trust separation is encoded as *absence*: a service schema rejects the presence of a credential
+ * it must never hold, so a misconfigured environment fails closed rather than silently widening a
+ * boundary (GUARDRAILS Part 4 Credentials).
+ */
+
+const Url = z.url();
+const NonEmpty = z.string().min(1);
+const Pkcs8Hex = z.string().regex(/^[0-9a-f]+$/).min(64);
+
+/** Comma-separated list of `inner` values (trimmed, empties dropped). */
+function Csv<T extends z.ZodType>(inner: T) {
+  return z.string().transform((s, ctx): z.output<T>[] => {
+    const parts = s.split(',').map((x) => x.trim()).filter(Boolean);
+    const r = z.array(inner).safeParse(parts);
+    if (!r.success) {
+      for (const issue of r.error.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: issue.path as (string | number)[] });
+      return z.NEVER;
+    }
+    return r.data as z.output<T>[];
+  });
+}
+
+/** Names that only one service may ever see. Used by every other service's schema to fail closed. */
+export const EXCLUSIVE_CREDENTIALS = {
+  serviceRole: 'SUPABASE_SERVICE_ROLE_KEY',
+  projectionSigningKey: 'PROJECTION_SIGNING_KEY_PKCS8',
+  riskAuthorizationKey: 'RISK_AUTHORIZATION_KEY_PKCS8',
+  signerCredential: 'TURNKEY_API_PRIVATE_KEY',
+  signerCredentialPublic: 'TURNKEY_API_PUBLIC_KEY',
+  emergencyOperatorPrivateKey: 'EMERGENCY_OPERATOR_KEY_PKCS8',
+} as const;
+
+function forbid(env: Record<string, unknown>, names: readonly string[], ctx: z.RefinementCtx, service: string): void {
+  for (const name of names) {
+    if (env[name] !== undefined && env[name] !== '') {
+      ctx.addIssue({ code: 'custom', message: `${service} must never hold ${name}`, path: [name] });
+    }
+  }
+}
+
+const Common = z.looseObject({
+  DEPLOYMENT_PROFILE: DeploymentProfile,
+  SOLANA_CLUSTER: SolanaCluster,
+  SERVICE_INSTANCE_ID: NonEmpty.optional(),
+});
+
+// --- web ------------------------------------------------------------------------------------------
+
+export const WebEnv = Common.extend({
+  NEXT_PUBLIC_SUPABASE_URL: Url,
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: NonEmpty,
+  SENTRY_DSN_WEB: Url.optional(),
+});
+
+export function parseWebEnv(env: Record<string, string | undefined>) {
+  return WebEnv.superRefine((v, ctx) =>
+    forbid(v, [
+      EXCLUSIVE_CREDENTIALS.serviceRole,
+      EXCLUSIVE_CREDENTIALS.projectionSigningKey,
+      EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
+      EXCLUSIVE_CREDENTIALS.signerCredential,
+      EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
+      EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      'SUPABASE_DB_URL',
+      'DATABASE_URL',
+    ], ctx, 'web'),
+  ).parse(env);
+}
+
+// --- worker ---------------------------------------------------------------------------------------
+
+export const WorkerEnv = Common.extend({
+  SUPABASE_URL: Url,
+  SUPABASE_SERVICE_ROLE_KEY: NonEmpty,
+  SUPABASE_DB_URL: NonEmpty,
+  PROJECTION_SIGNING_KEY_PKCS8: Pkcs8Hex,
+  PROJECTION_SIGNING_PUBLIC_KEY: Ed25519PublicKeyHex,
+  EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
+  SENTRY_DSN_WORKER: Url.optional(),
+});
+
+export function parseWorkerEnv(env: Record<string, string | undefined>) {
+  return WorkerEnv.superRefine((v, ctx) =>
+    forbid(v, [
+      EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
+      EXCLUSIVE_CREDENTIALS.signerCredential,
+      EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
+      EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+    ], ctx, 'worker'),
+  ).parse(env);
+}
+
+// --- risk-authorizer ------------------------------------------------------------------------------
+
+export const RiskAuthorizerEnv = Common.extend({
+  SUPABASE_DB_URL: NonEmpty,
+  RISK_AUTHORIZATION_KEY_PKCS8: Pkcs8Hex,
+  RISK_AUTHORIZATION_PUBLIC_KEY: Ed25519PublicKeyHex,
+  PROJECTION_VERIFICATION_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
+  RELEASE_ATTESTATION_TRUST_FINGERPRINTS: Csv(Sha256Hex),
+  SOLANA_RPC_ALLOWLIST: Csv(Url),
+  SENTRY_DSN_RISK_AUTHORIZER: Url.optional(),
+});
+
+export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) {
+  return RiskAuthorizerEnv.superRefine((v, ctx) =>
+    forbid(v, [
+      EXCLUSIVE_CREDENTIALS.serviceRole,
+      EXCLUSIVE_CREDENTIALS.projectionSigningKey,
+      EXCLUSIVE_CREDENTIALS.signerCredential,
+      EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
+      EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      'ANTHROPIC_API_KEY',
+      'OPENAI_API_KEY',
+      'BIRDEYE_API_KEY',
+      'LUNARCRUSH_API_KEY',
+      'CRYPTOPANIC_API_KEY',
+    ], ctx, 'risk-authorizer'),
+  ).parse(env);
+}
+
+// --- execution-service (§26.2 absolute guardrails live here, never in the database) --------------
+
+export const ExecutorGuardrails = z.strictObject({
+  liveCapabilityEnabled: z.boolean(),
+  cluster: SolanaCluster,
+  tradingWalletAddress: SolanaAddress,
+  allowedSettlementMints: z.array(MintAddress).min(1),
+  allowedFundingMints: z.array(MintAddress).min(1),
+  maxPerEntryNotionalBaseUnits: z.string().regex(/^(0|[1-9][0-9]*)$/),
+  maxAggregateNonSettlementExposureBaseUnits: z.string().regex(/^(0|[1-9][0-9]*)$/),
+  maxSignerOutageUnprotectedExposureBaseUnits: z.string().regex(/^(0|[1-9][0-9]*)$/),
+  maxEmergencyCloseTxBaseUnits: z.string().regex(/^(0|[1-9][0-9]*)$/).nullable(),
+  hardMaxSlippageBps: Bps,
+  hardMaxProtectiveSlippageBps: Bps,
+  acceptedRiskAuthorizerKeyIds: z.array(KeyId).min(1),
+  acceptedEmergencyOperatorKeyIds: z.array(KeyId).min(1),
+  expectedSignerPolicyDigest: Sha256Hex.nullable(),
+  expectedSignerWorkloadFingerprint: z.string().nullable(),
+});
+export type ExecutorGuardrails = z.infer<typeof ExecutorGuardrails>;
+
+export const ExecutionServiceEnv = Common.extend({
+  SUPABASE_DB_URL: NonEmpty,
+  EXECUTOR_GUARDRAILS_JSON: z.string().transform((s, ctx) => {
+    try {
+      return ExecutorGuardrails.parse(JSON.parse(s));
+    } catch (e) {
+      ctx.addIssue({ code: 'custom', message: `EXECUTOR_GUARDRAILS_JSON invalid: ${e instanceof Error ? e.message : String(e)}` });
+      return z.NEVER;
+    }
+  }),
+  RISK_AUTHORIZER_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
+  EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
+  SOLANA_RPC_PRIMARY: Url,
+  SOLANA_RPC_SIMULATION: Url,
+  SIGNER_BACKEND: z.enum(['SOFTWARE_DEV', 'TURNKEY']),
+  TURNKEY_ORGANIZATION_ID: NonEmpty.optional(),
+  TURNKEY_API_PUBLIC_KEY: NonEmpty.optional(),
+  TURNKEY_API_PRIVATE_KEY: NonEmpty.optional(),
+  TURNKEY_WALLET_ADDRESS: SolanaAddress.optional(),
+  EXECUTOR_JOURNAL_PATH: NonEmpty,
+  SENTRY_DSN_EXECUTION_SERVICE: Url.optional(),
+});
+
+export function parseExecutionServiceEnv(env: Record<string, string | undefined>) {
+  return ExecutionServiceEnv.superRefine((v, ctx) => {
+    forbid(v, [
+      EXCLUSIVE_CREDENTIALS.serviceRole,
+      EXCLUSIVE_CREDENTIALS.projectionSigningKey,
+      EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
+      EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      'ANTHROPIC_API_KEY',
+      'OPENAI_API_KEY',
+      'LUNARCRUSH_API_KEY',
+      'CRYPTOPANIC_API_KEY',
+    ], ctx, 'execution-service');
+    // D47: a software signer can never be selected where live capability is enabled on mainnet.
+    if (v.SIGNER_BACKEND === 'SOFTWARE_DEV' && v.EXECUTOR_GUARDRAILS_JSON.liveCapabilityEnabled && v.EXECUTOR_GUARDRAILS_JSON.cluster === 'mainnet-beta') {
+      ctx.addIssue({ code: 'custom', message: 'SOFTWARE_DEV signer cannot be combined with live capability on mainnet-beta (D47)', path: ['SIGNER_BACKEND'] });
+    }
+    if (v.SIGNER_BACKEND === 'TURNKEY' && !(v.TURNKEY_ORGANIZATION_ID && v.TURNKEY_API_PUBLIC_KEY && v.TURNKEY_API_PRIVATE_KEY && v.TURNKEY_WALLET_ADDRESS)) {
+      ctx.addIssue({ code: 'custom', message: 'TURNKEY signer requires organization id, API key pair and wallet address', path: ['SIGNER_BACKEND'] });
+    }
+  }).parse(env);
+}

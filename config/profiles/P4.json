@@ -1,0 +1,40 @@
+{
+  "profile": "P4",
+  "description": "Hardened autonomous LIVE_AUTO with meaningful capital: worker, risk-authorizer and execution-service on three separate fixed-price hosts (DigitalOcean reference) with VPC/firewall boundaries and service-specific attached persistence.",
+  "runtimeSubstrate": "three-host",
+  "physicalIsolation": true,
+  "liveCapitalAllowed": true,
+  "attendedRequired": false,
+  "services": {
+    "web": {
+      "host": "vercel",
+      "hostLabel": "vercel-web",
+      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SENTRY_DSN_WEB"],
+      "egress": ["supabase", "sentry"],
+      "durableJournal": "none"
+    },
+    "worker": {
+      "host": "dedicated-host",
+      "hostLabel": "do-worker",
+      "credentials": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_DB_URL", "PROJECTION_SIGNING_KEY_PKCS8", "PROJECTION_SIGNING_PUBLIC_KEY", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SENTRY_DSN_WORKER"],
+      "egress": ["supabase", "sentry", "birdeye", "helius", "jupiter", "lunarcrush", "cryptopanic", "llm-providers"],
+      "durableJournal": "attached-volume"
+    },
+    "risk-authorizer": {
+      "host": "dedicated-host",
+      "hostLabel": "do-risk-authorizer",
+      "credentials": ["SUPABASE_DB_URL", "RISK_AUTHORIZATION_KEY_PKCS8", "RISK_AUTHORIZATION_PUBLIC_KEY", "PROJECTION_VERIFICATION_PUBLIC_KEYS", "RELEASE_ATTESTATION_TRUST_FINGERPRINTS", "SOLANA_RPC_ALLOWLIST", "SENTRY_DSN_RISK_AUTHORIZER"],
+      "egress": ["supabase", "sentry", "solana-rpc-readonly"],
+      "durableJournal": "attached-volume"
+    },
+    "execution-service": {
+      "host": "dedicated-host",
+      "hostLabel": "do-execution-service",
+      "credentials": ["SUPABASE_DB_URL", "EXECUTOR_GUARDRAILS_JSON", "RISK_AUTHORIZER_PUBLIC_KEYS", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SOLANA_RPC_PRIMARY", "SOLANA_RPC_SIMULATION", "EXECUTOR_JOURNAL_PATH", "TURNKEY_ORGANIZATION_ID", "TURNKEY_API_PUBLIC_KEY", "TURNKEY_API_PRIVATE_KEY", "TURNKEY_WALLET_ADDRESS", "SENTRY_DSN_EXECUTION_SERVICE"],
+      "egress": ["supabase", "sentry", "jupiter", "solana-rpc", "turnkey", "jito"],
+      "durableJournal": "attached-volume"
+    }
+  },
+  "requiredChecks": ["ready_for_hardened_live_auto"],
+  "notes": ["Three distinct Droplets, VPC/firewall boundaries, separate service secrets (P0 acceptance, deferred Terraform per ADR-0002)."]
+}

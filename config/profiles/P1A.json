@@ -1,0 +1,40 @@
+{
+  "profile": "P1A",
+  "description": "Attended PAPER session on the workstation or a Vercel Sandbox. No live capital.",
+  "runtimeSubstrate": "workstation",
+  "physicalIsolation": false,
+  "liveCapitalAllowed": false,
+  "attendedRequired": true,
+  "services": {
+    "web": {
+      "host": "vercel",
+      "hostLabel": "vercel-web",
+      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SENTRY_DSN_WEB"],
+      "egress": ["supabase", "sentry"],
+      "durableJournal": "none"
+    },
+    "worker": {
+      "host": "workstation",
+      "hostLabel": "workstation",
+      "credentials": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_DB_URL", "PROJECTION_SIGNING_KEY_PKCS8", "PROJECTION_SIGNING_PUBLIC_KEY", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SENTRY_DSN_WORKER"],
+      "egress": ["supabase", "sentry", "birdeye", "helius", "jupiter", "lunarcrush", "cryptopanic", "llm-providers"],
+      "durableJournal": "none"
+    },
+    "risk-authorizer": {
+      "host": "workstation",
+      "hostLabel": "workstation",
+      "credentials": ["SUPABASE_DB_URL", "RISK_AUTHORIZATION_KEY_PKCS8", "RISK_AUTHORIZATION_PUBLIC_KEY", "PROJECTION_VERIFICATION_PUBLIC_KEYS", "RELEASE_ATTESTATION_TRUST_FINGERPRINTS", "SOLANA_RPC_ALLOWLIST", "SENTRY_DSN_RISK_AUTHORIZER"],
+      "egress": ["supabase", "sentry", "solana-rpc-readonly"],
+      "durableJournal": "none"
+    },
+    "execution-service": {
+      "host": "workstation",
+      "hostLabel": "workstation",
+      "credentials": ["SUPABASE_DB_URL", "EXECUTOR_GUARDRAILS_JSON", "RISK_AUTHORIZER_PUBLIC_KEYS", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SOLANA_RPC_PRIMARY", "SOLANA_RPC_SIMULATION", "EXECUTOR_JOURNAL_PATH", "SENTRY_DSN_EXECUTION_SERVICE"],
+      "egress": ["supabase", "sentry", "jupiter", "solana-rpc"],
+      "durableJournal": "local-disk"
+    }
+  },
+  "requiredChecks": ["contracts_digest", "boundary_lint", "invariant_map", "feeds_fresh", "reconciliation_clean"],
+  "notes": ["Paper adapter requests real Jupiter quotes and never signs (§17). No financial emergency journal is required (D58)."]
+}

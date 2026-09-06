@@ -1,0 +1,40 @@
+{
+  "profile": "P1B",
+  "description": "Unattended all-session PAPER on the cheapest measured runtime, to collect unbiased Asia/Europe/US/weekend data. Downtime costs research coverage, not capital.",
+  "runtimeSubstrate": "vercel-sandbox",
+  "physicalIsolation": false,
+  "liveCapitalAllowed": false,
+  "attendedRequired": false,
+  "services": {
+    "web": {
+      "host": "vercel",
+      "hostLabel": "vercel-web",
+      "credentials": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SENTRY_DSN_WEB"],
+      "egress": ["supabase", "sentry"],
+      "durableJournal": "none"
+    },
+    "worker": {
+      "host": "vercel-sandbox",
+      "hostLabel": "sandbox",
+      "credentials": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_DB_URL", "PROJECTION_SIGNING_KEY_PKCS8", "PROJECTION_SIGNING_PUBLIC_KEY", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SENTRY_DSN_WORKER"],
+      "egress": ["supabase", "sentry", "birdeye", "helius", "jupiter", "lunarcrush", "cryptopanic", "llm-providers"],
+      "durableJournal": "none"
+    },
+    "risk-authorizer": {
+      "host": "vercel-sandbox",
+      "hostLabel": "sandbox",
+      "credentials": ["SUPABASE_DB_URL", "RISK_AUTHORIZATION_KEY_PKCS8", "RISK_AUTHORIZATION_PUBLIC_KEY", "PROJECTION_VERIFICATION_PUBLIC_KEYS", "RELEASE_ATTESTATION_TRUST_FINGERPRINTS", "SOLANA_RPC_ALLOWLIST", "SENTRY_DSN_RISK_AUTHORIZER"],
+      "egress": ["supabase", "sentry", "solana-rpc-readonly"],
+      "durableJournal": "none"
+    },
+    "execution-service": {
+      "host": "vercel-sandbox",
+      "hostLabel": "sandbox",
+      "credentials": ["SUPABASE_DB_URL", "EXECUTOR_GUARDRAILS_JSON", "RISK_AUTHORIZER_PUBLIC_KEYS", "EMERGENCY_OPERATOR_PUBLIC_KEYS", "SOLANA_RPC_PRIMARY", "SOLANA_RPC_SIMULATION", "EXECUTOR_JOURNAL_PATH", "SENTRY_DSN_EXECUTION_SERVICE"],
+      "egress": ["supabase", "sentry", "jupiter", "solana-rpc"],
+      "durableJournal": "none"
+    }
+  },
+  "requiredChecks": ["contracts_digest", "boundary_lint", "invariant_map", "feeds_fresh", "reconciliation_clean", "restart_recovery"],
+  "notes": ["Planned restarts are acceptable and measured (D65). Paper only; the executor never signs here."]
+}
