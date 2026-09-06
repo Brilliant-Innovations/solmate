@@ -92,3 +92,26 @@ Required before M4 (or any handler/UI) builds on this substrate:
 4. **R2-03** — add the "path comments present / minify false" canary to `check-artifacts.mjs` and an allowlist for `risk-authorizer` and `execution-service`.
 
 Recommended before review #1 at M3: R2-05, R2-06, R2-09, R2-11, R2-12, R2-14, R2-15. The rest are hygiene.
+
+## Fix status (authoring session, 2026-09-06, after the review)
+
+| ID | Status | Where |
+| --- | --- | --- |
+| R2-01 | Fixed | `policy/step-up.ts` (`FIRST_PASSKEY_AAL2`, `stepUpRequired(kind, payload, ctx)`), migration `20260906001200` (`ops.session_recent_totp`, `usable_from`, CRITICAL notification trigger), `verify.ts` (`STEP_UP_REQUIRED`, `PASSKEY_COOLING`), ADR-0006 amendment, pgTAP 06 + worker spec |
+| R2-02 | Fixed | `apps/*/src/main.ts` validate env first (`env_invalid`, names only); `--print-digest` for D50 checks; CI step proves each service refuses a foreign credential without echoing it; parsers report forbidden names even when required names are missing |
+| R2-03 | Fixed | canary (path comments present, `minify` off in every configuration), allowlist `tools/artifact-allowlist.json` for risk-authorizer/execution-service, extended LLM list; CI plants five markers and a blind bundle |
+| R2-04 | Fixed | `ops.consume_step_up_challenge()` (service role only, atomic), `begin_step_up` no longer deletes; pgTAP: double consume fails, expired+asserted challenge never blocks |
+| R2-05 | Fixed | trailing `*` matches zero or more; CI plants exact `lunarcrush` |
+| R2-06 | Fixed | `apps/web/src/lib/safe-next.ts` used by proxy, sign-in and MFA actions; property-tested |
+| R2-07 | Accepted trade-off | ADR-0006 amendment point 5; forced enrolment with the §20.26 UI in M9 |
+| R2-08 | Fixed | software `webauthn.create` ceremony (fmt none) round-tripped into a passing assertion; rawId-only mismatch; 0/0 counter documented |
+| R2-09 | Fixed | `boundPayload`, `BOUND_PAYLOAD_EXCLUDED_KEYS`; hash test |
+| R2-10 | Fixed | `policy.StepUpPolicy` collected into the registry (lock now 211 schemas) |
+| R2-11 | Fixed | length bounds on every browser-supplied field, `publicKeyCose` ≤ 2048 (contract and DB), `stepUpAssertionRef: Uuid` |
+| R2-12 | Fixed | `.dockerignore` patterns with `**/` |
+| R2-13 | Fixed | explicit tag push loop |
+| R2-14 | Fixed | audit pgTAP scoped to its own rows; passes on a non-empty database |
+| R2-15 | Fixed | plan §8 evidence names corrected |
+| R2-16 | Fixed | `tools/forbidden-packages.mjs` shared by ESLint and the scan; provider clients now banned at lint for both isolated services |
+| R2-17 | Fixed | `__require` matched; dynamic `require(<expr>)` flagged; uppercase specifiers no longer skipped |
+| R2-18 | Fixed | `/api/*` exemption removed; only `PUBLIC_PATHS` bypass the MFA redirect |

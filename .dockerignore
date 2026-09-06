@@ -1,4 +1,5 @@
-# Build context for deploy/Dockerfile: sources and manifests only. No local state, no secrets.
+# Build context for deploy/Dockerfile: sources and manifests only. No local state, no secrets,
+# at any depth (review R2-12).
 .git
 .github
 .nx
@@ -6,7 +7,6 @@
 .vscode
 .idea
 .claude
-node_modules
 **/node_modules
 **/dist
 **/.next
@@ -14,17 +14,18 @@ node_modules
 **/coverage
 **/out-tsc
 **/*.tsbuildinfo
-tmp
+**/tmp
 docs
 supabase/.temp
 supabase/.branches
 deploy/profile-0
-*.log
-.env
-.env.*
+**/*.log
+**/.env
+**/.env.*
 !.env.example
-*.pem
-*.key
-*.p12
-*.keypair.json
-id.json
+!deploy/profile-0/.env.*.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.keypair.json
+**/id.json

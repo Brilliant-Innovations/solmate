@@ -53,25 +53,55 @@ jobs:
         run: pnpm nx run-many -t lint typecheck test build --parallel=3 --output-style=static
       - name: Built bundles carry no banned package and are self-contained (GUARDRAILS Part 4, D50)
         run: node tools/check-artifacts.mjs
-      - name: Artifact scan is live (a planted LLM SDK marker must fail)
+      - name: Artifact scan is live (planted markers must fail, each for the right reason)
         run: |
-          cp apps/risk-authorizer/dist/main.js /tmp/planted.js
-          printf '\n// node_modules/.pnpm/openai@5.0.0/node_modules/openai/index.js\nvar planted = 1;\n' >> /tmp/planted.js
-          if node tools/check-artifacts.mjs --file /tmp/planted.js --policy risk-authorizer >/tmp/scan.log 2>&1; then
-            echo "::error::artifact scan did not reject a planted openai marker"; cat /tmp/scan.log; exit 1
+          set -euo pipefail
+          plant() { # $1 = label, $2 = text to append, $3 = expected substring in the report
+            cp apps/risk-authorizer/dist/main.js /tmp/planted.js
+            printf '%s\n' "$2" >> /tmp/planted.js
+            if node tools/check-artifacts.mjs --file /tmp/planted.js --policy risk-authorizer >/tmp/scan.log 2>&1; then
+              echo "::error::artifact scan did not reject planted $1"; cat /tmp/scan.log; exit 1
+            fi
+            grep -q "$3" /tmp/scan.log || { echo "::error::scan rejected planted $1 for a different reason"; cat /tmp/scan.log; exit 1; }
+          }
+          plant "pnpm path comment (openai)"      '// node_modules/.pnpm/openai@5.0.0/node_modules/openai/index.js' '"pattern": "openai"'
+          plant "require of an LLM SDK"           'var p = require("@anthropic-ai/sdk");'                        '"pattern": "@anthropic-ai/*"'
+          plant "exact provider client name"      '// node_modules/lunarcrush/index.js'                          '"pattern": "lunarcrush*"'
+          plant "package outside the allowlist"   '// node_modules/.pnpm/left-pad@1.3.0/node_modules/left-pad/index.js' '"notAllowlisted"'
+          plant "dynamic require"                 'var q = require(someVariable);'                               '"dynamicRequires"'
+          # A blind scan must fail, not pass: strip the module-path comments and expect the canary to trip.
+          sed '/^\/\/ /d' apps/risk-authorizer/dist/main.js > /tmp/blind.js
+          if node tools/check-artifacts.mjs --file /tmp/blind.js --policy risk-authorizer >/tmp/scan.log 2>&1; then
+            echo "::error::artifact scan passed a bundle without module-path comments"; cat /tmp/scan.log; exit 1
           fi
-          grep -q '"pattern": "openai"' /tmp/scan.log || { echo "::error::scan failed for a different reason"; cat /tmp/scan.log; exit 1; }
+          grep -q '"canary"' /tmp/scan.log || { echo "::error::blind bundle rejected for a different reason"; cat /tmp/scan.log; exit 1; }
       - name: Bundles run standalone and report the locked contract digest (D50)
         run: |
           set -euo pipefail
           locked=$(node -e 'console.log(require("./libs/contracts/contract-set.lock.json").digest)')
           for s in worker risk-authorizer execution-service; do
             mkdir -p /tmp/standalone-$s && cp apps/$s/dist/main.js /tmp/standalone-$s/main.js
-            (cd /tmp/standalone-$s && DEPLOYMENT_PROFILE=P0 node main.js > startup.log)
+            (cd /tmp/standalone-$s && node main.js --print-digest > startup.log)
             reported=$(node tools/startup-digest.mjs /tmp/standalone-$s/startup.log)
             echo "$s reports $reported"
             test "$reported" = "$locked" || { echo "::error::$s bundle reports $reported, lock is $locked"; exit 1; }
           done
+      - name: Services refuse a credential outside their trust class and never echo its value (§26.1, Part 4)
+        run: |
+          set -euo pipefail
+          check() { # $1 = service, $2 = forbidden variable, $3 = expected message fragment
+            set +e
+            (cd /tmp/standalone-$1 && env -i PATH="$PATH" DEPLOYMENT_PROFILE=P0 SOLANA_CLUSTER=devnet "$2=plantedsecretvalue0001" node main.js > env.log 2>&1)
+            code=$?
+            set -e
+            test "$code" = "1" || { echo "::error::$1 did not exit 1 with $2 set (exit $code)"; cat /tmp/standalone-$1/env.log; exit 1; }
+            grep -q '"event":"env_invalid"' /tmp/standalone-$1/env.log || { echo "::error::$1: no env_invalid report"; cat /tmp/standalone-$1/env.log; exit 1; }
+            grep -q "$3" /tmp/standalone-$1/env.log || { echo "::error::$1: refusal did not name $2"; cat /tmp/standalone-$1/env.log; exit 1; }
+            if grep -q plantedsecretvalue0001 /tmp/standalone-$1/env.log; then echo "::error::$1 echoed a credential value"; exit 1; fi
+          }
+          check worker            TURNKEY_API_PRIVATE_KEY      'worker must never hold TURNKEY_API_PRIVATE_KEY'
+          check risk-authorizer   SUPABASE_SERVICE_ROLE_KEY    'risk-authorizer must never hold SUPABASE_SERVICE_ROLE_KEY'
+          check execution-service RISK_AUTHORIZATION_KEY_PKCS8 'execution-service must never hold RISK_AUTHORIZATION_KEY_PKCS8'
 
   database:
     name: schema migrations · pgTAP · generated types in sync

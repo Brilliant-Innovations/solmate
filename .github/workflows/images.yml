@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
           IMAGE="${{ steps.name.outputs.image }}:sha-${GITHUB_SHA}"
           docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-            --tmpfs /tmp -e DEPLOYMENT_PROFILE=P0 "$IMAGE" > /tmp/startup.log
+            --tmpfs /tmp "$IMAGE" main.js --print-digest > /tmp/startup.log
           cat /tmp/startup.log
           reported=$(node tools/startup-digest.mjs /tmp/startup.log)
           locked=$(node -e 'console.log(require("./libs/contracts/contract-set.lock.json").digest)')
@@ -87,10 +87,23 @@ jobs:
           echo "${{ matrix.service }}=$reported" >> "$GITHUB_OUTPUT"
           # The runtime image carries no package manager and no node_modules.
           docker run --rm --entrypoint sh "$IMAGE" -c 'test ! -d /app/node_modules && test ! -d /usr/local/lib/node_modules && for t in npm npx pnpm yarn corepack; do ! command -v $t >/dev/null || { echo "$t present"; exit 1; }; done'
+          # A normal start validates the environment fail-closed: no env → exit 1 with the missing names, never a value.
+          set +e
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp \
+            -e TURNKEY_API_PRIVATE_KEY=plantedsecretvalue0001 "$IMAGE" > /tmp/noenv.log 2>&1
+          code=$?
+          set -e
+          test "$code" = "1" || { echo "::error::${{ matrix.service }} started without a valid environment (exit $code)"; cat /tmp/noenv.log; exit 1; }
+          grep -q '"event":"env_invalid"' /tmp/noenv.log || { echo "::error::no env_invalid report"; cat /tmp/noenv.log; exit 1; }
+          if grep -q plantedsecretvalue0001 /tmp/noenv.log; then echo "::error::a credential value leaked into the startup error"; exit 1; fi
 
-      - name: Push
+      - name: Push (explicit tags only)
         if: github.event_name != 'pull_request'
-        run: docker image push --all-tags "${{ steps.name.outputs.image }}"
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && docker image push "$tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
 
   digests-agree:
     name: all images share one contract digest

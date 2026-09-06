@@ -9,25 +9,8 @@ import nx from '@nx/eslint-plugin';
  * constraint for a financial deployable is a reviewed change, not a convenience.
  */
 
-const LLM_SDKS = [
-  '@anthropic-ai/*',
-  'openai',
-  '@google/generative-ai',
-  '@google/genai',
-  '@ai-sdk/*',
-  'ai',
-];
-const SIGNER_SDKS = ['@turnkey/*', '@privy-io/*'];
-const DEX_SDKS = ['@jup-ag/*', '@raydium-io/*', '@orca-so/*', '@meteora-ag/*'];
-const BROWSER_STACK = [
-  '@solana/kit-plugin-wallet',
-  '@solana/react',
-  'react',
-  'react-dom',
-  'next',
-  '@base-ui/react',
-];
-const WALLET_STANDARD = ['@wallet-standard/*', '@solana/wallet-standard*'];
+// One list for lint and for the built-artifact scan (tools/check-artifacts.mjs).
+import { BROWSER_STACK, DEX_SDKS, LLM_SDKS, PROVIDER_CLIENTS, SIGNER_SDKS, WALLET_STANDARD } from './tools/forbidden-packages.mjs';
 
 export default [
   ...nx.configs['flat/base'],
@@ -65,6 +48,7 @@ export default [
                 ...DEX_SDKS,
                 ...BROWSER_STACK,
                 ...WALLET_STANDARD,
+                ...PROVIDER_CLIENTS,
               ],
             },
             {
@@ -77,7 +61,7 @@ export default [
                 'scope:observability',
                 'scope:replay',
               ],
-              bannedExternalImports: [...LLM_SDKS, ...BROWSER_STACK, ...WALLET_STANDARD],
+              bannedExternalImports: [...LLM_SDKS, ...BROWSER_STACK, ...WALLET_STANDARD, ...PROVIDER_CLIENTS],
             },
 
             // ---- General worker: everything except browser wallet code ----------

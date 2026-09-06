@@ -186,7 +186,8 @@ export const ControlRequest = z.object({
   requestedBy: Uuid,
   kind: ControlRequestKind,
   payload: JsonRecord,
-  stepUpAssertionRef: z.string().min(1).max(128).nullable(),
+  /** ops.step_up_assertions.id once the worker verified the evidence for this request. */
+  stepUpAssertionRef: Uuid.nullable(),
   state: ControlRequestState,
   resolution: JsonRecord.nullable(),
   createdAt: Instant,

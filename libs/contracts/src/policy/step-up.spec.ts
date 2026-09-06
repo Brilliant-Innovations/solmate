@@ -1,11 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { CapitalAuthority, ControlRequestKind } from '../enums.js';
-import { FAST_CONTROLS, STEP_UP_POLICY, stepUpBindingHash, stepUpRequired } from './step-up.js';
+import { contractRegistry } from '../digest/registry.js';
+import { boundPayload, FAST_CONTROLS, STEP_UP_POLICY, StepUpPolicy, stepUpBindingHash, stepUpRequired } from './step-up.js';
 
 describe('D41 step-up policy', () => {
-  it('classifies every control request kind', () => {
+  it('classifies every control request kind and the table is part of the contract digest', () => {
     for (const kind of ControlRequestKind.options) expect(STEP_UP_POLICY[kind]).toBeDefined();
+    expect(StepUpPolicy.safeParse(STEP_UP_POLICY).success).toBe(true);
+    expect(StepUpPolicy.safeParse({ ...STEP_UP_POLICY, ARM_RELEASE: 'FAST' }).success).toBe(false);
+    expect(contractRegistry.has('policy.StepUpPolicy')).toBe(true);
   });
 
   it('keeps exactly the risk-reducing/neutral controls fast', () => {
@@ -31,18 +35,22 @@ describe('D41 step-up policy', () => {
     expect(stepUpRequired('SET_REQUESTED_MODE', { authority: 'live' })).toBe(true);
   });
 
-  it('the first passkey needs an aal2 session, not a passkey', () => {
-    expect(STEP_UP_POLICY.REGISTER_PASSKEY).toBe('AAL2_ONLY');
-    expect(stepUpRequired('REGISTER_PASSKEY', {})).toBe(false);
+  it('only the first passkey may be added with TOTP alone; later ones need an existing passkey; unknown context fails closed (R2-01)', () => {
+    expect(STEP_UP_POLICY.REGISTER_PASSKEY).toBe('FIRST_PASSKEY_AAL2');
+    expect(stepUpRequired('REGISTER_PASSKEY', {}, { activePasskeys: 0 })).toBe(false);
+    fc.assert(fc.property(fc.integer({ min: 1, max: 50 }), (n) => stepUpRequired('REGISTER_PASSKEY', {}, { activePasskeys: n }) === true));
+    expect(stepUpRequired('REGISTER_PASSKEY', {})).toBe(true);
   });
 
-  it('binding hash is canonical: key order and whitespace do not matter, any value change does', async () => {
-    const a = await stepUpBindingHash('ARM_RELEASE', { releaseId: 'r1', authority: 'LIVE_AUTO' });
-    const b = await stepUpBindingHash('ARM_RELEASE', { authority: 'LIVE_AUTO', releaseId: 'r1' });
-    const c = await stepUpBindingHash('ARM_RELEASE', { authority: 'LIVE_AUTO', releaseId: 'r2' });
-    const d = await stepUpBindingHash('PROMOTE_RELEASE', { authority: 'LIVE_AUTO', releaseId: 'r1' });
+  it('binding hash ignores ceremony evidence keys and is canonical otherwise (R2-09)', async () => {
+    const base = { releaseId: 'r1', authority: 'LIVE_AUTO' };
+    const a = await stepUpBindingHash('ARM_RELEASE', base);
+    const b = await stepUpBindingHash('ARM_RELEASE', { authority: 'LIVE_AUTO', releaseId: 'r1', stepUp: { challengeId: 'x' }, registration: { id: 'y' } });
+    const c = await stepUpBindingHash('ARM_RELEASE', { ...base, releaseId: 'r2' });
+    const d = await stepUpBindingHash('PROMOTE_RELEASE', base);
     expect(a).toBe(b);
     expect(a).not.toBe(c);
     expect(a).not.toBe(d);
+    expect(boundPayload({ x: 1, stepUp: {}, registration: {} })).toEqual({ x: 1 });
   });
 });

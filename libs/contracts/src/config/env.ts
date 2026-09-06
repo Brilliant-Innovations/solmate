@@ -39,12 +39,27 @@ export const EXCLUSIVE_CREDENTIALS = {
   emergencyOperatorPrivateKey: 'EMERGENCY_OPERATOR_KEY_PKCS8',
 } as const;
 
-function forbid(env: Record<string, unknown>, names: readonly string[], ctx: z.RefinementCtx, service: string): void {
+function forbiddenIssues(env: Record<string, unknown>, names: readonly string[], service: string): z.core.$ZodIssue[] {
+  const issues: z.core.$ZodIssue[] = [];
   for (const name of names) {
     if (env[name] !== undefined && env[name] !== '') {
-      ctx.addIssue({ code: 'custom', message: `${service} must never hold ${name}`, path: [name] });
+      issues.push({ code: 'custom', message: `${service} must never hold ${name}`, path: [name] });
     }
   }
+  return issues;
+}
+
+/**
+ * Parse a service environment. Forbidden credentials are reported first and regardless of whether
+ * the required ones are present (review R2-02): an environment that is both incomplete and carries
+ * a foreign credential names the credential, never its value.
+ */
+function parseService<T extends z.ZodType>(schema: T, forbidden: readonly string[], service: string, env: Record<string, string | undefined>): z.output<T> {
+  const issues = forbiddenIssues(env, forbidden, service);
+  const r = schema.safeParse(env);
+  if (!r.success) issues.push(...r.error.issues);
+  if (issues.length > 0) throw new z.ZodError(issues);
+  return r.data as z.output<T>;
 }
 
 const Common = z.looseObject({
@@ -62,8 +77,9 @@ export const WebEnv = Common.extend({
 });
 
 export function parseWebEnv(env: Record<string, string | undefined>) {
-  return WebEnv.superRefine((v, ctx) =>
-    forbid(v, [
+  return parseService(
+    WebEnv,
+    [
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
@@ -72,8 +88,10 @@ export function parseWebEnv(env: Record<string, string | undefined>) {
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
       'SUPABASE_DB_URL',
       'DATABASE_URL',
-    ], ctx, 'web'),
-  ).parse(env);
+    ],
+    'web',
+    env,
+  );
 }
 
 // --- worker ---------------------------------------------------------------------------------------
@@ -89,14 +107,17 @@ export const WorkerEnv = Common.extend({
 });
 
 export function parseWorkerEnv(env: Record<string, string | undefined>) {
-  return WorkerEnv.superRefine((v, ctx) =>
-    forbid(v, [
+  return parseService(
+    WorkerEnv,
+    [
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
       EXCLUSIVE_CREDENTIALS.signerCredential,
       EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
-    ], ctx, 'worker'),
-  ).parse(env);
+    ],
+    'worker',
+    env,
+  );
 }
 
 // --- risk-authorizer ------------------------------------------------------------------------------
@@ -112,8 +133,9 @@ export const RiskAuthorizerEnv = Common.extend({
 });
 
 export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) {
-  return RiskAuthorizerEnv.superRefine((v, ctx) =>
-    forbid(v, [
+  return parseService(
+    RiskAuthorizerEnv,
+    [
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.signerCredential,
@@ -124,8 +146,10 @@ export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) 
       'BIRDEYE_API_KEY',
       'LUNARCRUSH_API_KEY',
       'CRYPTOPANIC_API_KEY',
-    ], ctx, 'risk-authorizer'),
-  ).parse(env);
+    ],
+    'risk-authorizer',
+    env,
+  );
 }
 
 // --- execution-service (§26.2 absolute guardrails live here, never in the database) --------------
@@ -172,9 +196,20 @@ export const ExecutionServiceEnv = Common.extend({
   SENTRY_DSN_EXECUTION_SERVICE: Url.optional(),
 });
 
+const ExecutionServiceEnvChecked = ExecutionServiceEnv.superRefine((v, ctx) => {
+  // D47: a software signer can never be selected where live capability is enabled on mainnet.
+  if (v.SIGNER_BACKEND === 'SOFTWARE_DEV' && v.EXECUTOR_GUARDRAILS_JSON.liveCapabilityEnabled && v.EXECUTOR_GUARDRAILS_JSON.cluster === 'mainnet-beta') {
+    ctx.addIssue({ code: 'custom', message: 'SOFTWARE_DEV signer cannot be combined with live capability on mainnet-beta (D47)', path: ['SIGNER_BACKEND'] });
+  }
+  if (v.SIGNER_BACKEND === 'TURNKEY' && !(v.TURNKEY_ORGANIZATION_ID && v.TURNKEY_API_PUBLIC_KEY && v.TURNKEY_API_PRIVATE_KEY && v.TURNKEY_WALLET_ADDRESS)) {
+    ctx.addIssue({ code: 'custom', message: 'TURNKEY signer requires organization id, API key pair and wallet address', path: ['SIGNER_BACKEND'] });
+  }
+});
+
 export function parseExecutionServiceEnv(env: Record<string, string | undefined>) {
-  return ExecutionServiceEnv.superRefine((v, ctx) => {
-    forbid(v, [
+  return parseService(
+    ExecutionServiceEnvChecked,
+    [
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
@@ -183,13 +218,8 @@ export function parseExecutionServiceEnv(env: Record<string, string | undefined>
       'OPENAI_API_KEY',
       'LUNARCRUSH_API_KEY',
       'CRYPTOPANIC_API_KEY',
-    ], ctx, 'execution-service');
-    // D47: a software signer can never be selected where live capability is enabled on mainnet.
-    if (v.SIGNER_BACKEND === 'SOFTWARE_DEV' && v.EXECUTOR_GUARDRAILS_JSON.liveCapabilityEnabled && v.EXECUTOR_GUARDRAILS_JSON.cluster === 'mainnet-beta') {
-      ctx.addIssue({ code: 'custom', message: 'SOFTWARE_DEV signer cannot be combined with live capability on mainnet-beta (D47)', path: ['SIGNER_BACKEND'] });
-    }
-    if (v.SIGNER_BACKEND === 'TURNKEY' && !(v.TURNKEY_ORGANIZATION_ID && v.TURNKEY_API_PUBLIC_KEY && v.TURNKEY_API_PRIVATE_KEY && v.TURNKEY_WALLET_ADDRESS)) {
-      ctx.addIssue({ code: 'custom', message: 'TURNKEY signer requires organization id, API key pair and wallet address', path: ['SIGNER_BACKEND'] });
-    }
-  }).parse(env);
+    ],
+    'execution-service',
+    env,
+  );
 }

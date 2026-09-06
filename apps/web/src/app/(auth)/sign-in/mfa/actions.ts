@@ -1,13 +1,13 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { safeNext } from '../../../../lib/safe-next';
 import { createSupabaseServerClient } from '../../../../lib/supabase/server';
 
 /** Second step of sign-in: verify the operator's TOTP code and raise the session to aal2 (§5.7). */
 export async function verifyTotp(formData: FormData): Promise<void> {
   const code = String(formData.get('code') ?? '').replace(/\s+/g, '');
-  const next = String(formData.get('next') ?? '/');
-  const target = next.startsWith('/') && !next.startsWith('//') ? next : '/';
+  const target = safeNext(String(formData.get('next') ?? '/'));
   const supabase = await createSupabaseServerClient();
   if (!supabase) redirect('/sign-in?error=' + encodeURIComponent('Supabase is not configured'));
 

@@ -1930,6 +1930,7 @@ export type Database = {
           revoked_at: string | null
           sign_count: number
           transports: string[]
+          usable_from: string
           user_id: string
         }
         Insert: {
@@ -1944,6 +1945,7 @@ export type Database = {
           revoked_at?: string | null
           sign_count?: number
           transports?: string[]
+          usable_from?: string
           user_id: string
         }
         Update: {
@@ -1958,6 +1960,7 @@ export type Database = {
           revoked_at?: string | null
           sign_count?: number
           transports?: string[]
+          usable_from?: string
           user_id?: string
         }
         Relationships: []
@@ -2411,6 +2414,34 @@ export type Database = {
           id: string
         }[]
       }
+      consume_step_up_challenge: {
+        Args: {
+          p_challenge_id: string
+          p_control_request_id: string
+          p_failure_reason: string
+          p_passkey_id: string
+          p_verified: boolean
+        }
+        Returns: {
+          binding_hash: string
+          challenge_id: string
+          control_request_id: string | null
+          expires_at: string
+          failure_reason: string | null
+          id: string
+          kind: Database["enums"]["Enums"]["control_request_kind"]
+          passkey_id: string | null
+          user_id: string
+          verified: boolean
+          verified_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "step_up_assertions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       current_operator_role: {
         Args: never
         Returns: Database["enums"]["Enums"]["operator_role"]
@@ -2429,6 +2460,7 @@ export type Database = {
         Returns: boolean
       }
       session_aal: { Args: never; Returns: string }
+      session_recent_totp: { Args: { p_within: string }; Returns: boolean }
     }
     Enums: {
       [_ in never]: never

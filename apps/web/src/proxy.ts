@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { safeNext } from './lib/safe-next';
 
 /**
  * Session refresh and route protection (Next.js 16 proxy). Unauthenticated requests are sent to
@@ -37,18 +38,20 @@ export async function proxy(request: NextRequest) {
   if (!user && !isPublic) {
     const redirect = request.nextUrl.clone();
     redirect.pathname = '/sign-in';
-    redirect.searchParams.set('next', path);
+    redirect.search = '';
+    redirect.searchParams.set('next', safeNext(path));
     return NextResponse.redirect(redirect);
   }
   if (user) {
     // §5.7: a session with an enrolled second factor must verify it before anything else.
+    // Only PUBLIC_PATHS are exempt (review R2-18).
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
     const mfaPending = aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2';
-    if (mfaPending && path !== '/sign-in/mfa' && !path.startsWith('/api/')) {
+    if (mfaPending && !isPublic) {
       const redirect = request.nextUrl.clone();
       redirect.pathname = '/sign-in/mfa';
       redirect.search = '';
-      redirect.searchParams.set('next', path);
+      redirect.searchParams.set('next', safeNext(path));
       return NextResponse.redirect(redirect);
     }
     if (path === '/sign-in' || (path === '/sign-in/mfa' && !mfaPending)) {

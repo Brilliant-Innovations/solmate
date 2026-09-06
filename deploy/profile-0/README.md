@@ -25,7 +25,7 @@ pnpm nx serve @sol-agent-trader/risk-authorizer
 pnpm nx serve @sol-agent-trader/execution-service
 ```
 
-Each reads its own env file from the shell you start it in; `.env.example` at the repo root lists the names per service. Every service refuses to start when it sees a credential outside its trust class (`libs/contracts/src/config/env.ts`).
+Each reads its own env file from the shell you start it in; `.env.example` at the repo root lists the names per service. Every service validates its environment before anything else runs (`libs/contracts/src/config/env.ts`): a missing required name or a credential outside its trust class is fatal (`event: env_invalid`, names only, never values). `node main.js --print-digest` prints the contract digest without touching the environment; CI and the image workflow use it.
 
 ## Not here
 

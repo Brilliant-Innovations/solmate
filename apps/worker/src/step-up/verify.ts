@@ -5,7 +5,9 @@ import {
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
 import {
+  addMs,
   compareInstants,
+  FIRST_PASSKEY_COOLING_MS,
   stepUpBindingHash,
   WebAuthnTransport,
   type ControlRequestKind,
@@ -17,13 +19,18 @@ import {
 } from '@sol-agent-trader/contracts';
 
 /**
- * Passkey step-up verification (blueprint D41, §15.6; ADR-0006).
+ * Passkey step-up verification (blueprint D41, §15.6; ADR-0006 and its review amendment).
  *
  * Runs in the worker only. Every check here is deterministic and fails closed: the browser's
  * evidence is trusted for nothing until the stored challenge, the stored passkey and the exact
- * control request agree with it and SimpleWebAuthn accepts the signature. The caller writes the
- * verdict to ops.step_up_assertions (immutable) and, only when verified, references it from the
- * control request. Time comes in as an Instant from the caller's Clock (§18.2).
+ * control request agree with it and SimpleWebAuthn accepts the signature. Time comes in as an
+ * Instant from the caller's Clock (§18.2).
+ *
+ * Caller contract (R2-04): after a verdict, the caller MUST call
+ * `ops.consume_step_up_challenge(challengeId, passkeyId, verified, failureReason, controlRequestId)`
+ * and act on the control request only if that call returns a row. The function consumes the
+ * challenge and records the assertion atomically; a concurrent worker gets `CHALLENGE_UNAVAILABLE`
+ * and must treat the request as not authorised. A verified verdict alone authorises nothing.
  */
 
 export interface RelyingParty {
@@ -42,7 +49,11 @@ export type StepUpFailure =
   | 'UNKNOWN_PASSKEY'
   | 'PASSKEY_USER_MISMATCH'
   | 'PASSKEY_REVOKED'
+  /** first passkey still inside FIRST_PASSKEY_COOLING_MS (R2-01) */
+  | 'PASSKEY_COOLING'
   | 'CREDENTIAL_ID_MISMATCH'
+  /** registration of a further passkey without an assertion from an existing one (R2-01) */
+  | 'STEP_UP_REQUIRED'
   | 'ASSERTION_INVALID';
 
 export type StepUpVerdict =
@@ -67,11 +78,7 @@ function bytesToB64url(b: Uint8Array): string {
 }
 
 /** Checks shared by assertion and registration: the challenge must be this user's, live, and for this exact request. */
-async function checkChallenge(
-  challenge: StepUpChallenge,
-  request: ControlRequestUnderReview,
-  now: Instant,
-): Promise<StepUpFailure | null> {
+async function checkChallenge(challenge: StepUpChallenge, request: ControlRequestUnderReview, now: Instant): Promise<StepUpFailure | null> {
   if (challenge.userId !== request.requestedBy) return 'CHALLENGE_USER_MISMATCH';
   if (challenge.consumedAt !== null) return 'CHALLENGE_CONSUMED';
   if (compareInstants(now, challenge.expiresAt) >= 0) return 'CHALLENGE_EXPIRED';
@@ -98,6 +105,7 @@ export async function verifyStepUp(input: {
   if (!passkey) return { verified: false, reason: 'UNKNOWN_PASSKEY' };
   if (passkey.userId !== request.requestedBy) return { verified: false, reason: 'PASSKEY_USER_MISMATCH' };
   if (passkey.revokedAt !== null) return { verified: false, reason: 'PASSKEY_REVOKED' };
+  if (compareInstants(now, passkey.usableFrom) < 0) return { verified: false, reason: 'PASSKEY_COOLING' };
   if (evidence.credentialId !== passkey.credentialId || evidence.response.id !== passkey.credentialId || evidence.response.rawId !== passkey.credentialId) {
     return { verified: false, reason: 'CREDENTIAL_ID_MISMATCH' };
   }
@@ -133,22 +141,37 @@ export type RegistrationVerdict =
         transports: WebAuthnTransport[];
         aaguid: string | null;
         backedUp: boolean;
+        /** now + FIRST_PASSKEY_COOLING_MS for a first passkey; now otherwise. */
+        usableFrom: Instant;
       };
     }
   | { verified: false; reason: StepUpFailure; detail?: string };
 
-/** Registration of a new passkey (kind REGISTER_PASSKEY). Requires an aal2 session at the RLS layer; the worker checks the ceremony. */
+/**
+ * Registration of a new passkey (kind REGISTER_PASSKEY). The RLS layer already required an aal2
+ * session and, for a first passkey, a fresh TOTP. Here: a further passkey needs a verified
+ * assertion from an existing one (`existingPasskeyVerdict`), and a first passkey gets a cooling
+ * period. Duplicate credential ids are rejected by the database unique constraint (23505); the
+ * caller surfaces that as a rejection.
+ */
 export async function verifyPasskeyRegistration(input: {
   request: ControlRequestUnderReview;
   response: RegistrationResponseJSON;
   challenge: StepUpChallenge;
+  /** Non-revoked passkeys the operator already has. */
+  activePasskeys: number;
+  /** Verdict of `verifyStepUp` over `payload.stepUp` with the same challenge, when activePasskeys > 0. */
+  existingPasskeyVerdict: StepUpVerdict | null;
   now: Instant;
   rp: RelyingParty;
 }): Promise<RegistrationVerdict> {
-  const { request, response, challenge, now, rp } = input;
+  const { request, response, challenge, activePasskeys, existingPasskeyVerdict, now, rp } = input;
   if (request.kind !== 'REGISTER_PASSKEY') return { verified: false, reason: 'KIND_MISMATCH' };
   const challengeFailure = await checkChallenge(challenge, request, now);
   if (challengeFailure) return { verified: false, reason: challengeFailure };
+  if (activePasskeys > 0 && !(existingPasskeyVerdict && existingPasskeyVerdict.verified)) {
+    return { verified: false, reason: 'STEP_UP_REQUIRED' };
+  }
 
   try {
     const result = await verifyRegistrationResponse({
@@ -171,6 +194,7 @@ export async function verifyPasskeyRegistration(input: {
         transports,
         aaguid,
         backedUp: info.credentialBackedUp,
+        usableFrom: activePasskeys === 0 ? addMs(now, FIRST_PASSKEY_COOLING_MS) : now,
       },
     };
   } catch (err) {
