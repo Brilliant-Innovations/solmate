@@ -51,6 +51,27 @@ jobs:
         run: pnpm nx test @sol-agent-trader/contracts --skip-nx-cache
       - name: Nx targets
         run: pnpm nx run-many -t lint typecheck test build --parallel=3 --output-style=static
+      - name: Built bundles carry no banned package and are self-contained (GUARDRAILS Part 4, D50)
+        run: node tools/check-artifacts.mjs
+      - name: Artifact scan is live (a planted LLM SDK marker must fail)
+        run: |
+          cp apps/risk-authorizer/dist/main.js /tmp/planted.js
+          printf '\n// node_modules/.pnpm/openai@5.0.0/node_modules/openai/index.js\nvar planted = 1;\n' >> /tmp/planted.js
+          if node tools/check-artifacts.mjs --file /tmp/planted.js --policy risk-authorizer >/tmp/scan.log 2>&1; then
+            echo "::error::artifact scan did not reject a planted openai marker"; cat /tmp/scan.log; exit 1
+          fi
+          grep -q '"pattern": "openai"' /tmp/scan.log || { echo "::error::scan failed for a different reason"; cat /tmp/scan.log; exit 1; }
+      - name: Bundles run standalone and report the locked contract digest (D50)
+        run: |
+          set -euo pipefail
+          locked=$(node -e 'console.log(require("./libs/contracts/contract-set.lock.json").digest)')
+          for s in worker risk-authorizer execution-service; do
+            mkdir -p /tmp/standalone-$s && cp apps/$s/dist/main.js /tmp/standalone-$s/main.js
+            (cd /tmp/standalone-$s && DEPLOYMENT_PROFILE=P0 node main.js > startup.log)
+            reported=$(node tools/startup-digest.mjs /tmp/standalone-$s/startup.log)
+            echo "$s reports $reported"
+            test "$reported" = "$locked" || { echo "::error::$s bundle reports $reported, lock is $locked"; exit 1; }
+          done
 
   database:
     name: schema migrations · pgTAP · generated types in sync

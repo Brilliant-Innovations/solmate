@@ -16,7 +16,7 @@
           "format": [
             "cjs"
           ],
-          "bundle": false,
+          "bundle": true,
           "main": "apps/risk-authorizer/src/main.ts",
           "tsConfig": "apps/risk-authorizer/tsconfig.app.json",
           "assets": [
@@ -26,8 +26,15 @@
             "sourcemap": true,
             "outExtension": {
               ".js": ".js"
+            },
+            "target": "node24",
+            "platform": "node",
+            "banner": {
+              "js": "// sol-agent-trader risk-authorizer — self-contained bundle; no node_modules at runtime"
             }
-          }
+          },
+          "thirdParty": true,
+          "minify": false
         },
         "configurations": {
           "development": {},
@@ -36,7 +43,9 @@
               "sourcemap": false,
               "outExtension": {
                 ".js": ".js"
-              }
+              },
+              "target": "node24",
+              "platform": "node"
             }
           }
         }

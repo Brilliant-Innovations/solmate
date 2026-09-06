@@ -1,0 +1,59 @@
+# Profile 0 / 1A container launch (blueprint D65, §5.2; config/profiles/P0.json, P1A.json).
+#
+#   cd deploy/profile-0
+#   cp .env.worker.example .env.worker            # then fill in; repeat for the other two
+#   docker compose up --build
+#
+# Three logical services, three separate credential files: no service can read another's env.
+# The images are the same recipe CI publishes to GHCR (deploy/Dockerfile); each bundle passed
+# tools/check-artifacts.mjs at build time. Supabase runs on the host (pnpm exec supabase start),
+# reachable from the containers as host.docker.internal. No live capital: P0/P1A manifests set
+# liveCapitalAllowed=false and the executor guardrails must carry liveCapabilityEnabled=false.
+name: solmate-profile-0
+
+x-service: &service
+  restart: 'no'
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  tmpfs: [/tmp]
+  extra_hosts: ['host.docker.internal:host-gateway']
+  logging:
+    driver: json-file
+    options: { max-size: '10m', max-file: '3' }
+
+services:
+  worker:
+    <<: *service
+    build: { context: ../.., dockerfile: deploy/Dockerfile, args: { SERVICE: worker } }
+    image: solmate-worker:local
+    env_file: .env.worker
+    environment:
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-P0}
+      SERVICE_INSTANCE_ID: worker-local
+
+  risk-authorizer:
+    <<: *service
+    build: { context: ../.., dockerfile: deploy/Dockerfile, args: { SERVICE: risk-authorizer } }
+    image: solmate-risk-authorizer:local
+    env_file: .env.risk-authorizer
+    environment:
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-P0}
+      SERVICE_INSTANCE_ID: risk-authorizer-local
+
+  execution-service:
+    <<: *service
+    build: { context: ../.., dockerfile: deploy/Dockerfile, args: { SERVICE: execution-service } }
+    image: solmate-execution-service:local
+    env_file: .env.execution-service
+    environment:
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-P0}
+      SERVICE_INSTANCE_ID: execution-service-local
+      EXECUTOR_JOURNAL_PATH: /journal
+    volumes:
+      # Local durable journal (P0 durableJournal=local-disk). Survives container replacement.
+      - executor-journal:/journal
+
+volumes:
+  executor-journal:

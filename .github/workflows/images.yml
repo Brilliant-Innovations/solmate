@@ -1,0 +1,106 @@
+name: images
+
+# Builds the three Node deployables as containers and publishes them to GHCR (execution plan M2;
+# blueprint §5.3, D50). Only GITHUB_TOKEN is used: no long-lived registry credential exists.
+# Pull requests build and verify without pushing.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [worker, risk-authorizer, execution-service]
+    outputs:
+      digest-worker: ${{ steps.verify.outputs.worker }}
+      digest-risk-authorizer: ${{ steps.verify.outputs.risk-authorizer }}
+      digest-execution-service: ${{ steps.verify.outputs.execution-service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name (GHCR requires lowercase)
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/solmate-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+
+      - name: Build (loaded locally for verification)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: SERVICE=${{ matrix.service }}
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Image starts without credentials and reports the locked contract digest (D50)
+        id: verify
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.name.outputs.image }}:sha-${GITHUB_SHA}"
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /tmp -e DEPLOYMENT_PROFILE=P0 "$IMAGE" > /tmp/startup.log
+          cat /tmp/startup.log
+          reported=$(node tools/startup-digest.mjs /tmp/startup.log)
+          locked=$(node -e 'console.log(require("./libs/contracts/contract-set.lock.json").digest)')
+          echo "reported=$reported"; echo "locked=$locked"
+          test "$reported" = "$locked" || { echo "::error::${{ matrix.service }} image reports contract digest $reported but the lock is $locked"; exit 1; }
+          echo "${{ matrix.service }}=$reported" >> "$GITHUB_OUTPUT"
+          # The runtime image carries no package manager and no node_modules.
+          docker run --rm --entrypoint sh "$IMAGE" -c 'test ! -d /app/node_modules && test ! -d /usr/local/lib/node_modules && for t in npm npx pnpm yarn corepack; do ! command -v $t >/dev/null || { echo "$t present"; exit 1; }; done'
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: docker image push --all-tags "${{ steps.name.outputs.image }}"
+
+  digests-agree:
+    name: all images share one contract digest
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          w='${{ needs.image.outputs.digest-worker }}'
+          r='${{ needs.image.outputs.digest-risk-authorizer }}'
+          e='${{ needs.image.outputs.digest-execution-service }}'
+          echo "worker=$w"; echo "risk-authorizer=$r"; echo "execution-service=$e"
+          test -n "$w" && test "$w" = "$r" && test "$w" = "$e"
