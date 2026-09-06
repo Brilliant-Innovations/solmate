@@ -13,6 +13,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./server": {
+      "@sol-agent-trader/source": "./src/server/index.ts",
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
     }
   },
   "nx": {
@@ -23,6 +29,8 @@
     ]
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@sentry/node": "^10.73.0",
     "tslib": "^2.3.0"
   }
 }

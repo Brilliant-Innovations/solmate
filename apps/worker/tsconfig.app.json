@@ -28,6 +28,9 @@
   ],
   "references": [
     {
+      "path": "../../libs/observability/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/contracts/tsconfig.lib.json"
     }
   ]

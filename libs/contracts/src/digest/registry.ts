@@ -4,6 +4,7 @@ import * as enums from '../enums.js';
 import * as entities from '../entities/index.js';
 import * as envelopes from '../envelopes/index.js';
 import * as config from '../config/index.js';
+import * as realtime from '../realtime.js';
 import { SignedEnvelopeMeta } from '../signing/signed-envelope.js';
 
 /**
@@ -27,6 +28,7 @@ export function buildContractRegistry(): ContractRegistry {
   collect('entities', entities, map);
   collect('envelopes', envelopes, map);
   collect('config', config, map);
+  collect('realtime', realtime, map);
   collect('signing', { SignedEnvelopeMeta }, map);
   return map;
 }

@@ -115,6 +115,7 @@
     ]
   },
   "dependencies": {
-    "@sol-agent-trader/contracts": "workspace:*"
+    "@sol-agent-trader/contracts": "workspace:*",
+    "@sol-agent-trader/observability": "workspace:*"
   }
 }
