@@ -67,6 +67,11 @@ jobs:
         run: pnpm exec supabase start -x studio,imgproxy,inbucket,mailpit,logflare,vector,edge-runtime
       - name: pgTAP tests
         run: pnpm exec supabase test db
+      - name: libs/db integration tests (pgmq processing, leases) against the local database
+        env:
+          SUPABASE_DB_URL: postgresql://postgres:postgres@127.0.0.1:55322/postgres
+          NX_DAEMON: 'false'
+        run: pnpm nx test @sol-agent-trader/db --skip-nx-cache
       - name: Generated database types match the migrations
         run: |
           pnpm exec supabase gen types typescript --local --schema core,market,intelligence,signals,agents,trading,risk,research,ops,audit,enums > /tmp/database.types.ts

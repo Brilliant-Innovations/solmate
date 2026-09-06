@@ -1757,6 +1757,51 @@ export type Database = {
         }
         Relationships: []
       }
+      dead_letters: {
+        Row: {
+          attempts: number
+          dead_lettered_at: string
+          id: string
+          idempotency_key: string | null
+          kind: string | null
+          last_error: string | null
+          message: Json
+          message_id: number
+          queue: string
+          reason: string
+          resolved_at: string | null
+          resolved_by: string | null
+        }
+        Insert: {
+          attempts: number
+          dead_lettered_at?: string
+          id?: string
+          idempotency_key?: string | null
+          kind?: string | null
+          last_error?: string | null
+          message: Json
+          message_id: number
+          queue: string
+          reason: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+        }
+        Update: {
+          attempts?: number
+          dead_lettered_at?: string
+          id?: string
+          idempotency_key?: string | null
+          kind?: string | null
+          last_error?: string | null
+          message?: Json
+          message_id?: number
+          queue?: string
+          reason?: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+        }
+        Relationships: []
+      }
       deployment_profiles: {
         Row: {
           description: string
@@ -1891,6 +1936,36 @@ export type Database = {
           display_name?: string
           role?: Database["enums"]["Enums"]["operator_role"]
           user_id?: string
+        }
+        Relationships: []
+      }
+      processed_messages: {
+        Row: {
+          idempotency_key: string
+          kind: string
+          message_id: number
+          processed_at: string
+          processed_by: string
+          queue: string
+          result_hash: string | null
+        }
+        Insert: {
+          idempotency_key: string
+          kind: string
+          message_id: number
+          processed_at?: string
+          processed_by: string
+          queue: string
+          result_hash?: string | null
+        }
+        Update: {
+          idempotency_key?: string
+          kind?: string
+          message_id?: number
+          processed_at?: string
+          processed_by?: string
+          queue?: string
+          result_hash?: string | null
         }
         Relationships: []
       }
@@ -2177,12 +2252,24 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      acquire_lease: {
+        Args: { p_holder: string; p_role: string; p_ttl_seconds: number }
+        Returns: boolean
+      }
       current_operator_role: {
         Args: never
         Returns: Database["enums"]["Enums"]["operator_role"]
       }
       has_role: {
         Args: { minimum: Database["enums"]["Enums"]["operator_role"] }
+        Returns: boolean
+      }
+      heartbeat_lease: {
+        Args: { p_holder: string; p_role: string; p_ttl_seconds: number }
+        Returns: boolean
+      }
+      release_lease: {
+        Args: { p_holder: string; p_role: string }
         Returns: boolean
       }
     }

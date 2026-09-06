@@ -88,6 +88,7 @@ export default [
             },
 
             // ---- Web: presentation and control plane only -----------------------
+            // (server-only db entry point is additionally blocked below via no-restricted-imports)
             {
               sourceTag: 'trust:web',
               onlyDependOnLibsWithTags: [
@@ -145,6 +146,21 @@ export default [
       '**/*.mjs',
     ],
     rules: {},
+  },
+  // The browser control plane never holds a database connection or service credentials (§23.3).
+  {
+    files: ['apps/web/**/*.ts', 'apps/web/**/*.tsx', 'libs/wallet-ui/**/*.ts', 'libs/wallet-ui/**/*.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: '@sol-agent-trader/db/server', message: 'Server-only database access is not available to web (GUARDRAILS Part 4).' },
+            { name: 'postgres', message: 'Web never opens a Postgres connection; use the anon Supabase client under RLS.' },
+          ],
+        },
+      ],
+    },
   },
 ];
 
