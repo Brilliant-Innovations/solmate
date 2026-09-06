@@ -71,12 +71,17 @@ function lineOf(text, index) {
   return line;
 }
 
-/** Third-party packages present in the bundle, from pnpm store path comments. */
+/**
+ * Third-party packages present in the bundle, from pnpm store path comments. The name is taken
+ * from the `node_modules/<pkg>/` segment after the store folder, not from the folder itself: pnpm
+ * truncates long folder names on Windows (`@opentelemetry+sdk-trace-ba_<hash>`), which would
+ * otherwise yield names that differ between the developer machine and Linux CI.
+ */
 export function bundledPackages(text) {
   const found = new Set();
-  const re = /\.pnpm\/((?:@[^+@/\s]+\+)?[^@/\s]+)@/g;
+  const re = /\.pnpm\/[^/\s]+\/node_modules\/((?:@[^/\s"']+\/)?[^/\s"']+)\//g;
   let m;
-  while ((m = re.exec(text)) !== null) found.add(m[1].replace('+', '/'));
+  while ((m = re.exec(text)) !== null) found.add(m[1]);
   return [...found].sort();
 }
 
