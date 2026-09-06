@@ -67,6 +67,9 @@
   ],
   "references": [
     {
+      "path": "../../libs/db"
+    },
+    {
       "path": "../../libs/contracts"
     }
   ]
