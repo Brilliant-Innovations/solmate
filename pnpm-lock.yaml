@@ -222,6 +222,9 @@ importers:
       '@sol-agent-trader/risk':
         specifier: workspace:*
         version: link:../../libs/risk
+      '@sol-agent-trader/signals':
+        specifier: workspace:*
+        version: link:../../libs/signals
       '@sol-agent-trader/solana-hard-state':
         specifier: workspace:*
         version: link:../../libs/solana-hard-state

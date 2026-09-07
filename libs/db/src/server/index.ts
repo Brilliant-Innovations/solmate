@@ -12,3 +12,4 @@ export * from './safety-repo.js';
 export * from './reconciliation-repo.js';
 export * from './provider-spend-repo.js';
 export * from './wallet-events-repo.js';
+export * from './features-repo.js';

@@ -3,3 +3,4 @@ export * from './eligibility.js';
 export * from './safety.js';
 export * from './reconciliation.js';
 export * from './freshness.js';
+export * from './features.js';

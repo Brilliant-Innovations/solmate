@@ -1,4 +1,4 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
   heldBucketTimes,
@@ -10,6 +10,10 @@ import {
   ledgerExpectations,
   chargeProviderSpend,
   ingestWalletEvents,
+  insertFeatureSnapshot,
+  latestEligibility,
+  latestMarketSnapshotId,
+  listAssetsForFeatures,
   listTrackedWallets,
   loadProviderSpend,
   walletCursor,
@@ -43,6 +47,7 @@ import { initialEligibilityHealthState, runEligibilityCycle } from './roles/elig
 import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
+import { runFeaturesCycle } from './roles/features.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -61,6 +66,7 @@ import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './rol
  *   held-asset-safety  open positions: chain truth, sell probe, emergency-pool re-verification → §7.5 safety state (same needs)
  *   reconciliation  chain/custody truth per trading account, movements via Helius, unknown-movement pause (D9; needs SOLANA_RPC_URL; HELIUS_API_KEY to explain movements)
  *   tracked-wallets  Helius parsed history for intelligence.wallets → append-only wallet events, owned wallets skipped (§6.7, D26; needs HELIUS_API_KEY)
+ *   features        versioned point-in-time feature vectors per eligible/evaluating asset from closed 1m candles (§6.8, D63 warm-up)
  * All roles share one Birdeye client so the purchased compute-unit allowance is one budget.
  */
 const SERVICE = 'worker' as const;
@@ -93,7 +99,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -171,6 +177,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
     if (!rpcFinalized || !env.SOLANA_RPC_URL) noRpc('reconciliation');
     else loops.push(reconciliationLoop(env, logger, shared, rpcFinalized, env.SOLANA_RPC_URL));
   }
+  if (roles.has('features')) loops.push(featuresLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -344,6 +351,28 @@ async function trackedWalletsLoop(env: WorkerEnv, logger: Logger, shared: Shared
   logger.info('tracked_wallets_starting', { intervalMs, pageSize: deps.config.pageSize, holder: shared.holder });
   await loopUnderLease('tracked-wallets', intervalMs, logger, shared, async () => {
     await runTrackedWalletsCycle(deps);
+  });
+}
+
+async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.FEATURES_INTERVAL_MS;
+  const { sql } = shared;
+  const deps = {
+    repo: {
+      listAssetsForFeatures: (limit: number) => listAssetsForFeatures(sql, limit),
+      loadCandles: (assetId: Parameters<typeof loadCandles>[1], resolution: '1m', from: Parameters<typeof loadCandles>[3], to: Parameters<typeof loadCandles>[4]) => loadCandles(sql, assetId, resolution, from, to),
+      latestEligibility: (assetId: Parameters<typeof latestEligibility>[1]) => latestEligibility(sql, assetId),
+      latestMarketSnapshotId: (assetId: Parameters<typeof latestMarketSnapshotId>[1], asOf: Parameters<typeof latestMarketSnapshotId>[2]) => latestMarketSnapshotId(sql, assetId, asOf),
+      insertFeatureSnapshot: (snapshot: Parameters<typeof insertFeatureSnapshot>[1]) => insertFeatureSnapshot(sql, snapshot),
+    },
+    clock: systemClock,
+    logger,
+    spec: FEATURE_ENGINE_V1,
+    config: { batchSize: 200 },
+  };
+  logger.info('features_starting', { intervalMs, engine: FEATURE_ENGINE_V1.version, holder: shared.holder });
+  await loopUnderLease('features', intervalMs, logger, shared, async () => {
+    await runFeaturesCycle(deps);
   });
 }
 

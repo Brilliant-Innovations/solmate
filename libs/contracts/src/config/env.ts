@@ -125,6 +125,8 @@ export const WorkerEnv = Common.extend({
   HELD_ASSET_SAFETY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
   /** Chain/custody reconciliation cadence (D9); an unknown movement pauses new entries within one interval. */
   RECONCILIATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
+  /** Feature-snapshot cadence (§6.8); one snapshot per tracked asset per closed minute at most. */
+  FEATURES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Tracked-wallet polling cadence (§3.2); webhooks replace polling once a public receiver exists. */
   TRACKED_WALLETS_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(120_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),

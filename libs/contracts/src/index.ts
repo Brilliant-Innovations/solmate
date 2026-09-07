@@ -9,3 +9,4 @@ export * from './realtime.js';
 export * from './config/index.js';
 export * from './policy/index.js';
 export * as fixtures from './fixtures/index.js';
+export * from './money/base-units.js';
