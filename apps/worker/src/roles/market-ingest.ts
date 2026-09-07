@@ -61,6 +61,9 @@ export interface MarketIngestDeps {
     /** Compute units this cycle may spend on NORMAL work. */
     cuBudgetPerCycle: number;
     requestBudgetPerCycle: number;
+    /** Backoff for assets whose candle fetch adds nothing: base doubles per consecutive empty fetch up to the cap. */
+    backoffBaseMs: number;
+    backoffMaxMs: number;
   };
 }
 
@@ -71,13 +74,15 @@ export const NO_DEMAND = 'NO_DEMAND: nothing in this deployment consumes this cl
 
 export interface IngestState {
   lastDiscoveryAt: Instant | null;
+  /** Assets whose last candle fetch wrote nothing new: exponential backoff so a dead token cannot monopolise the budget (review 2026-09-08). */
+  candleBackoff: Record<string, { failures: number; until: Instant }>;
   lastSuccess: Partial<Record<string, Instant>>;
   lastError: Partial<Record<string, string>>;
   lastLatencyMs: Partial<Record<string, number>>;
 }
 
 export function initialIngestState(): IngestState {
-  return { lastDiscoveryAt: null, lastSuccess: {}, lastError: {}, lastLatencyMs: {} };
+  return { lastDiscoveryAt: null, candleBackoff: {}, lastSuccess: {}, lastError: {}, lastLatencyMs: {} };
 }
 
 export interface CycleReport {
@@ -85,6 +90,8 @@ export interface CycleReport {
   deferred: number;
   candlesWritten: number;
   candlesRejected: number;
+  /** Candle refreshes skipped this cycle because the asset is backed off. */
+  candlesBackedOff: number;
   assetsDiscovered: number;
   snapshots: number;
   quotes: number;
@@ -96,7 +103,7 @@ const RESOLUTIONS: Readonly<Record<TrackedAsset['priority'], readonly CandleReso
 
 export async function runMarketIngestCycle(deps: MarketIngestDeps, state: IngestState): Promise<CycleReport> {
   const now = deps.clock.now();
-  const report: CycleReport = { actions: 0, deferred: 0, candlesWritten: 0, candlesRejected: 0, assetsDiscovered: 0, snapshots: 0, quotes: 0, errors: [], health: [] };
+  const report: CycleReport = { actions: 0, deferred: 0, candlesWritten: 0, candlesRejected: 0, candlesBackedOff: 0, assetsDiscovered: 0, snapshots: 0, quotes: 0, errors: [], health: [] };
   const ok = (cls: string, latencyMs: number) => {
     state.lastSuccess[cls] = deps.clock.now();
     state.lastLatencyMs[cls] = latencyMs;
@@ -119,13 +126,14 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
       const from = addMs(to, -(deps.config.lookbackBuckets[res] - 1) * RESOLUTION_MS[res]);
       held[res] = await deps.repo.heldBucketTimes(a.id, res, from, to);
     }
-    tracked.push({ assetId: a.id, mintAddress: a.mintAddress, priority: a.priority ?? 'WATCH', held });
+    tracked.push({ assetId: a.id, mintAddress: a.mintAddress, priority: a.priority ?? 'WATCH', held, candleBackoffUntil: state.candleBackoff[a.id]?.until ?? null });
   }
 
   const discoveryDue = state.lastDiscoveryAt === null || Date.parse(now) - Date.parse(state.lastDiscoveryAt) >= deps.config.discoveryIntervalMs;
   const plan = planIngestCycle({ now, tracked, resolutions: RESOLUTIONS, lookbackBuckets: deps.config.lookbackBuckets, discoveryDue, cuBudget: deps.config.cuBudgetPerCycle, requestBudget: deps.config.requestBudgetPerCycle });
   report.actions = plan.actions.length;
   report.deferred = plan.deferred;
+  report.candlesBackedOff = plan.backedOff;
 
   // 2. Execute in plan order.
   const discovered: DiscoveredToken[][] = [];
@@ -151,6 +159,13 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
         report.candlesWritten += w.inserted + w.replacedOpen;
         report.candlesRejected += res.rejected.length;
         touchedAssets.add(action.assetId);
+        // A fetch that adds nothing new means the provider has no more for this gap: back the asset off (doubling, capped) so the budget rotates to assets that still move.
+        if (w.inserted + w.replacedOpen === 0) {
+          const failures = (state.candleBackoff[action.assetId]?.failures ?? 0) + 1;
+          state.candleBackoff[action.assetId] = { failures, until: addMs(now, Math.min(deps.config.backoffBaseMs * 2 ** (failures - 1), deps.config.backoffMaxMs)) };
+        } else {
+          delete state.candleBackoff[action.assetId];
+        }
         // Health means usable data arrived: a 200 whose every candle was rejected is a failure.
         if (res.candles.length > 0) ok('CANDLES', res.meta.latencyMs);
         else fail('CANDLES', 'CANDLES', new Error(`no accepted candles (${res.rejected.length} rejected)`));
@@ -236,7 +251,7 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
     await deps.repo.upsertFeedHealth(health);
     report.health.push(health);
   }
-  deps.logger.info('market_ingest_cycle', { actions: report.actions, deferred: report.deferred, candlesWritten: report.candlesWritten, candlesRejected: report.candlesRejected, assetsDiscovered: report.assetsDiscovered, snapshots: report.snapshots, quotes: report.quotes, errors: report.errors.length, cu: deps.birdeye.ledger.snapshot().used });
+  deps.logger.info('market_ingest_cycle', { actions: report.actions, deferred: report.deferred, candlesWritten: report.candlesWritten, candlesRejected: report.candlesRejected, candlesBackedOff: report.candlesBackedOff, backedOffAssets: Object.keys(state.candleBackoff).length, assetsDiscovered: report.assetsDiscovered, snapshots: report.snapshots, quotes: report.quotes, errors: report.errors.length, cu: deps.birdeye.ledger.snapshot().used });
   return report;
 }
 

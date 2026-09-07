@@ -169,7 +169,8 @@ export async function listTrackedAssets(sql: Sql, limit: number): Promise<AssetR
     select a.id, a.mint_address, exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED') as held
     from core.assets a
     where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
-    order by held desc, a.first_observed_at desc
+    -- held first, then ELIGIBLE (the strategies' universe), then the rest newest first: a capped list never drops an eligible asset for a fresh discovery
+    order by held desc, (a.status = 'ELIGIBLE') desc, a.first_observed_at desc
     limit ${limit}`;
   return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address, priority: r.held ? 'POSITION' : 'WATCH' }));
 }

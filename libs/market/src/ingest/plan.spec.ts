@@ -49,6 +49,26 @@ describe('ingest cycle planning (§5.4 risk-first, D63 backfill tagging)', () =>
     expect(plan.deferred).toBeGreaterThan(0);
   });
 
+  it('a tight budget rotates to the stalest asset instead of the same ids every cycle, and a backed-off asset yields its turn (review 2026-09-08)', () => {
+    const fresh = [...bucketsBetween(addMs(LAST_CLOSED, -59 * 60_000), LAST_CLOSED, '1m')];
+    // asset 1 sorts first by id but holds everything except the last bucket; asset 3 holds nothing (stalest); asset 2 is stale but backed off.
+    const a1 = asset(1, 'WATCH', fresh.slice(0, -1));
+    const a2 = { ...asset(2, 'WATCH', fresh.slice(0, 10)), candleBackoffUntil: addMs(NOW, 60_000) };
+    const a3 = asset(3, 'WATCH', []);
+    const plan = planIngestCycle({ ...base, discoveryDue: false, tracked: [a1, a2, a3], cuBudget: 45, requestBudget: 1 });
+    expect(plan.actions.map((a) => (a.kind === 'CANDLES' ? a.assetId : a.kind))).toEqual([a3.assetId]);
+    expect(plan.backedOff).toBe(1);
+    expect(plan.deferred).toBe(1);
+    // once the backoff has lapsed the stale asset is served before the nearly-complete one
+    const later = planIngestCycle({ ...base, discoveryDue: false, tracked: [a1, { ...a2, candleBackoffUntil: addMs(NOW, -1) }, a3], cuBudget: 90, requestBudget: 2 });
+    expect(later.actions.map((a) => (a.kind === 'CANDLES' ? a.assetId : a.kind))).toEqual([a3.assetId, a2.assetId]);
+    expect(later.backedOff).toBe(0);
+    // positions are never backed off: their candles are the price feed for protection
+    const held = { ...asset(4, 'POSITION', []), candleBackoffUntil: addMs(NOW, 60_000) };
+    const pos = planIngestCycle({ ...base, discoveryDue: false, tracked: [held], cuBudget: 1000, requestBudget: 5 });
+    expect(pos.actions.some((a) => a.kind === 'CANDLES' && a.assetId === held.assetId)).toBe(true);
+  });
+
   it('with everything held, nothing but prices and discovery is planned', () => {
     const full = bucketsBetween(addMs(LAST_CLOSED, -59 * 60_000), LAST_CLOSED, '1m');
     const plan = planIngestCycle({ ...base, tracked: [asset(1, 'CANDIDATE', full)], cuBudget: 1000, requestBudget: 10 });

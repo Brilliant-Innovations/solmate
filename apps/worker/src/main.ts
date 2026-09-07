@@ -285,7 +285,7 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: SharedWi
     logger,
     // ADR-0011: requirements come from the strategy speed tier (T1_STANDARD until a Release binds one), never from the provider tier.
     contracts: defaultFreshnessContracts(DEFAULT_FRESHNESS_REQUIREMENTS),
-    config: { trackedLimit: tier.requestsPerSecond <= 1 ? 10 : 100, lookbackBuckets: LOOKBACK_BUCKETS, discoveryIntervalMs: Math.max(300_000, intervalMs), cuBudgetPerCycle, requestBudgetPerCycle },
+    config: { trackedLimit: tier.requestsPerSecond <= 1 ? 10 : 100, lookbackBuckets: LOOKBACK_BUCKETS, discoveryIntervalMs: Math.max(300_000, intervalMs), cuBudgetPerCycle, requestBudgetPerCycle, backoffBaseMs: Math.max(intervalMs, 300_000), backoffMaxMs: 6 * 3_600_000 },
   };
   logger.info('market_ingest_starting', { tier: tier.tier, intervalMs, cuBudgetPerCycle, requestBudgetPerCycle, trackedLimit: deps.config.trackedLimit, holder: shared.holder });
   const state = initialIngestState();

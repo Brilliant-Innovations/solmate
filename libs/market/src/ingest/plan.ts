@@ -19,6 +19,8 @@ export interface TrackedAsset {
   priority: TrackPriority;
   /** Bucket times we already hold per resolution within the lookback window. */
   held: Partial<Record<CandleResolution, readonly Instant[]>>;
+  /** No candle request for this asset before this instant: its last fetch added nothing (a dead or delisted token). */
+  candleBackoffUntil?: Instant | null;
 }
 
 export type IngestAction =
@@ -45,7 +47,18 @@ export interface IngestPlanInput {
 export interface IngestPlan {
   actions: IngestAction[];
   deferred: number;
+  /** Candle refreshes skipped because the asset is under backoff. */
+  backedOff: number;
   cuPlanned: number;
+}
+
+/** Newest bucket held for the resolution, or null; the planner serves the stalest asset first so a tight budget rotates instead of starving. */
+function newestHeld(t: TrackedAsset, resolution: CandleResolution): number | null {
+  const held = t.held[resolution];
+  if (!held || held.length === 0) return null;
+  let max = -Infinity;
+  for (const h of held) max = Math.max(max, instantToMs(h));
+  return max;
 }
 
 /** A bucket run is "live" when it ends at the last closed bucket; older runs are backfill (D63). */
@@ -65,8 +78,18 @@ export function planIngestCycle(input: IngestPlanInput): IngestPlan {
     candidates.push({ kind: 'PRICES', mints, priority: 'CRITICAL', cu: BIRDEYE_CU.multiPrice(mints.length) });
   }
 
-  const sorted = [...input.tracked].sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || a.assetId.localeCompare(b.assetId));
+  // Priority first; within a priority the stalest asset first (nothing held sorts first), then id for determinism.
+  const staleness = (t: TrackedAsset): number => {
+    const newest = input.resolutions[t.priority].map((r) => newestHeld(t, r)).filter((n): n is number => n !== null);
+    return newest.length ? Math.min(...newest) : -Infinity;
+  };
+  const sorted = [...input.tracked].sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || staleness(a) - staleness(b) || a.assetId.localeCompare(b.assetId));
+  let backedOff = 0;
   for (const t of sorted) {
+    if (t.candleBackoffUntil && instantToMs(t.candleBackoffUntil) > instantToMs(input.now) && t.priority !== 'POSITION') {
+      backedOff++;
+      continue;
+    }
     for (const resolution of input.resolutions[t.priority]) {
       const ms = RESOLUTION_MS[resolution];
       const to = lastClosedBucket(input.now, resolution);
@@ -101,5 +124,5 @@ export function planIngestCycle(input: IngestPlanInput): IngestPlan {
     actions.push(a);
     cu += a.cu;
   }
-  return { actions, deferred, cuPlanned: cu };
+  return { actions, deferred, backedOff, cuPlanned: cu };
 }
