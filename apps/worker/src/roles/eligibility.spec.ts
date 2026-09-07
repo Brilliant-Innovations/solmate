@@ -146,7 +146,7 @@ describe('eligibility role (P2: chain truth first, analytics corroborates, route
   it('publishes feed health for security and overview from its own calls: a 401 on security is FAILED and blocks entries, overview stays HEALTHY', async () => {
     const repo = new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]);
     const published = new Map<string, FeedHealth>();
-    const health = { contracts: defaultFreshnessContracts(BIRDEYE_TIERS.STANDARD).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'), state: initialEligibilityHealthState(), upsert: async (h: FeedHealth) => void published.set(h.provider, h) };
+    const health = { contracts: defaultFreshnessContracts().filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'), state: initialEligibilityHealthState(), upsert: async (h: FeedHealth) => void published.set(h.provider, h) };
     const denied = (): HttpResponse => ({ status: 401, headers: {}, body: JSON.stringify({ success: false, message: 'API key lacks sufficient permissions' }) });
     await runEligibilityCycle({ ...deps(repo, rpcFor(null), birdeyeFor({ '/defi/token_security': denied, '/defi/token_overview': OVERVIEW_OK }), null), health });
     expect(published.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ state: 'FAILED', effectOnEntries: 'BLOCK', lastError: expect.stringContaining('401') });

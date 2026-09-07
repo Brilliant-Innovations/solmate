@@ -1,13 +1,14 @@
 import {
+  DEFAULT_FRESHNESS_REQUIREMENTS,
   compareInstants,
   instantToMs,
   type DataClass,
   type FeedHealth,
   type FreshnessContract,
+  type FreshnessRequirements,
   type Instant,
   type MarketDataProviderName,
   type ProviderHealth,
-  type ProviderTier,
   type RateLimitState,
 } from '@sol-agent-trader/contracts';
 
@@ -58,27 +59,17 @@ export function entriesBlocked(health: readonly FeedHealth[]): { blocked: boolea
 }
 
 /**
- * Default contracts sized to the purchased Birdeye tier. Without WebSocket (Standard/Lite/Starter)
- * prices are polled, so the promise is looser than with streaming (Premium+). Standard's 1 rps
- * cannot keep a candidate price fresh for more than a handful of assets; its numbers exist so the
- * system degrades honestly rather than pretending.
+ * Contracts from the freshness requirements of the strategy speed tier in force (ADR-0011). The
+ * purchased provider tier sizes rate and compute-unit budgets, never these limits: a tier that
+ * cannot meet a requirement reports DEGRADED/FAILED and blocks entries, which Live Readiness shows
+ * as a capability failure. Every Birdeye class gets a contract; the Jupiter secondary price feed
+ * carries the same freshness as the primary position price.
  */
-export function defaultFreshnessContracts(birdeye: ProviderTier): FreshnessContract[] {
-  const streaming = birdeye.websocket;
-  const slow = birdeye.requestsPerSecond <= 1;
-  const pricePoll = streaming ? 5_000 : slow ? 60_000 : 15_000;
-  return [
-    { provider: 'BIRDEYE', dataClass: 'ACTIVE_POSITION_PRICE', freshMaxAgeMs: pricePoll, degradedMaxAgeMs: pricePoll * 3, effectOnEntries: 'BLOCK', effectOnExits: 'BLOCK_IF_NO_ALTERNATIVE' },
-    { provider: 'JUPITER_PRICE_V3', dataClass: 'ACTIVE_POSITION_PRICE', freshMaxAgeMs: 15_000, degradedMaxAgeMs: 45_000, effectOnEntries: 'NONE', effectOnExits: 'BLOCK_IF_NO_ALTERNATIVE' },
-    { provider: 'BIRDEYE', dataClass: 'CANDIDATE_PRICE', freshMaxAgeMs: pricePoll * 2, degradedMaxAgeMs: pricePoll * 6, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'CANDLES', freshMaxAgeMs: 90_000, degradedMaxAgeMs: 300_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'TOKEN_OVERVIEW', freshMaxAgeMs: 120_000, degradedMaxAgeMs: 600_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'DISCOVERY_LIST', freshMaxAgeMs: 300_000, degradedMaxAgeMs: 1_800_000, effectOnEntries: 'NONE', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'TOKEN_SECURITY', freshMaxAgeMs: 3_600_000, degradedMaxAgeMs: 21_600_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'HOLDER_DISTRIBUTION', freshMaxAgeMs: 3_600_000, degradedMaxAgeMs: 21_600_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'SOCIAL_TRENDS', freshMaxAgeMs: 900_000, degradedMaxAgeMs: 3_600_000, effectOnEntries: 'NONE', effectOnExits: 'NONE' },
-    { provider: 'BIRDEYE', dataClass: 'PROJECT_METADATA', freshMaxAgeMs: 86_400_000, degradedMaxAgeMs: 604_800_000, effectOnEntries: 'NONE', effectOnExits: 'NONE' },
-  ];
+export function defaultFreshnessContracts(requirements: FreshnessRequirements = DEFAULT_FRESHNESS_REQUIREMENTS): FreshnessContract[] {
+  const out: FreshnessContract[] = requirements.requirements.map((r) => ({ provider: 'BIRDEYE' as const, ...r }));
+  const price = requirements.requirements.find((r) => r.dataClass === 'ACTIVE_POSITION_PRICE');
+  if (price) out.splice(1, 0, { provider: 'JUPITER_PRICE_V3', dataClass: 'ACTIVE_POSITION_PRICE', freshMaxAgeMs: price.freshMaxAgeMs, degradedMaxAgeMs: price.degradedMaxAgeMs, effectOnEntries: 'NONE', effectOnExits: 'BLOCK_IF_NO_ALTERNATIVE' });
+  return out;
 }
 
 /** Newest of several observations, or null when none. */

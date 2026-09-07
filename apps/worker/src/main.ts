@@ -1,4 +1,4 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
   heldBucketTimes,
@@ -225,7 +225,8 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: SharedWi
     repo,
     clock: systemClock,
     logger,
-    contracts: defaultFreshnessContracts(tier),
+    // ADR-0011: requirements come from the strategy speed tier (T1_STANDARD until a Release binds one), never from the provider tier.
+    contracts: defaultFreshnessContracts(DEFAULT_FRESHNESS_REQUIREMENTS),
     config: { trackedLimit: tier.requestsPerSecond <= 1 ? 10 : 100, lookbackBuckets: LOOKBACK_BUCKETS, discoveryIntervalMs: Math.max(300_000, intervalMs), cuBudgetPerCycle, requestBudgetPerCycle },
   };
   logger.info('market_ingest_starting', { tier: tier.tier, intervalMs, cuBudgetPerCycle, requestBudgetPerCycle, trackedLimit: deps.config.trackedLimit, holder: shared.holder });
@@ -256,7 +257,7 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: SharedWit
     // the ledger stops the batch when the Birdeye allowance is gone.
     config: { batchSize: 5, reevaluateAfterMs: env.ELIGIBILITY_REEVALUATE_AFTER_MS, blockedReevaluateAfterMs: env.ELIGIBILITY_BLOCKED_REEVALUATE_AFTER_MS },
     health: {
-      contracts: defaultFreshnessContracts(BIRDEYE_TIERS[env.BIRDEYE_TIER]).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
+      contracts: defaultFreshnessContracts(DEFAULT_FRESHNESS_REQUIREMENTS).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
       state: initialEligibilityHealthState(),
       upsert: (h: Parameters<typeof upsertFeedHealth>[1]) => upsertFeedHealth(sql, h),
     },

@@ -1,6 +1,5 @@
 import fc from 'fast-check';
-import { addMs, toInstant, type FreshnessContract } from '@sol-agent-trader/contracts';
-import { BIRDEYE_TIERS } from '../birdeye/tiers.js';
+import { addMs, toInstant, type FreshnessContract, FRESHNESS_REQUIREMENTS } from '@sol-agent-trader/contracts';
 import { defaultFreshnessContracts, entriesBlocked, evaluateFreshness } from './evaluate.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 6, 12, 0, 0));
@@ -32,9 +31,10 @@ describe('freshness → health (§21.1, §21.2)', () => {
     expect(h.state).toBe('DEGRADED');
   });
 
-  it('default contracts tighten with streaming tiers and every class is covered', () => {
-    const std = defaultFreshnessContracts(BIRDEYE_TIERS.STANDARD);
-    const prem = defaultFreshnessContracts(BIRDEYE_TIERS.PREMIUM);
+  it('contracts follow the strategy speed tier, not the purchased provider tier (ADR-0011); every class is covered', () => {
+    const std = defaultFreshnessContracts(FRESHNESS_REQUIREMENTS.T2_SLOW);
+    const prem = defaultFreshnessContracts(FRESHNESS_REQUIREMENTS.T0_FAST);
+    expect(defaultFreshnessContracts()).toEqual(defaultFreshnessContracts(FRESHNESS_REQUIREMENTS.T1_STANDARD));
     const pick = (cs: FreshnessContract[], cls: string) => cs.find((c) => c.dataClass === cls && c.provider === 'BIRDEYE')!;
     expect(pick(std, 'ACTIVE_POSITION_PRICE').freshMaxAgeMs).toBeGreaterThan(pick(prem, 'ACTIVE_POSITION_PRICE').freshMaxAgeMs);
     for (const c of [...std, ...prem]) {

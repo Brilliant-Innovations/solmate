@@ -53,6 +53,8 @@ jobs:
         run: pnpm nx run-many -t lint typecheck test build --parallel=3 --output-style=static
       - name: Built bundles carry no banned package and are self-contained (GUARDRAILS Part 4, D50)
         run: node tools/check-artifacts.mjs
+      - name: Bypass tests — removing a protection must fail its mapped tests (ADR-0010)
+        run: node tools/check-bypass.mjs
       - name: Artifact scan is live (planted markers must fail, each for the right reason)
         run: |
           set -euo pipefail

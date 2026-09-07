@@ -7,6 +7,10 @@
 //   * "unmapped" is allowed only while NONE of the owner_modules exists on disk
 //   * "mapped" requires >=1 test path and every test path must exist
 //   * ids are unique and the count matches the §24.6 list (28)
+//   * every invariant declares required_by, applicable_profiles, applicable_strategy_classes,
+//     applicable_capabilities and evidence (ADR-0010); a mapped invariant lists evidence
+//   * `--profile P2 --capabilities LIVE_SIGNING,...` computes the readiness coverage for that
+//     capability set: every applicable invariant must be mapped, the rest are NOT_APPLICABLE
 //
 // Zero dependencies: parses the constrained YAML shape used by invariant-test-map.yaml.
 
@@ -17,6 +21,11 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mapPath = resolve(root, "invariant-test-map.yaml");
 const EXPECTED_COUNT = 28;
+const CAPABILITIES = new Set(['ALWAYS', 'PAPER', 'LIVE_SIGNING', 'LIVE_AUTO', 'LLM_STRATEGY', 'MULTI_STRATEGY', 'PROVIDER_PROTECTION', 'OFFLINE_CARRY', 'EMERGENCY_DIRECT_POOL']);
+const PROFILES = new Set(['ALL', 'P0', 'P1A', 'P1B', 'P2', 'P3', 'P4']);
+const CLASSES = new Set(['ALL', 'DETERMINISTIC', 'LLM']);
+const args = process.argv.slice(2);
+const argValue = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 
 function parseMap(text) {
   const invariants = [];
@@ -62,6 +71,13 @@ for (const inv of invariants) {
   if (!inv.statement) errors.push(`${tag}: missing statement`);
   if (!Array.isArray(inv.owner_modules) || inv.owner_modules.length === 0) errors.push(`${tag}: owner_modules empty`);
   if (!Array.isArray(inv.tests)) errors.push(`${tag}: tests missing`);
+  if (!inv.required_by) errors.push(`${tag}: required_by missing`);
+  for (const [field, vocab] of [['applicable_profiles', PROFILES], ['applicable_strategy_classes', CLASSES], ['applicable_capabilities', CAPABILITIES]]) {
+    if (!Array.isArray(inv[field]) || inv[field].length === 0) errors.push(`${tag}: ${field} missing`);
+    else for (const v of inv[field]) if (!vocab.has(v)) errors.push(`${tag}: ${field} value ${JSON.stringify(v)} not in vocabulary`);
+  }
+  if (!Array.isArray(inv.evidence)) errors.push(`${tag}: evidence missing (use [] while unmapped)`);
+  else if (inv.status === 'mapped' && inv.evidence.length === 0) errors.push(`${tag}: mapped without evidence`);
   if (!["unmapped", "mapped"].includes(inv.status)) {
     errors.push(`${tag}: status must be "unmapped" or "mapped" (got ${JSON.stringify(inv.status)})`);
     continue;
@@ -79,6 +95,23 @@ for (const inv of invariants) {
 }
 
 const mapped = invariants.filter((i) => i.status === "mapped").length;
+
+// ADR-0010 readiness coverage for a capability set.
+const profile = argValue('--profile');
+if (profile) {
+  const caps = new Set((argValue('--capabilities') ?? 'ALWAYS').split(',').map((c) => c.trim()).filter(Boolean));
+  caps.add('ALWAYS');
+  const strategyClass = argValue('--strategy-class') ?? 'DETERMINISTIC';
+  const applies = (inv) =>
+    (inv.applicable_profiles.includes('ALL') || inv.applicable_profiles.includes(profile)) &&
+    (inv.applicable_strategy_classes.includes('ALL') || inv.applicable_strategy_classes.includes(strategyClass)) &&
+    inv.applicable_capabilities.every((c) => caps.has(c));
+  const applicable = invariants.filter(applies);
+  const missing = applicable.filter((i) => i.status !== 'mapped');
+  const notApplicable = invariants.filter((i) => !applies(i));
+  console.log(JSON.stringify({ profile, strategyClass, capabilities: [...caps], applicable: applicable.map((i) => i.id), mappedApplicable: applicable.length - missing.length, missingApplicable: missing.map((i) => i.id), notApplicable: notApplicable.map((i) => i.id) }));
+  if (missing.length) errors.push(`readiness for ${profile} with ${[...caps].join('+')}: ${missing.length} applicable invariant(s) unmapped: ${missing.map((i) => i.id).join(', ')}`);
+}
 if (errors.length) {
   console.error(`invariant-test-map: FAIL (${errors.length} problem${errors.length === 1 ? "" : "s"})`);
   for (const e of errors) console.error(`  - ${e}`);

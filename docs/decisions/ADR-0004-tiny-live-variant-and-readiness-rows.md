@@ -43,7 +43,7 @@ Profile 2 (tiny attended live) is meant to open before the full UI, replay and h
 - forbidden-package artifact scan, runtime egress test and contract-digest match green;
 - minimum live operator surface E2E green: approve, reject, arm, pause, mobile close, and Live Readiness `FAIL` blocks arming;
 - Trigger lifecycle test green **if** provider protection is enabled; otherwise the readiness record states Profile 2 is `MONITORED_EXIT`-only;
-- Probe A passed for the routes in use — **preferred, not required** for `LIVE_APPROVAL`, because D55 scopes the second signer-side policy layer to `LIVE_AUTO`; deny-export remains required;
+- ~~Probe A passed for the routes in use — preferred, not required for `LIVE_APPROVAL`~~ **Superseded 2026-09-08 by ADR-0008:** Probe A results (a) deny-export/policy administration, (b) Profile 2 shape acceptance and (c) malicious-shape rejection are **required**; external signer-policy validation is mandatory for the Profile 2 shape set (ADR-0007), with the residual executor-compromise risk stated in the readiness record;
 - no open severity-1 defect.
 
 Not required for this verdict: direct-pool emergency adapters, full §20 UI, replay, full SBOM tooling, Terraform.

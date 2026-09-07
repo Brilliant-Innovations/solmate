@@ -80,7 +80,7 @@ function deps(repo: MemoryRepo, transport: HttpTransport) {
     repo,
     clock,
     logger: createLogger({ service: 'worker', sink: () => undefined }),
-    contracts: defaultFreshnessContracts(BIRDEYE_TIERS.LITE),
+    contracts: defaultFreshnessContracts(),
     config: { trackedLimit: 10, lookbackBuckets: { '15s': 240, '1m': 60, '5m': 48, '15m': 32, '1h': 48, '4h': 42 }, discoveryIntervalMs: 300_000, cuBudgetPerCycle: 5000, requestBudgetPerCycle: 50 },
   };
 }

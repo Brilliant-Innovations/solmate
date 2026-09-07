@@ -93,4 +93,18 @@ describe('runtime session (D60, D61, INV-05)', () => {
       { numRuns: 500 },
     );
   });
+
+  it('INV-05: a pause blocks new exposure in every running activity and authority, including LIVE_AUTO with live capability (found by tools/check-bypass.mjs)', () => {
+    fc.assert(
+      fc.property(fc.constantFrom('ACTIVE', 'EVENT_WINDOW', 'WATCH', 'STARTING' as const), fc.constantFrom<CapitalAuthority>('OBSERVE', 'PAPER', 'LIVE_APPROVAL', 'LIVE_AUTO'), fc.boolean(), (activity, authority, liveCapabilityEnabled) => {
+        const running = initialRuntimeState({ activity, authority, liveCapabilityEnabled, paused: false });
+        const paused = runtimeTransition(running, { type: 'PAUSE', at: T0, by: 'WATCHDOG' });
+        if (!paused.ok) throw new Error('pause must always be accepted');
+        expect(newEntriesAllowed(paused.state)).toBe(false);
+        expect(liveExecutionAllowed(paused.state)).toBe(false);
+        // The same state unpaused may allow entries: the pause is what blocks them.
+        if ((activity === 'ACTIVE' || activity === 'EVENT_WINDOW') && authority !== 'OBSERVE') expect(newEntriesAllowed(running)).toBe(true);
+      }),
+    );
+  });
 });

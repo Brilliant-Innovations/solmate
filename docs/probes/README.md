@@ -4,9 +4,22 @@ Probes are small scripts run against real providers whose answers can change the
 
 | Probe | File | Question | Blueprint |
 | --- | --- | --- | --- |
-| A | `turnkey-alt-policy.md` | Can the pinned Turnkey Solana policy accept legitimate Jupiter v0 `/order` routes and deny lookup-table placeholder, transfer and program-key cases? Is deny-export verified for both principals? | D47, D55, §15.7A, §45.1 |
+| A | `turnkey-alt-policy.md` | Four separately recorded results (ADR-0008): (a) deny-export and policy-administration restrictions for both principals; (b) acceptance of the Profile 2 shape set (ADR-0007); (c) rejection of malicious shapes — foreign program, foreign recipient, extra signer, `ADDRESS_TABLE_LOOKUP` placeholder; (d) lookup-table compatibility. Readiness needs (a)–(c). | D47, D55, §15.7A, §45.1, ADR-0007/0008 |
 | B | `trigger-lot-isolation.md` | Does the exact Jupiter Trigger V2 mode/version prove seeded per-order balance isolation through a real deposit and two-step cancel/withdraw? | D44, §16.5, §24.2 |
+| D | `trigger-auth.md` | Does Jupiter Trigger V2 wallet-message authentication work under the selected signer policy: approved challenge format and domain, challenge freshness and replay behaviour, a signing permission narrow enough that it cannot be turned into arbitrary message signing? Results kept separate for routing availability, signer availability and custody-release availability. | §16.2, §16.3, D44, D55 |
 | C | `signer-contract.md` | Does the Turnkey signer produce canonical Solana Ed25519 signatures with acceptable latency, deterministic identical-bytes retry and an audit log entry? | §15.4, §15.7, §29 |
+
+## Probe authorization boundary (operator review item 7)
+
+Probes sign, deposit and withdraw real value before the ordinary live gate exists. Every probe run is authorized in writing before it starts, and the result file records the boundary it ran under:
+
+- maximum probe-wallet value and maximum cumulative fees/loss (USD);
+- allowed assets, programs and destination addresses; the cold-recovery destination is registered before the first probe that could need it;
+- exact script paths and build/commit hashes approved for execution;
+- who authorizes and who runs, from which isolated environment;
+- abort conditions and recovery steps;
+- post-probe chain/custody reconciliation of the probe wallet;
+- credential revocation and cleanup after the run.
 
 ## Result template
 

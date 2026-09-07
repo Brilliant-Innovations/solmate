@@ -27,3 +27,10 @@
 ## Operator sign-off
 
 Sean Rogers, 2026-09-05. Surfaced by the ChatGPT review of plan v1 and the implementation-agent review of plan v2.
+
+## Amendment 2026-09-08 (operator review item 5; self-review 1D and 2D)
+
+- **Every unsuccessful open-position outcome normalises to protection.** `REJECTED`, `EXPIRED` and `UNRESOLVED` cycles all remove discretionary permission from the position (`libs/execution/src/state/position-review.ts`; `EXPIRED` is recorded with reason `TIMEOUT`, `REJECTED` with `DISAGREEMENT`). The invariant is: a required open-position reassessment that does not produce a valid cleared open-position action cannot leave the position represented as currently reviewed.
+- **`BUDGET_PAUSED` is kept as a review-state value** because it is behaviourally equivalent to `PROTECTION_ONLY` for everything that matters: no discretionary action, mandatory exits unaffected, the unreviewed stop still tightens, and the only way back is a newly `CLEARED` open-position action. Proven by `position-review.spec.ts` ("BUDGET_PAUSED is behaviourally equivalent…") and by the property in `mandatory-exit.spec.ts` (the review state never changes a mandatory-exit decision). Consumers must use `discretionaryActionsAllowed()` rather than comparing against a single enum value.
+- **Scope.** Review state lives on the aggregate `trading.positions` row. That is correct only while at most one strategy sleeve holds a mint, which ADR-0007 enforces for Profile 2 through the `SINGLE_SLEEVE_PER_MINT` readiness row. Lot-scoped review state is a requirement of the multi-strategy Release.
+- **Handoff durability.** The M6 worker must persist the cycle's terminal state and the position's review transition in one database transaction with an outbox row consumed idempotently (pgmq `trading_actions` + `ops.processed_messages`); a best-effort callback is not acceptable.

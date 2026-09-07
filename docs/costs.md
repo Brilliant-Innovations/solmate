@@ -14,7 +14,8 @@ Recorded at every milestone exit (execution plan §3). D43 spend budgets and D37
 | M4 | 2026-09-07 | Helius | Free | 0 | 10 rps, 1 M credits/month. Serves the read-only RPC (`SOLANA_RPC_URL`, needed for `getTokenLargestAccounts`), Parsed Events for reconciliation and tracked wallets. One bot wallet consumed ≈150 history items per 2-minute poll; budget scales with tracked-wallet count and activity. |
 | M4 | 2026-09-07 | Jupiter | Lite (free key) | 0 | Quote API for probes and safety sell quotes at 1 rps; Price V3 keyless. |
 | M4 | 2026-09-07 | Supabase | Free | 0 | Database 16 MB after a day of M4 loops (market schema 752 kB, 2 421 one-minute candles for ≤10 tracked assets; 1 529 wallet events from one bot wallet in 12 minutes). Pro (USD 25) expected once the tracked universe or wallet stream grows; pg_cron retention is live. |
-| **M4 total** | 2026-09-07 | | | **39** | First paid tier: Birdeye Lite. Gate evidence in `docs/probes/m4-exit-gate-2026-09-07.md`. |
+| **M4 total** | 2026-09-07 | | | **39** | First paid tier: Birdeye Lite. Gate evidence in `docs/probes/m4-exit-gate-2026-09-07.md`. Basis for every row: actual incremental monthly spend on tiers created for this project; free tiers and existing subscriptions are listed at 0 with their limits. |
+| Projected steady state before Profile 2 | — | Vercel Pro (D57 cron/team) + Supabase Pro + Birdeye Lite | 20 + 25 + 39 | 84 | Projection, not spend: Vercel Pro is a D57 prerequisite for the session-resume watchdog at M8a; Supabase Pro when storage or realtime outgrows Free; Helius and Jupiter stay free at Profile 2 volumes. |
 
 ## Provider tier register
 
