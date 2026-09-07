@@ -8,6 +8,8 @@ import {
   latestEmergencySnapshot,
   LeaseManager,
   ledgerExpectations,
+  chargeProviderSpend,
+  loadProviderSpend,
   lifecycleForSignature,
   listAssetsForEvaluation,
   listCustodyAccounts,
@@ -29,7 +31,7 @@ import {
   type Sql,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient } from '@sol-agent-trader/execution';
-import { BIRDEYE_TIERS, BirdeyeClient, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
+import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
@@ -107,7 +109,26 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   const tier = BIRDEYE_TIERS[env.BIRDEYE_TIER];
   const holder = env.SERVICE_INSTANCE_ID ?? `worker-${process.pid}`;
   const sql = createSql({ url: env.SUPABASE_DB_URL, applicationName: 'worker' });
-  const birdeye = new BirdeyeClient({ apiKey: env.BIRDEYE_API_KEY, tier, transport: fetchTransport, clock: systemClock });
+  // The purchased Birdeye allowance is metered per calendar month by the provider, so the ledger
+  // resumes from the persisted spend instead of resetting on every restart (a restart loop could
+  // otherwise burn the whole month). Charges are written through in order; a failed write is
+  // logged and the in-memory ledger stays the stricter of the two.
+  const ledger = new ComputeUnitLedger(systemClock, tier.computeUnitsPerMonth);
+  const month = ComputeUnitLedger.monthKeyFor(systemClock.nowMs());
+  const persisted = await loadProviderSpend(sql, 'BIRDEYE', month);
+  if (persisted) ledger.restore({ month, used: persisted.usedCu, byEndpoint: persisted.byEndpoint });
+  logger.info('birdeye_ledger_restored', { month, used: ledger.snapshot().used, allowance: tier.computeUnitsPerMonth });
+  let writes: Promise<void> = Promise.resolve();
+  ledger.onCharge((c) => {
+    writes = writes
+      .then(async () => {
+        await chargeProviderSpend(sql, 'BIRDEYE', c.month, c.endpoint, c.cu);
+      })
+      .catch((err: unknown) => {
+        logger.error('birdeye_ledger_persist_failed', { error: err instanceof Error ? err.message : String(err) });
+      });
+  });
+  const birdeye = new BirdeyeClient({ apiKey: env.BIRDEYE_API_KEY, tier, transport: fetchTransport, clock: systemClock, ledger });
   let stopping = false;
   const stop = () => {
     stopping = true;
@@ -131,6 +152,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
     else loops.push(reconciliationLoop(env, logger, shared, env.SOLANA_RPC_URL));
   }
   await Promise.all(loops);
+  await writes;
   await sql.end({ timeout: 5 });
 }
 

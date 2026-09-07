@@ -2072,6 +2072,30 @@ export type Database = {
         }
         Relationships: []
       }
+      provider_spend: {
+        Row: {
+          by_endpoint: Json
+          month: string
+          provider: string
+          updated_at: string
+          used_cu: number
+        }
+        Insert: {
+          by_endpoint?: Json
+          month: string
+          provider: string
+          updated_at?: string
+          used_cu?: number
+        }
+        Update: {
+          by_endpoint?: Json
+          month?: string
+          provider?: string
+          updated_at?: string
+          used_cu?: number
+        }
+        Relationships: []
+      }
       retention_policies: {
         Row: {
           resolution: Database["enums"]["Enums"]["candle_resolution"]
@@ -2445,6 +2469,15 @@ export type Database = {
           expires_at: string
           id: string
         }[]
+      }
+      charge_provider_spend: {
+        Args: {
+          p_cu: number
+          p_endpoint: string
+          p_month: string
+          p_provider: string
+        }
+        Returns: number
       }
       consume_step_up_challenge: {
         Args: {
