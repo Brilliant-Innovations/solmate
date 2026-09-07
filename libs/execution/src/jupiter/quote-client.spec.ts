@@ -68,6 +68,9 @@ describe('JupiterSwapClient (ADR-0003 shared quote path; quote-only, never signs
   it('a 400 with a no-route code is NoRouteError; other statuses are JupiterHttpError; 429 is retried', async () => {
     const noRoute = new JupiterSwapClient({ transport: async () => ({ status: 400, headers: {}, body: JSON.stringify({ error: 'The token X is not tradable', errorCode: 'TOKEN_NOT_TRADABLE' }) }), clock: fixedClock(T0), sleep: async () => undefined, requestsPerSecond: 100 });
     await expect(noRoute.quote(request('1000'))).rejects.toBeInstanceOf(NoRouteError);
+    // Observed live on the restricted direct-route query, 2026-09-07.
+    const noRoutes = new JupiterSwapClient({ transport: async () => ({ status: 400, headers: {}, body: JSON.stringify({ error: 'No routes found', errorCode: 'NO_ROUTES_FOUND' }) }), clock: fixedClock(T0), sleep: async () => undefined, requestsPerSecond: 100 });
+    await expect(noRoutes.quote(request('1000'))).rejects.toBeInstanceOf(NoRouteError);
     const unauthorized = new JupiterSwapClient({ transport: async () => ({ status: 401, headers: {}, body: '{"error":"bad key"}' }), clock: fixedClock(T0), sleep: async () => undefined, requestsPerSecond: 100 });
     await expect(unauthorized.quote(request('1000'))).rejects.toBeInstanceOf(JupiterHttpError);
     const sleeps: number[] = [];

@@ -108,6 +108,8 @@ export const WorkerEnv = Common.extend({
   BIRDEYE_API_KEY: NonEmpty.optional(),
   BIRDEYE_TIER: z.enum(['STANDARD', 'LITE', 'STARTER', 'PREMIUM', 'BUSINESS']).default('STANDARD'),
   JUPITER_API_KEY: NonEmpty.optional(),
+  /** Requests per second the Jupiter plan allows (free keys are throttled hard by the API gateway; 1 is safe). */
+  JUPITER_REQUESTS_PER_SECOND: z.coerce.number().positive().max(100).default(1),
   /** Read-only Solana RPC for chain-truth reads (D45). The worker never signs; this is the only endpoint it may call. */
   SOLANA_RPC_URL: Url.optional(),
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */

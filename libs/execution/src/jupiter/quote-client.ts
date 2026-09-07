@@ -67,8 +67,9 @@ export class JupiterHttpError extends Error {
   }
 }
 
-/** Error codes Jupiter returns for "this pair cannot be routed" rather than "try again". */
-const NO_ROUTE_CODES = new Set(['COULD_NOT_FIND_ANY_ROUTE', 'TOKEN_NOT_TRADABLE', 'NOT_SUPPORTED', 'CIRCULAR_ARBITRAGE_IS_DISABLED', 'ROUTE_PLAN_DOES_NOT_CONSUME_ALL_THE_AMOUNT']);
+/** Error codes Jupiter returns for "this pair cannot be routed" rather than "try again" (observed: NO_ROUTES_FOUND, TOKEN_NOT_TRADABLE). */
+const NO_ROUTE_CODES = new Set(['NO_ROUTES_FOUND', 'COULD_NOT_FIND_ANY_ROUTE', 'TOKEN_NOT_TRADABLE', 'NOT_SUPPORTED', 'CIRCULAR_ARBITRAGE_IS_DISABLED', 'ROUTE_PLAN_DOES_NOT_CONSUME_ALL_THE_AMOUNT']);
+const isNoRouteCode = (code: string): boolean => NO_ROUTE_CODES.has(code) || /ROUTE/.test(code);
 
 export interface JupiterSwapClientOptions {
   transport?: JupiterHttpTransport;
@@ -166,7 +167,7 @@ export class JupiterSwapClient implements JupiterQuoteClient {
         const err = QuoteErrorRaw.safeParse(json);
         const code = err.success ? (err.data.errorCode ?? 'UNKNOWN') : 'UNKNOWN';
         const detail = err.success ? (err.data.error ?? '') : body;
-        if (status === 400 && NO_ROUTE_CODES.has(code)) throw new NoRouteError(code, detail);
+        if (status === 400 && isNoRouteCode(code)) throw new NoRouteError(code, detail);
         throw new JupiterHttpError(status, `${code} ${detail}`);
       }
       const parsed = QuoteRaw.safeParse(json);

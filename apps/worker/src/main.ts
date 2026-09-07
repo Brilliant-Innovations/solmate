@@ -135,7 +135,7 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared, 
   const cuBudgetPerCycle = Math.max(100, Math.floor(((tier.computeUnitsPerMonth ?? 0) * 0.9) / cyclesPerMonth));
   const requestBudgetPerCycle = Math.max(3, Math.floor(tier.requestsPerSecond * (intervalMs / 1000) * 0.5));
   const { sql } = shared;
-  const jupiter = new JupiterPriceClient({ transport: fetchTransport, clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_API_KEY ? 10 : 1 });
+  const jupiter = new JupiterPriceClient({ transport: fetchTransport, clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
   const repo: MarketRepo = {
     listTrackedAssets: (limit) => listTrackedAssets(sql, limit),
     heldBucketTimes: (assetId, resolution, from, to) => heldBucketTimes(sql, assetId, resolution, from, to),
@@ -165,7 +165,7 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, r
   const intervalMs = env.ELIGIBILITY_INTERVAL_MS;
   const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
   // The one shared Jupiter quote client (ADR-0003): keyless lite host at 1 rps, keyed host faster.
-  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_API_KEY ? 10 : 1 });
+  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
   const { sql } = shared;
   const deps = {
     rpc,
