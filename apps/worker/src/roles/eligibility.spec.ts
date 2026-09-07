@@ -128,7 +128,7 @@ describe('eligibility role (P2: chain truth first, analytics corroborates, route
     expect(record.freezeAuthority).toBe('PRESENT');
   });
 
-  it('a failing analytics call is recorded and the asset still gets a fail-closed record; a missing mint is an error, not a record', async () => {
+  it('a failing analytics call is recorded and the asset still gets a fail-closed record; a missing mint is a BLOCKED hard reject, never a retried error', async () => {
     const repo = new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]);
     const birdeye = birdeyeFor({ '/defi/token_security': () => ({ status: 500, headers: {}, body: 'boom' }), '/defi/token_overview': OVERVIEW_OK });
     const report = await runEligibilityCycle(deps(repo, rpcFor(null), birdeye, jupiterFor()));
@@ -139,8 +139,10 @@ describe('eligibility role (P2: chain truth first, analytics corroborates, route
     const missing = new SolanaRpcClient({ url: 'https://rpc.example.test', allowedOrigins: ['https://rpc.example.test'], transport: async (req) => ({ status: 200, body: JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(req.body).id, result: { context: { slot: 1 }, value: null } }) }) });
     const repo2 = new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]);
     const r2 = await runEligibilityCycle(deps(repo2, missing, birdeye, jupiterFor()));
-    expect(r2.errors).toEqual([{ assetId: ASSET, step: 'CHAIN', error: 'mint account not found' }]);
-    expect(repo2.records).toHaveLength(0);
+    expect(r2.errors).toEqual([]);
+    expect(r2.outcomes.BLOCKED).toBe(1);
+    expect(repo2.records).toHaveLength(1);
+    expect(repo2.records[0]).toMatchObject({ status: 'BLOCKED', record: { hardReject: true, eligible: false, rejectionReasons: ['MINT_NOT_INITIALIZED'], mintAuthority: 'UNKNOWN', jupiterRouteAvailable: false } });
   });
 
   it('publishes feed health for security and overview from its own calls: a 401 on security is FAILED and blocks entries, overview stays HEALTHY', async () => {

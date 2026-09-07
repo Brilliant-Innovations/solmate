@@ -107,7 +107,35 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
     try {
       chain = await readMintChainState(deps.rpc, mint, deps.clock);
     } catch (err) {
-      fail(asset.id, 'CHAIN', err instanceof MintNotFoundError ? 'mint account not found' : err);
+      if (err instanceof MintNotFoundError) {
+        // A mint account absent from chain is chain truth, not a transient error: record the hard reject and move the
+        // asset to BLOCKED (re-read on the slow cadence) instead of retrying it every cycle ahead of real assets, which
+        // starved the feed classes after a restart (review 2026-09-08).
+        let chainSlot = 0;
+        try {
+          chainSlot = await deps.rpc.getSlot();
+        } catch {
+          // slot unknown; the read time still dates the observation
+        }
+        try {
+          await deps.repo.recordEligibility(
+            {
+              id: randomUUID() as Uuid, assetId: asset.id, evaluatedAt: deps.clock.now(), policyVersion: deps.policy.version, eligible: false, hardReject: true, rejectionReasons: ['MINT_NOT_INITIALIZED'], grade: 0,
+              liquidityUsd: null, volume24hUsd: null, holderCount: null, concentration: null, mintAuthority: 'UNKNOWN', freezeAuthority: 'UNKNOWN', token2022: null, securityFlags: [], transferRestrictions: [],
+              jupiterRouteAvailable: false, settlementRouteConfirmed: false, priceImpactProbes: [], insiderMetrics: null, emergencyExitRouteSnapshotId: null,
+              freshness: { securityProviderAt: null, chainReadAt: deps.clock.now(), chainSlot: chainSlot as Slot },
+            },
+            'BLOCKED',
+          );
+          report.evaluated++;
+          report.outcomes.BLOCKED++;
+          deps.logger.warn('eligibility_mint_missing', { assetId: asset.id, mint, outcome: 'BLOCKED' });
+        } catch (persistErr) {
+          fail(asset.id, 'PERSIST', persistErr);
+        }
+        continue;
+      }
+      fail(asset.id, 'CHAIN', err);
       continue;
     }
 
