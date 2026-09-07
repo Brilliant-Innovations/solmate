@@ -3,7 +3,9 @@ import {
   DiscoveredToken,
   MintAddress,
   PriceQuote,
+  SolanaAddress,
   TokenOverview,
+  TokenSecurityReport,
   toInstant,
   type CandleResolution,
   type DataProvenance,
@@ -13,7 +15,7 @@ import {
 } from '@sol-agent-trader/contracts';
 import { isAligned } from '../candles/resolution.js';
 import type { z } from 'zod';
-import type { MultiPriceResponse, NewListingItem, OhlcvV3Item, TokenListItem, TokenOverviewResponse, TrendingItem } from './schemas.js';
+import type { MultiPriceResponse, NewListingItem, OhlcvV3Item, TokenListItem, TokenOverviewResponse, TokenSecurityResponse, TrendingItem } from './schemas.js';
 
 /**
  * Birdeye → canonical contracts. Every rejection is explicit and reasoned so ingestion can count
@@ -205,6 +207,53 @@ export function normalizeTokenList(items: readonly TokenListItem[], observedAt: 
     if (item) out.push(item);
   }
   return out;
+}
+
+/** Birdeye security → TokenSecurityReport (analytics corroboration only, D45). Strings become numbers only when they parse cleanly. */
+export function normalizeSecurity(mintAddress: string, data: NonNullable<z.infer<typeof TokenSecurityResponse>['data']>, observedAt: Instant): TokenSecurityReport | null {
+  const numish = (v: number | string | null | undefined): number | null => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+    return null;
+  };
+  const pctv = (v: number | string | null | undefined): number | null => {
+    const n = numish(v);
+    return n !== null && n >= 0 && n <= 100 ? n : null;
+  };
+  const addr = (v: string | null | undefined): string | null => (v && SolanaAddress.safeParse(v).success ? v : null);
+  let transferFeeBps: number | null = null;
+  const feeData = data.transferFeeData as { transferFeeBasisPoints?: unknown; transfer_fee_basis_points?: unknown; feeBasisPoints?: unknown } | null | undefined;
+  if (feeData && typeof feeData === 'object') {
+    const raw = feeData.transferFeeBasisPoints ?? feeData.transfer_fee_basis_points ?? feeData.feeBasisPoints;
+    const n = numish(raw as number | string | null | undefined);
+    if (n !== null && Number.isInteger(n) && n >= 0 && n <= 10_000) transferFeeBps = n;
+  }
+  const supply = numish(data.totalSupply);
+  const r = TokenSecurityReport.safeParse({
+    mintAddress,
+    provider: 'BIRDEYE',
+    observedAt,
+    creatorAddress: addr(data.creatorAddress),
+    creatorPercentage: pctv(data.creatorPercentage),
+    ownerPercentage: pctv(data.ownerPercentage),
+    top10HolderPercent: pctv(data.top10HolderPercent),
+    top10UserPercent: pctv(data.top10UserPercent),
+    metaplexUpdateAuthorityPercent: pctv(data.metaplexUpdateAuthorityPercent),
+    mutableMetadata: data.mutableMetadata ?? null,
+    freezeable: data.freezeable ?? null,
+    freezeAuthority: addr(data.freezeAuthority),
+    transferFeeEnabled: data.transferFeeEnable ?? null,
+    transferFeeBps,
+    isToken2022: data.isToken2022 ?? null,
+    nonTransferable: data.nonTransferable ?? null,
+    jupStrictList: data.jupStrictList ?? null,
+    fakeToken: data.fakeToken ?? null,
+    isTrueToken: data.isTrueToken ?? null,
+    creationAt: finite(data.creationTime) && data.creationTime > 0 ? toInstant(data.creationTime * 1000) : null,
+    totalSupply: supply !== null && supply >= 0 ? String(supply) : null,
+    preMarketHolderCount: Array.isArray(data.preMarketHolder) ? data.preMarketHolder.length : null,
+  });
+  return r.success ? r.data : null;
 }
 
 const OVERVIEW_WINDOWS: Readonly<Record<OverviewWindow, string>> = { m30: '30m', h1: '1h', h2: '2h', h4: '4h', h8: '8h', h24: '24h' };

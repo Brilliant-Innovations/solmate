@@ -107,6 +107,33 @@ export const TokenListItem = z.looseObject({
 export type TokenListItem = z.infer<typeof TokenListItem>;
 export const TokenListResponse = BirdeyeEnvelope(z.looseObject({ items: z.array(TokenListItem), hasNext: z.boolean().optional() }));
 
+/** GET /defi/token_security (Solana fields; numbers may arrive as strings) */
+const numOrStr = z.union([z.number(), z.string()]).nullable().optional();
+export const TokenSecurityResponse = BirdeyeEnvelope(
+  z.looseObject({
+    creatorAddress: str,
+    creatorPercentage: numOrStr,
+    ownerAddress: str,
+    ownerPercentage: numOrStr,
+    top10HolderPercent: numOrStr,
+    top10UserPercent: numOrStr,
+    metaplexUpdateAuthorityPercent: numOrStr,
+    mutableMetadata: z.boolean().nullable().optional(),
+    freezeable: z.boolean().nullable().optional(),
+    freezeAuthority: str,
+    transferFeeEnable: z.boolean().nullable().optional(),
+    transferFeeData: z.unknown().optional(),
+    isToken2022: z.boolean().nullable().optional(),
+    nonTransferable: z.boolean().nullable().optional(),
+    jupStrictList: z.boolean().nullable().optional(),
+    fakeToken: z.boolean().nullable().optional(),
+    isTrueToken: z.boolean().nullable().optional(),
+    creationTime: int,
+    totalSupply: numOrStr,
+    preMarketHolder: z.array(z.unknown()).nullable().optional(),
+  }),
+);
+
 /** GET /defi/token_overview */
 export const TokenOverviewResponse = BirdeyeEnvelope(
   z

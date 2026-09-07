@@ -42,6 +42,12 @@
     },
     {
       "path": "../../libs/db/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/risk/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/solana-hard-state/tsconfig.lib.json"
     }
   ]
 }

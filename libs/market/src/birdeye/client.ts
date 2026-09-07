@@ -8,14 +8,15 @@ import {
   type PriceQuote,
   type ProviderTier,
   type TokenOverview,
+  type TokenSecurityReport,
   type Uuid,
 } from '@sol-agent-trader/contracts';
 import type { z } from 'zod';
 import { ComputeUnitLedger, TokenBucket } from '../budget/rate-limiter.js';
 import { RESOLUTION_MS } from '../candles/resolution.js';
 import { HttpError, type HttpTransport, type HttpResponse } from '../http/transport.js';
-import { BIRDEYE_INTERVAL, normalizeCandles, normalizeNewListings, normalizeOverview, normalizePrices, normalizeTokenList, normalizeTrending, type NormalizedCandles } from './normalize.js';
-import { MultiPriceResponse, NewListingResponse, OhlcvV3Response, TokenListResponse, TokenOverviewResponse, TrendingResponse } from './schemas.js';
+import { BIRDEYE_INTERVAL, normalizeCandles, normalizeNewListings, normalizeOverview, normalizePrices, normalizeSecurity, normalizeTokenList, normalizeTrending, type NormalizedCandles } from './normalize.js';
+import { MultiPriceResponse, NewListingResponse, OhlcvV3Response, TokenListResponse, TokenOverviewResponse, TokenSecurityResponse, TrendingResponse } from './schemas.js';
 import { BIRDEYE_CU, BIRDEYE_ENDPOINT_LIMITS } from './tiers.js';
 
 /**
@@ -202,6 +203,13 @@ export class BirdeyeClient {
     );
     if (!data.success || !data.data) throw new ProviderResponseError('token_list_v3', data.message ?? 'success=false');
     return { tokens: normalizeTokenList(data.data.items, meta.observedAt), hasNext: data.data.hasNext ?? false, meta };
+  }
+
+  /** GET /defi/token_security: analytics corroboration for the chain read, never authority (D45). */
+  async security(mintAddress: string, priority: RequestPriority = 'NORMAL'): Promise<{ security: TokenSecurityReport | null; meta: CallMeta }> {
+    const { data, meta } = await this.get('token_security', '/defi/token_security', { address: mintAddress }, TokenSecurityResponse, BIRDEYE_CU.tokenSecurity, priority);
+    if (!data.success || !data.data) throw new ProviderResponseError('token_security', data.message ?? 'success=false');
+    return { security: normalizeSecurity(mintAddress, data.data, meta.observedAt), meta };
   }
 
   async overview(mintAddress: string, priority: RequestPriority = 'NORMAL'): Promise<{ overview: TokenOverview | null; meta: CallMeta }> {

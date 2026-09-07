@@ -35,8 +35,10 @@ invariants:
     owner_modules:
       - libs/risk/src/policy/eligibility-gate.ts
       - apps/risk-authorizer/src/authorize
-    tests: []
-    status: unmapped
+    tests:
+      - libs/risk/src/policy/eligibility-gate.spec.ts
+      - libs/risk/src/eligibility/engine.spec.ts
+    status: mapped
 
   - id: INV-04
     statement: "No duplicate active entry from the same idempotency key."

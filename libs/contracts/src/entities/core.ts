@@ -60,6 +60,8 @@ export const PriceImpactProbe = z.object({
   probedAt: Instant,
 });
 
+export type PriceImpactProbe = z.infer<typeof PriceImpactProbe>;
+
 export const DirectPoolProgram = z.enum(['RAYDIUM_AMM_V4', 'RAYDIUM_CPMM', 'RAYDIUM_CLMM', 'ORCA_WHIRLPOOL', 'METEORA_DLMM']);
 export type DirectPoolProgram = z.infer<typeof DirectPoolProgram>;
 

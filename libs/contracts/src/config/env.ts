@@ -108,8 +108,11 @@ export const WorkerEnv = Common.extend({
   BIRDEYE_API_KEY: NonEmpty.optional(),
   BIRDEYE_TIER: z.enum(['STANDARD', 'LITE', 'STARTER', 'PREMIUM', 'BUSINESS']).default('STANDARD'),
   JUPITER_API_KEY: NonEmpty.optional(),
+  /** Read-only Solana RPC for chain-truth reads (D45). The worker never signs; this is the only endpoint it may call. */
+  SOLANA_RPC_URL: Url.optional(),
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
   WORKER_ROLES: z.string().default(''),
+  ELIGIBILITY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
 });
 

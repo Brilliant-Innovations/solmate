@@ -33,7 +33,8 @@
         "SENTRY_DSN_WORKER",
         "BIRDEYE_API_KEY",
         "BIRDEYE_TIER",
-        "JUPITER_API_KEY"
+        "JUPITER_API_KEY",
+        "SOLANA_RPC_URL"
       ],
       "egress": [
         "supabase",
@@ -43,7 +44,8 @@
         "jupiter",
         "lunarcrush",
         "cryptopanic",
-        "llm-providers"
+        "llm-providers",
+        "solana-rpc-readonly"
       ],
       "durableJournal": "none"
     },
