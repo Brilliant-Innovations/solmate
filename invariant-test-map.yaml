@@ -105,8 +105,10 @@ invariants:
     owner_modules:
       - libs/signals/src/self-influence
       - libs/onchain/src/owned-addresses
-    tests: []
-    status: unmapped
+    tests:
+      - libs/signals/src/self-influence/guard.spec.ts
+      - libs/onchain/src/owned-addresses/registry.spec.ts
+    status: mapped
 
   - id: INV-12
     statement: "No DB-independent emergency command can increase exposure or send to an arbitrary address."

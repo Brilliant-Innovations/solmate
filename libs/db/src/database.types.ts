@@ -1243,19 +1243,25 @@ export type Database = {
       }
       owned_addresses: {
         Row: {
+          account_id: string | null
           address: string
+          cluster: Database["enums"]["Enums"]["solana_cluster"]
           purpose: string
           registered_at: string
           retired_at: string | null
         }
         Insert: {
+          account_id?: string | null
           address: string
+          cluster?: Database["enums"]["Enums"]["solana_cluster"]
           purpose: string
           registered_at?: string
           retired_at?: string | null
         }
         Update: {
+          account_id?: string | null
           address?: string
+          cluster?: Database["enums"]["Enums"]["solana_cluster"]
           purpose?: string
           registered_at?: string
           retired_at?: string | null
@@ -3043,6 +3049,149 @@ export type Database = {
           },
         ]
       }
+      custody_movements: {
+        Row: {
+          account_id: string
+          amount: number
+          block_time: string | null
+          classification: string
+          created_at: string
+          decimals: number
+          failed: boolean
+          from_owner: string | null
+          from_token_account: string | null
+          kind: string
+          lifecycle_id: string | null
+          mint: string | null
+          movement_index: number
+          reason: string | null
+          reconciliation_id: string
+          signature: string
+          slot: number
+          summary_type: string | null
+          to_owner: string | null
+          to_token_account: string | null
+        }
+        Insert: {
+          account_id: string
+          amount: number
+          block_time?: string | null
+          classification: string
+          created_at?: string
+          decimals: number
+          failed?: boolean
+          from_owner?: string | null
+          from_token_account?: string | null
+          kind: string
+          lifecycle_id?: string | null
+          mint?: string | null
+          movement_index: number
+          reason?: string | null
+          reconciliation_id: string
+          signature: string
+          slot: number
+          summary_type?: string | null
+          to_owner?: string | null
+          to_token_account?: string | null
+        }
+        Update: {
+          account_id?: string
+          amount?: number
+          block_time?: string | null
+          classification?: string
+          created_at?: string
+          decimals?: number
+          failed?: boolean
+          from_owner?: string | null
+          from_token_account?: string | null
+          kind?: string
+          lifecycle_id?: string | null
+          mint?: string | null
+          movement_index?: number
+          reason?: string | null
+          reconciliation_id?: string
+          signature?: string
+          slot?: number
+          summary_type?: string | null
+          to_owner?: string | null
+          to_token_account?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "custody_movements_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "custody_movements_reconciliation_id_fkey"
+            columns: ["reconciliation_id"]
+            isOneToOne: false
+            referencedRelation: "custody_reconciliations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      custody_reconciliations: {
+        Row: {
+          account_id: string
+          balances: Json
+          chain_slot: number | null
+          created_at: string
+          cursor: Json
+          evaluated_at: string
+          id: string
+          movement_source: string
+          pause_triggered: boolean
+          policy_version: string
+          reasons: unknown[]
+          status: string
+          unexpected_token_accounts: Json
+          unparsed_signatures: string[]
+        }
+        Insert: {
+          account_id: string
+          balances: Json
+          chain_slot?: number | null
+          created_at?: string
+          cursor: Json
+          evaluated_at: string
+          id?: string
+          movement_source: string
+          pause_triggered: boolean
+          policy_version: string
+          reasons?: unknown[]
+          status: string
+          unexpected_token_accounts?: Json
+          unparsed_signatures?: string[]
+        }
+        Update: {
+          account_id?: string
+          balances?: Json
+          chain_slot?: number | null
+          created_at?: string
+          cursor?: Json
+          evaluated_at?: string
+          id?: string
+          movement_source?: string
+          pause_triggered?: boolean
+          policy_version?: string
+          reasons?: unknown[]
+          status?: string
+          unexpected_token_accounts?: Json
+          unparsed_signatures?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "custody_reconciliations_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       fills: {
         Row: {
           commitment: Database["enums"]["Enums"]["chain_commitment"]
@@ -3745,6 +3894,48 @@ export type Database = {
           },
         ]
       }
+      reconciliation_cursors: {
+        Row: {
+          account_id: string
+          last_reconciliation_id: string | null
+          last_signature: string | null
+          last_slot: number | null
+          sol_lamports: number | null
+          updated_at: string
+        }
+        Insert: {
+          account_id: string
+          last_reconciliation_id?: string | null
+          last_signature?: string | null
+          last_slot?: number | null
+          sol_lamports?: number | null
+          updated_at?: string
+        }
+        Update: {
+          account_id?: string
+          last_reconciliation_id?: string | null
+          last_signature?: string | null
+          last_slot?: number | null
+          sol_lamports?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reconciliation_cursors_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: true
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reconciliation_cursors_last_reconciliation_id_fkey"
+            columns: ["last_reconciliation_id"]
+            isOneToOne: false
+            referencedRelation: "custody_reconciliations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       risk_authorizations: {
         Row: {
           authorization_hash: string
@@ -3931,6 +4122,7 @@ export type Database = {
     }
     Functions: {
       record_position_safety: { Args: { p_evaluation: Json }; Returns: string }
+      record_reconciliation: { Args: { p_report: Json }; Returns: string }
     }
     Enums: {
       [_ in never]: never

@@ -1,4 +1,4 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
   heldBucketTimes,
@@ -7,13 +7,21 @@ import {
   latestEligibilityBaseline,
   latestEmergencySnapshot,
   LeaseManager,
+  ledgerExpectations,
+  lifecycleForSignature,
   listAssetsForEvaluation,
+  listCustodyAccounts,
   listOpenPositions,
+  listOwnedAddresses,
   listTrackedAssets,
+  listTradingAccounts,
   loadCandles,
   previousSafetyBaseline,
+  reconciliationCursor,
   recordEligibility,
   recordPositionSafety,
+  recordReconciliation,
+  registerOwnedAddress,
   runWithLease,
   upsertDiscoveredAssets,
   upsertFeedHealth,
@@ -23,10 +31,12 @@ import {
 import { JupiterSwapClient } from '@sol-agent-trader/execution';
 import { BIRDEYE_TIERS, BirdeyeClient, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
+import { HeliusClient } from '@sol-agent-trader/onchain';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
 import { runEligibilityCycle } from './roles/eligibility.js';
 import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
+import { runReconciliationCycle } from './roles/reconciliation.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -43,6 +53,7 @@ import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './rol
  *   market-ingest  discovery, candles, snapshots, feed health (needs BIRDEYE_API_KEY)
  *   eligibility    chain-truth reads + analytics corroboration → §6.2 records (needs SOLANA_RPC_URL and BIRDEYE_API_KEY)
  *   held-asset-safety  open positions: chain truth, sell probe, emergency-pool re-verification → §7.5 safety state (same needs)
+ *   reconciliation  chain/custody truth per trading account, movements via Helius, unknown-movement pause (D9; needs SOLANA_RPC_URL; HELIUS_API_KEY to explain movements)
  * All roles share one Birdeye client so the purchased compute-unit allowance is one budget.
  */
 const SERVICE = 'worker' as const;
@@ -75,7 +86,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -114,6 +125,10 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('held-asset-safety')) {
     if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['held-asset-safety'], reason: 'SOLANA_RPC_URL not set' });
     else loops.push(heldAssetSafetyLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  }
+  if (roles.has('reconciliation')) {
+    if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['reconciliation'], reason: 'SOLANA_RPC_URL not set' });
+    else loops.push(reconciliationLoop(env, logger, shared, env.SOLANA_RPC_URL));
   }
   await Promise.all(loops);
   await sql.end({ timeout: 5 });
@@ -229,6 +244,35 @@ async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: Share
   logger.info('held_asset_safety_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_SAFETY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, holder: shared.holder });
   await loopUnderLease('held-asset-safety', intervalMs, logger, shared, async () => {
     await runHeldAssetSafetyCycle(deps);
+  });
+}
+
+async function reconciliationLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
+  const intervalMs = env.RECONCILIATION_INTERVAL_MS;
+  const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
+  const helius = env.HELIUS_API_KEY ? new HeliusClient({ apiKey: env.HELIUS_API_KEY, clock: systemClock }) : null;
+  if (!helius) logger.warn('reconciliation_without_helius', { effect: 'any signature touching a trading wallet pauses new entries until HELIUS_API_KEY is set' });
+  const { sql } = shared;
+  const deps = {
+    rpc,
+    helius,
+    repo: {
+      listTradingAccounts: () => listTradingAccounts(sql),
+      listCustodyAccounts: (accountId: Parameters<typeof listCustodyAccounts>[1], now: Parameters<typeof listCustodyAccounts>[2]) => listCustodyAccounts(sql, accountId, now),
+      ledgerExpectations: (accountId: Parameters<typeof ledgerExpectations>[1]) => ledgerExpectations(sql, accountId),
+      reconciliationCursor: (accountId: Parameters<typeof reconciliationCursor>[1]) => reconciliationCursor(sql, accountId),
+      lifecycleForSignature: (signature: Parameters<typeof lifecycleForSignature>[1]) => lifecycleForSignature(sql, signature),
+      recordReconciliation: (report: Parameters<typeof recordReconciliation>[1]) => recordReconciliation(sql, report),
+      listOwnedAddresses: () => listOwnedAddresses(sql),
+      registerOwnedAddress: (a: Parameters<typeof registerOwnedAddress>[1]) => registerOwnedAddress(sql, a),
+    },
+    clock: systemClock,
+    logger,
+    policy: DEFAULT_RECONCILIATION_POLICY,
+  };
+  logger.info('reconciliation_starting', { intervalMs, policyVersion: DEFAULT_RECONCILIATION_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, helius: helius !== null, holder: shared.holder });
+  await loopUnderLease('reconciliation', intervalMs, logger, shared, async () => {
+    await runReconciliationCycle(deps);
   });
 }
 

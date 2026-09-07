@@ -131,6 +131,7 @@
     "@sol-agent-trader/db": "workspace:*",
     "@sol-agent-trader/risk": "workspace:*",
     "@sol-agent-trader/solana-hard-state": "workspace:*",
-    "@sol-agent-trader/execution": "workspace:*"
+    "@sol-agent-trader/execution": "workspace:*",
+    "@sol-agent-trader/onchain": "workspace:*"
   }
 }

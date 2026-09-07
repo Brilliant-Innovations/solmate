@@ -112,11 +112,15 @@ export const WorkerEnv = Common.extend({
   JUPITER_REQUESTS_PER_SECOND: z.coerce.number().positive().max(100).default(1),
   /** Read-only Solana RPC for chain-truth reads (D45). The worker never signs; this is the only endpoint it may call. */
   SOLANA_RPC_URL: Url.optional(),
+  /** Helius Parsed Events for movement parsing (§3.2). Absent = signatures on the trading wallet cannot be explained and reconciliation pauses entries. */
+  HELIUS_API_KEY: NonEmpty.optional(),
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
   WORKER_ROLES: z.string().default(''),
   ELIGIBILITY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
   /** Held-asset safety revalidation cadence (§7.5); short because a CRITICAL_EXIT must be seen quickly. */
   HELD_ASSET_SAFETY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
+  /** Chain/custody reconciliation cadence (D9); an unknown movement pauses new entries within one interval. */
+  RECONCILIATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
 });
 

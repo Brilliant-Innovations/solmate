@@ -12,3 +12,4 @@ export * from './ops.js';
 export * from './step-up.js';
 export * from './audit.js';
 export * from './safety.js';
+export * from './onchain.js';

@@ -31,7 +31,7 @@ export const fetchRpcTransport: RpcTransport = async (req) => {
 
 export type Commitment = 'confirmed' | 'finalized';
 
-const READ_ONLY_METHODS = ['getAccountInfo', 'getMultipleAccounts', 'getTokenSupply', 'getTokenLargestAccounts', 'getSlot', 'getBlockHeight'] as const;
+const READ_ONLY_METHODS = ['getAccountInfo', 'getMultipleAccounts', 'getTokenSupply', 'getTokenLargestAccounts', 'getSlot', 'getBlockHeight', 'getBalance', 'getTokenAccountsByOwner', 'getSignaturesForAddress'] as const;
 export type ReadOnlyMethod = (typeof READ_ONLY_METHODS)[number];
 
 const RpcEnvelope = z.object({
@@ -91,6 +91,39 @@ export const TokenLargestAccounts = z.object({
   context: z.object({ slot: z.number().int().nonnegative() }),
   value: z.array(TokenAmount.extend({ address: z.string() })).max(20),
 });
+
+export const Balance = z.object({ context: z.object({ slot: z.number().int().nonnegative() }), value: z.number().int().nonnegative() });
+
+/** jsonParsed token account as returned by getTokenAccountsByOwner. */
+export const ParsedTokenAccount = z.object({
+  pubkey: z.string(),
+  account: z.object({
+    owner: z.string(),
+    lamports: z.number(),
+    data: z.object({
+      program: z.string(),
+      parsed: z.object({
+        type: z.string(),
+        info: z.object({
+          mint: z.string(),
+          owner: z.string(),
+          tokenAmount: TokenAmount,
+          state: z.string().optional(),
+        }),
+      }),
+    }),
+  }),
+});
+export const TokenAccountsByOwner = z.object({ context: z.object({ slot: z.number().int().nonnegative() }), value: z.array(ParsedTokenAccount) });
+export type TokenAccountsByOwner = z.infer<typeof TokenAccountsByOwner>;
+
+export const SignatureInfo = z.object({
+  signature: z.string(),
+  slot: z.number().int().nonnegative(),
+  blockTime: z.number().int().nullable().optional(),
+  err: z.unknown().nullable().optional(),
+});
+export type SignatureInfo = z.infer<typeof SignatureInfo>;
 
 export class SolanaRpcClient {
   private readonly transport: RpcTransport;
@@ -185,5 +218,21 @@ export class SolanaRpcClient {
 
   getTokenLargestAccounts(mint: string): Promise<z.infer<typeof TokenLargestAccounts>> {
     return this.call('getTokenLargestAccounts', [mint, { commitment: this.commitment }], TokenLargestAccounts);
+  }
+
+  getBalance(address: string): Promise<z.infer<typeof Balance>> {
+    return this.call('getBalance', [address, { commitment: this.commitment }], Balance);
+  }
+
+  /** Every token account of `owner` under one token program, parsed by the node. */
+  getTokenAccountsByOwner(owner: string, programId: string): Promise<TokenAccountsByOwner> {
+    return this.call('getTokenAccountsByOwner', [owner, { programId }, { encoding: 'jsonParsed', commitment: this.commitment }], TokenAccountsByOwner);
+  }
+
+  /** Signatures touching `address`, newest first, stopping at `until` (exclusive) when given. */
+  getSignaturesForAddress(address: string, opts: { until?: string | null; limit?: number } = {}): Promise<SignatureInfo[]> {
+    const params: Record<string, unknown> = { commitment: this.commitment, limit: opts.limit ?? 100 };
+    if (opts.until) params['until'] = opts.until;
+    return this.call('getSignaturesForAddress', [address, params], z.array(SignatureInfo));
   }
 }

@@ -50,7 +50,7 @@ The worker validates its whole credential set before it does anything, so the en
 
 4. Start it. Container route: `docker compose up --build worker` from this directory. Process route: `pnpm nx serve @sol-agent-trader/worker` with the values exported in the shell. A successful start logs `startup`, then `market_ingest_starting` with the budgets computed from the tier, then one `market_ingest_cycle` line per cycle with counts of candles written and rejected, assets discovered, snapshots and errors. Feed health lands in `ops.provider_health` and is visible to the web app.
 
-   Add `eligibility` and `held-asset-safety` to `WORKER_ROLES` once `SOLANA_RPC_URL` is set; safety re-checks every open position each `HELD_ASSET_SAFETY_INTERVAL_MS` (default 60 s) and logs `position_safety_changed` whenever a state moves. Migration 001400 must be applied for that role.
+   Add `eligibility` and `held-asset-safety` to `WORKER_ROLES` once `SOLANA_RPC_URL` is set; safety re-checks every open position each `HELD_ASSET_SAFETY_INTERVAL_MS` (default 60 s) and logs `position_safety_changed` whenever a state moves. Migration 001400 must be applied for that role. `reconciliation` compares every trading account's wallet against the ledger each `RECONCILIATION_INTERVAL_MS` and pauses running sessions on any unexplained balance or movement (migration 001500); set `HELIUS_API_KEY` (free tier) or every transaction touching the wallet counts as unexplained.
 
 If the worker exits with `env_invalid`, the log names the missing or forbidden variables (never their values). If it logs `market_ingest_lease_unavailable`, another worker holds the `market-ingest` lease; stop it or wait for the 90-second lease to lapse.
 

@@ -51,6 +51,9 @@
     },
     {
       "path": "../../libs/execution/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/onchain/tsconfig.lib.json"
     }
   ]
 }
