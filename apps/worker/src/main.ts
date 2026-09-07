@@ -1,26 +1,37 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
   applyExit,
+  coldStartFacts,
   createIntent,
+  createRuntimeSession,
   createSql,
   ensurePaperAccount,
   ensureSleeve,
   ensureStrategyVersion,
   entryHealth,
+  findOpenSession,
   finishAttempt,
   highSince,
   insertPortfolioSnapshot,
   journalAttempt,
   listCyclesAwaitingEntry,
   listOpenPositionsForAccount,
+  listPendingControlRequests,
+  loadSession,
   openPosition,
   paperBook,
+  persistRuntimeTransition,
   recordExitDecision,
   recordRiskEvaluation,
+  resolveControlRequest,
+  saveColdStartGates,
+  sessionEntryGate,
   setIntentState,
+  stepUpVerifiedFor,
   tightenStop,
   updateMark,
+  windDownFacts,
   listCandidatesAwaitingStrategy,
   persistS0Decisions,
   heldBucketTimes,
@@ -80,6 +91,8 @@ import { runCandidatesCycle } from './roles/candidates.js';
 import { runS0Cycle } from './roles/s0.js';
 import { runPaperEntryCycle } from './roles/paper-entry.js';
 import { runPositionMonitorCycle } from './roles/position-monitor.js';
+import { runSessionCycle } from './roles/session.js';
+import { newEntriesAllowed } from '@sol-agent-trader/risk';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -132,7 +145,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -215,6 +228,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
   if (roles.has('paper-entry')) loops.push(paperEntryLoop(env, logger, shared));
   if (roles.has('position-monitor')) loops.push(positionMonitorLoop(env, logger, shared));
+  if (roles.has('session')) loops.push(sessionLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -517,7 +531,11 @@ async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
     repo: {
       listAwaiting: (ids: Parameters<typeof listCyclesAwaitingEntry>[1], limit: number) => listCyclesAwaitingEntry(sql, ids, limit),
       book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
-      health: () => entryHealth(sql),
+      health: async () => {
+        const h = await entryHealth(sql);
+        const gate = await sessionEntryGate(sql, account.id);
+        return { ...h, sessionAllowsEntries: gate !== null && newEntriesAllowed({ activity: gate.activity, authority: gate.authority, paused: gate.paused, pausedBy: null, attended: gate.attended, liveCapabilityEnabled: false }) };
+      },
       recordRiskEvaluation: (e: Parameters<typeof recordRiskEvaluation>[1]) => recordRiskEvaluation(sql, e),
       createIntent: (i: Parameters<typeof createIntent>[1], lifecycle: 'AUTHORIZED') => createIntent(sql, i, lifecycle),
       setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
@@ -586,6 +604,7 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
       applyExit: (x: Parameters<typeof applyExit>[1]) => applyExit(sql, x),
       book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
       writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
+      sessionActivity: async () => (await sessionEntryGate(sql, account.id))?.activity ?? null,
     },
     adapter,
     exitQuote: async (inputMint: MintAddress, outputMint: MintAddress, inputAmount: typeof startingCapital, maxSlippageBps: Parameters<typeof shared.jupiter.quote>[0]['maxSlippageBps'], now: Parameters<typeof paperBook>[4]) => {
@@ -607,6 +626,46 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
   logger.info('position_monitor_starting', { intervalMs, accountId: account.id, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
   await loopUnderLease('position-monitor', intervalMs, logger, shared, async () => {
     await runPositionMonitorCycle(deps);
+  });
+}
+
+async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.SESSION_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('session_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
+  const attended = env.DEPLOYMENT_PROFILE === 'P1A' || env.DEPLOYMENT_PROFILE === 'P2';
+  const deps = {
+    repo: {
+      findOpenSession: (accountId: Uuid) => findOpenSession(sql, accountId),
+      createSession: async (input: { accountId: Uuid; profile: Parameters<typeof createRuntimeSession>[1]['profile']; attended: boolean; capitalAuthority: Parameters<typeof createRuntimeSession>[1]['capitalAuthority'] }) => (await createRuntimeSession(sql, input)) as Uuid,
+      loadSession: (id: Uuid) => loadSession(sql, id),
+      persistTransition: async (t: Parameters<typeof persistRuntimeTransition>[1]) => {
+        await persistRuntimeTransition(sql, t);
+      },
+      saveColdStartGates: (id: Uuid, gates: Parameters<typeof saveColdStartGates>[2]) => saveColdStartGates(sql, id, gates),
+      coldStartFacts: (now: Parameters<typeof coldStartFacts>[1]) => coldStartFacts(sql, now, { requiredFeatures: FEATURE_ENGINE_V1.requiredForScoring, featureWindowMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs, safetyMaxAgeMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs }),
+      windDownFacts: (accountId: Uuid) => windDownFacts(sql, accountId),
+      listPendingControlRequests: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
+      stepUpVerifiedFor: (id: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, id, now),
+      resolveControlRequest: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
+    },
+    clock: systemClock,
+    logger,
+    policy: DEFAULT_SESSION_POLICY,
+    account: { id: account.id },
+    profile: env.DEPLOYMENT_PROFILE,
+    attended,
+    authority: 'PAPER' as const,
+    autoStart: env.SESSION_AUTOSTART === 'true',
+  };
+  logger.info('session_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, attended, autoStart: deps.autoStart, policy: DEFAULT_SESSION_POLICY.version, holder: shared.holder });
+  await loopUnderLease('session', intervalMs, logger, shared, async () => {
+    await runSessionCycle(deps);
   });
 }
 

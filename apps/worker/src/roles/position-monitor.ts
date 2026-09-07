@@ -32,6 +32,8 @@ export interface PositionMonitorRepo {
   applyExit(x: ExitApplication): Promise<void>;
   book(now: Instant): Promise<PaperBook>;
   writeSnapshot(snapshot: PortfolioSnapshot): Promise<void>;
+  /** The account's open session activity; WIND_DOWN closes every paper lot (§21.2B step 4). */
+  sessionActivity(): Promise<string | null>;
 }
 
 export interface PositionMonitorDeps {
@@ -66,11 +68,13 @@ export async function runPositionMonitorCycle(deps: PositionMonitorDeps): Promis
   const report: PositionMonitorReport = { positions: 0, marked: 0, unmarked: 0, held: 0, tightened: 0, exits: 0, reductions: 0, filled: 0, notFilled: 0, exitsByReason: {}, errors: [] };
   const positions = await deps.repo.listOpenPositions(deps.config.batchSize);
   report.positions = positions.length;
+  const windDown = (await deps.repo.sessionActivity()) === 'WIND_DOWN';
 
   for (const p of positions) {
     try {
       const quote = await deps.exitQuote(p.mint, deps.account.settlementMint, p.quantity, deps.policy.maxSlippageBps, now);
       const safetyExit = p.safetyState === 'CRITICAL_EXIT' || p.safetyState === 'EXIT_RECOMMENDED';
+      const forcedReason = windDown ? 'SESSION_WIND_DOWN' : safetyExit ? `SAFETY_${p.safetyState}` : null;
       if (!quote) {
         report.unmarked++;
         deps.logger.warn('position_unmarked', { positionId: p.id, asset: p.symbol, safetyState: p.safetyState, hint: safetyExit ? 'exit wanted but no route now; held-asset safety owns NO_EXIT_PATH' : 'no exit route for a mark this cycle' });
@@ -86,8 +90,8 @@ export async function runPositionMonitorCycle(deps: PositionMonitorDeps): Promis
       }
 
       let decision: ExitDecision;
-      if (safetyExit) {
-        decision = { action: 'EXIT', stop: p.unreviewedStop ?? p.stop?.level ?? 0, reasons: [`SAFETY_${p.safetyState}`] };
+      if (forcedReason) {
+        decision = { action: 'EXIT', stop: p.unreviewedStop ?? p.stop?.level ?? 0, reasons: [forcedReason] };
       } else {
         const candleHigh = await deps.repo.highSince(p.assetId, p.openedAt, now);
         const high = Math.max(candleHigh ?? 0, price, p.averageEntryPrice);

@@ -43,6 +43,8 @@ class MemoryRepo implements PositionMonitorRepo {
   async applyExit(x: ExitApplication) { this.exits.push(x); }
   async book(): Promise<PaperBook> { return { settlementBalance: '9800000000' as Amount, exposureAtCost: '200000000' as Amount, markValue: '210000000' as Amount, realizedBySleeve: { [id(5)]: '0' }, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: '10000000000' as Amount, rollingHighEquity: '10050000000' as Amount }; }
   async writeSnapshot(s: PortfolioSnapshot) { this.snapshots.push(s); }
+  activity: string | null = 'ACTIVE';
+  async sessionActivity() { return this.activity; }
 }
 
 /** Exit quote: selling 2 tokens returns `usdc` USDC. */
@@ -124,6 +126,12 @@ describe('worker role position-monitor (§13.4–13.5, §17.2, D31, D39, D44)', 
     const report2 = await runPositionMonitorCycle(deps(repo2, 220n)); // price 110: no policy exit, safety forces one
     expect(report2).toMatchObject({ exits: 1, filled: 1, exitsByReason: { SAFETY_CRITICAL_EXIT: 1 } });
     expect(repo2.decisions[0]!.cycle.reasonCodes).toEqual(['SAFETY_CRITICAL_EXIT']);
+
+    const repo3 = new MemoryRepo();
+    repo3.positions = [position()];
+    repo3.activity = 'WIND_DOWN';
+    const report3 = await runPositionMonitorCycle(deps(repo3, 220n)); // healthy price, but the session is winding down
+    expect(report3).toMatchObject({ exits: 1, filled: 1, exitsByReason: { SESSION_WIND_DOWN: 1 } });
   });
 
   it('a not-landed exit leaves the position open with a FAILED intent so the next cycle retries under a new key', async () => {

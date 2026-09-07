@@ -21,7 +21,7 @@ const state = (over: Partial<PortfolioState> = {}): PortfolioState => ({
   cohort: null,
   cluster: null,
   drawdown: { dailyFraction: 0, rollingFraction: 0, consecutiveLosses: 0, circuitBreakerTripped: false, breakerTrippedAt: null },
-  health: { feedsBlockEntries: false, staleDataClasses: [{ dataClass: 'CANDIDATE_PRICE', ageMs: 3_000, limitMs: 15_000 }], reconciliationClean: true, dbAvailable: true, executionAnomalies: 0, providerAuthFailure: false, clockDriftMs: 0, operatorKill: false },
+  health: { feedsBlockEntries: false, staleDataClasses: [{ dataClass: 'CANDIDATE_PRICE', ageMs: 3_000, limitMs: 15_000 }], reconciliationClean: true, dbAvailable: true, executionAnomalies: 0, providerAuthFailure: false, clockDriftMs: 0, operatorKill: false, sessionAllowsEntries: true },
   ...over,
 });
 const proposal = (over: Partial<EntryProposal> = {}): EntryProposal => ({
@@ -48,6 +48,7 @@ describe('deterministic entry evaluation (§13.1–13.6, INV-02, INV-03, ADR-000
   it('§13.6 kill conditions and §13.1 portfolio rules refuse with their reasons, and a refusal never carries a size', () => {
     const cases: [Partial<PortfolioState>, string][] = [
       [{ health: { ...state().health, operatorKill: true } }, 'OPERATOR_KILL'],
+      [{ health: { ...state().health, sessionAllowsEntries: false } }, 'SESSION_NOT_ACTIVE'],
       [{ health: { ...state().health, reconciliationClean: false } }, 'CUSTODY_MISMATCH'],
       [{ health: { ...state().health, feedsBlockEntries: true } }, 'FEEDS_STALE'],
       [{ health: { ...state().health, dbAvailable: false } }, 'DB_UNAVAILABLE'],

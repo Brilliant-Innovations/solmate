@@ -121,6 +121,7 @@ export const RISK_REASONS = [
   'PROVIDER_AUTH_FAILURE',
   'CLOCK_DRIFT',
   'OPERATOR_KILL',
+  'SESSION_NOT_ACTIVE',
   'SYSTEM_DEGRADED',
 ] as const;
 export type RiskReason = (typeof RISK_REASONS)[number];

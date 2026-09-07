@@ -20,7 +20,7 @@ import { evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
 export interface PaperEntryRepo {
   listAwaiting(strategyVersionIds: VersionId[], limit: number): Promise<EntryCandidateRow[]>;
   book(now: Instant): Promise<PaperBook>;
-  health(): Promise<{ feedsBlockEntries: boolean; entriesPaused: boolean }>;
+  health(): Promise<{ feedsBlockEntries: boolean; entriesPaused: boolean; sessionAllowsEntries: boolean }>;
   recordRiskEvaluation(e: RiskEvaluation): Promise<void>;
   createIntent(intent: TradeIntent, lifecycle: 'AUTHORIZED'): Promise<void>;
   setIntentState(intentId: Uuid, state: TradeIntentState): Promise<void>;
@@ -220,7 +220,7 @@ export function equityOf(book: PaperBook): Amount {
   return addAmounts(book.settlementBalance, book.markValue);
 }
 
-function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBlockEntries: boolean; entriesPaused: boolean }, sleeve: StrategySleeve, assetId: Uuid): PortfolioState {
+function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBlockEntries: boolean; entriesPaused: boolean; sessionAllowsEntries: boolean }, sleeve: StrategySleeve, assetId: Uuid): PortfolioState {
   const equity = equityOf(book);
   const assetExposure = book.openPositions.filter((p) => p.assetId === assetId).reduce((acc, p) => addAmounts(acc, p.costBasis), '0' as Amount);
   const gas = compareAmounts(deps.account.virtualSolLamports, book.feesLamports) > 0 ? subAmounts(deps.account.virtualSolLamports, book.feesLamports) : ('0' as Amount);
@@ -254,6 +254,7 @@ function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBl
       providerAuthFailure: false,
       clockDriftMs: 0,
       operatorKill: health.entriesPaused,
+      sessionAllowsEntries: health.sessionAllowsEntries,
     },
   };
 }

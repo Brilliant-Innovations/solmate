@@ -37,6 +37,8 @@ export interface PortfolioState {
     providerAuthFailure: boolean;
     clockDriftMs: number;
     operatorKill: boolean;
+    /** The runtime session permits new entries (D60: running, not paused, authority above OBSERVE). */
+    sessionAllowsEntries: boolean;
   };
 }
 
@@ -77,6 +79,7 @@ export function evaluateEntry(policy: RiskPolicy, state: PortfolioState, proposa
 
   // --- §13.6 kill conditions: new entries pause outright ----------------------------------------
   if (state.health.operatorKill) reasons.add('OPERATOR_KILL');
+  if (!state.health.sessionAllowsEntries) reasons.add('SESSION_NOT_ACTIVE');
   if (!state.health.reconciliationClean) reasons.add('CUSTODY_MISMATCH');
   if (state.health.feedsBlockEntries) reasons.add('FEEDS_STALE');
   if (!state.health.dbAvailable) reasons.add('DB_UNAVAILABLE');

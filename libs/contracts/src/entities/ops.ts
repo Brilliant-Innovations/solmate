@@ -117,6 +117,8 @@ export const ColdStartGate = z.object({
   detail: z.string().nullable(),
 });
 
+export type ColdStartGate = z.infer<typeof ColdStartGate>;
+
 export const SessionTransition = z.object({
   from: ActivityState,
   to: ActivityState,

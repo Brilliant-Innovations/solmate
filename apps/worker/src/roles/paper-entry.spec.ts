@@ -32,7 +32,7 @@ class MemoryRepo implements PaperEntryRepo {
   positions: { position: Position; lot: PositionLot }[] = [];
   snapshots: PortfolioSnapshot[] = [];
   bookState: PaperBook = { settlementBalance: '10000000000' as Amount, exposureAtCost: '0' as Amount, markValue: '0' as Amount, realizedBySleeve: {}, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [sleeve], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: null, rollingHighEquity: null };
-  healthState = { feedsBlockEntries: false, entriesPaused: false };
+  healthState = { feedsBlockEntries: false, entriesPaused: false, sessionAllowsEntries: true };
   async listAwaiting() { return this.rows.filter((r) => !this.evaluations.some((e) => e.actionCycleId === r.cycle.id)); }
   async book() { return this.bookState; }
   async health() { return this.healthState; }
@@ -88,7 +88,7 @@ describe('worker role paper-entry (§13, §17, M5a first paper trade)', () => {
   it('a refused evaluation is recorded once and creates no intent; a second cycle sees the first fill as exposure', async () => {
     const repo = new MemoryRepo();
     repo.rows = [row(), row({ cycle: { ...row().cycle, id: id(30) }, proposal: { ...row().proposal, id: id(31), actionCycleId: id(30) } })];
-    repo.healthState = { feedsBlockEntries: true, entriesPaused: false };
+    repo.healthState = { feedsBlockEntries: true, entriesPaused: false, sessionAllowsEntries: true };
     const quotes = scriptedQuoteClient([quoteOf(200_000_000n, 2_000_000_000n, 100, 20, USDC, TOKEN, NOW)]);
     const report = await runPaperEntryCycle(deps(repo, quotes));
     expect(report).toMatchObject({ scanned: 2, allowed: 0, refused: 2, filled: 0, refusalsByCode: { FEEDS_STALE: 2 } });
