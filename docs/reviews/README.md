@@ -27,3 +27,11 @@ Each gate milestone ends with an independent review by a **different model sessi
 
 Gate PASS / gate BLOCKED. Unresolved critical/high findings block the gate.
 ```
+
+## Other records
+
+| File | What |
+| --- | --- |
+| `review-m2-interim-containers-and-step-up.md` | Interim review of M2 containers/artifacts and auth/step-up by a fresh session; fixes applied |
+| `review-m4-interim-market-chain-eligibility.md` | Interim review of M4 by a fresh session (2 HIGH / 9 MEDIUM / 11 LOW); fix-status table appended |
+| `review-plan-v4-external-recommendations-2026-09-07.md` | The operator's 12-point review of Execution Plan v4, verified against the repository; proposes ADR-0007..0013 for operator approval |
