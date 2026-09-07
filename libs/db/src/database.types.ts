@@ -1373,6 +1373,7 @@ export type Database = {
           is_owned: boolean
           labels: Json
           pnl_usd: Json
+          tracking_active: boolean
           trade_count: number | null
           updated_at: string
           win_rate: number | null
@@ -1384,6 +1385,7 @@ export type Database = {
           is_owned?: boolean
           labels?: Json
           pnl_usd?: Json
+          tracking_active?: boolean
           trade_count?: number | null
           updated_at?: string
           win_rate?: number | null
@@ -1395,6 +1397,7 @@ export type Database = {
           is_owned?: boolean
           labels?: Json
           pnl_usd?: Json
+          tracking_active?: boolean
           trade_count?: number | null
           updated_at?: string
           win_rate?: number | null

@@ -39,9 +39,16 @@ describe('tracked-wallet event derivation (§9.3, D8, D26, INV-11)', () => {
     expect(otc.map((e) => e.kind)).toEqual(['BUY']);
     expect(await deriveWalletEvents(tx([mv(0, 'TOKEN', JUP, OTHER, WALLET, '1')], true), opts())).toEqual([]);
     expect(await deriveWalletEvents(tx([mv(0, 'TOKEN', JUP, OTHER, POOL, '1')]), opts())).toEqual([]);
-    // Two base mints moving at once is not a swap we can attribute: transfers.
-    const multi = await deriveWalletEvents(tx([mv(0, 'TOKEN', JUP, WALLET, POOL, '1'), mv(1, 'TOKEN', 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' as MintAddress, POOL, WALLET, '2')]), opts());
-    expect(multi.map((e) => e.kind)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
+    // Token for token: a SELL of what left quoted in what arrived, and the matching BUY.
+    const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' as MintAddress;
+    const multi = await deriveWalletEvents(tx([mv(0, 'TOKEN', JUP, WALLET, POOL, '1'), mv(1, 'TOKEN', BONK, POOL, WALLET, '2')]), opts());
+    expect(multi.map((e) => [e.kind, e.mint, e.amount, e.quoteMint, e.quoteAmount])).toEqual([
+      ['SELL', JUP, '1', BONK, '2'],
+      ['BUY', BONK, '2', JUP, '1'],
+    ]);
+    // Three base mints at once is not attributable: transfers.
+    const three = await deriveWalletEvents(tx([mv(0, 'TOKEN', JUP, WALLET, POOL, '1'), mv(1, 'TOKEN', BONK, POOL, WALLET, '2'), mv(2, 'TOKEN', 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK' as MintAddress, POOL, WALLET, '3')]), opts());
+    expect(three.map((e) => e.kind)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN', 'TRANSFER_IN']);
   });
 
   it('property: an owned wallet never yields an event, and every event carries the ingestion instant as firstSeenAt', async () => {

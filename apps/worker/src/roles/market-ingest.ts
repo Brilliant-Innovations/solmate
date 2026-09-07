@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  type DataClass,
   addMs,
   type CandleResolution,
   type Clock,
@@ -62,6 +63,11 @@ export interface MarketIngestDeps {
     requestBudgetPerCycle: number;
   };
 }
+
+/** Published by the eligibility role from its own calls, never by ingestion. */
+export const ELIGIBILITY_CLASSES: ReadonlySet<DataClass> = new Set<DataClass>(['TOKEN_SECURITY', 'TOKEN_OVERVIEW']);
+/** Marker for a feed nothing in this deployment consumes yet (no positions, no candidates, no role). */
+export const NO_DEMAND = 'NO_DEMAND: nothing in this deployment consumes this class yet';
 
 export interface IngestState {
   lastDiscoveryAt: Instant | null;
@@ -198,9 +204,19 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
     report.snapshots++;
   }
 
-  // 5. Publish health for every contract from what this and earlier cycles observed.
+  // 5. Publish health. Classes another role serves (security, overview: the eligibility role) are
+  //    not this role's to report. A class nothing in this deployment consumes yet is still FAILED
+  //    (never fetched is never "healthy") but carries no effect, so an empty position book cannot
+  //    block entries through a price feed nobody asked for.
   const rateLimitState = deps.birdeye.ledger.snapshot().remaining === 0 ? 'EXHAUSTED' : 'OK';
+  const demand: Partial<Record<DataClass, boolean>> = {
+    ACTIVE_POSITION_PRICE: tracked.some((t) => t.priority === 'POSITION'),
+    CANDIDATE_PRICE: tracked.some((t) => t.priority === 'CANDIDATE'),
+    CANDLES: tracked.length > 0,
+    DISCOVERY_LIST: true,
+  };
   for (const c of deps.contracts) {
+    if (ELIGIBILITY_CLASSES.has(c.dataClass)) continue;
     const cls = c.provider === 'JUPITER_PRICE_V3' ? `JUPITER:${c.dataClass}` : c.dataClass;
     const health = evaluateFreshness(c, {
       lastSuccessAt: state.lastSuccess[cls] ?? null,
@@ -209,6 +225,11 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
       rateLimitState: c.provider === 'BIRDEYE' ? rateLimitState : null,
       lastError: state.lastError[cls] ?? null,
     });
+    if (!(demand[c.dataClass] ?? false)) {
+      health.effectOnEntries = 'NONE';
+      health.effectOnExits = 'NONE';
+      health.lastError = health.lastError ?? NO_DEMAND;
+    }
     await deps.repo.upsertFeedHealth(health);
     report.health.push(health);
   }

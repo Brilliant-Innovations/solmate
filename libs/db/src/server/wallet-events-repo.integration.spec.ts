@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { toInstant, type Amount, type SolanaAddress, type TxSignature, type Uuid, type WalletEvent } from '@sol-agent-trader/contracts';
 import { createSql, databaseUrlFromEnv, type Sql } from './sql.js';
-import { ingestWalletEvents, listTrackedWallets, registerTrackedWallet, walletCursor } from './wallet-events-repo.js';
+import { ingestWalletEvents, listTrackedWallets, registerTrackedWallet, setWalletTracking, walletCursor } from './wallet-events-repo.js';
 
 const url = databaseUrlFromEnv();
 
@@ -37,5 +37,8 @@ describe.skipIf(!url)('wallet events repository (§6.7, D8, D26)', () => {
     expect(await ingestWalletEvents(sql, wallet, [{ ...event, id: randomUUID() as Uuid }], { lastSignature: sig, lastSlot: 501 as never })).toBe(0);
     expect(await walletCursor(sql, wallet)).toEqual({ lastSignature: sig, lastSlot: 501 });
     await expect(ingestWalletEvents(sql, owned, [], null)).rejects.toThrow(/owned/);
+    await setWalletTracking(sql, wallet, false);
+    expect((await listTrackedWallets(sql)).some((w) => w.address === wallet)).toBe(false);
+    expect(await walletCursor(sql, wallet)).toEqual({ lastSignature: sig, lastSlot: 501 });
   });
 });

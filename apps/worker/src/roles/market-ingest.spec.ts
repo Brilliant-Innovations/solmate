@@ -106,8 +106,14 @@ describe('market-ingest role (M4 P1: universe populates, candles continuous, sta
     expect(report.snapshots).toBe(1);
     expect(repo.health.get('BIRDEYE:CANDLES')?.state).toBe('HEALTHY');
     expect(repo.health.get('BIRDEYE:DISCOVERY_LIST')?.state).toBe('HEALTHY');
-    // Never fetched: still FAILED and blocking entries, not silently healthy.
-    expect(repo.health.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ state: 'FAILED', effectOnEntries: 'BLOCK' });
+    // Security and overview belong to the eligibility role: ingestion publishes nothing for them.
+    expect(repo.health.get('BIRDEYE:TOKEN_SECURITY')).toBeUndefined();
+    expect(repo.health.get('BIRDEYE:TOKEN_OVERVIEW')).toBeUndefined();
+    // No positions and no candidates: the price feeds were never fetched (FAILED, never silently healthy) but carry no effect.
+    expect(repo.health.get('BIRDEYE:ACTIVE_POSITION_PRICE')).toMatchObject({ state: 'FAILED', effectOnEntries: 'NONE', effectOnExits: 'NONE', lastError: expect.stringContaining('NO_DEMAND') });
+    expect(repo.health.get('JUPITER_PRICE_V3:ACTIVE_POSITION_PRICE')).toMatchObject({ state: 'FAILED', effectOnExits: 'NONE' });
+    expect(repo.health.get('BIRDEYE:CANDIDATE_PRICE')).toMatchObject({ state: 'FAILED', effectOnEntries: 'NONE' });
+    expect(repo.health.get('BIRDEYE:HOLDER_DISTRIBUTION')).toMatchObject({ state: 'FAILED', effectOnEntries: 'NONE', lastError: expect.stringContaining('NO_DEMAND') });
     expect(state.lastDiscoveryAt).toBe(NOW);
   });
 

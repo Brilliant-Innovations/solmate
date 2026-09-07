@@ -9,9 +9,10 @@ export interface TrackedWalletRow {
   isOwned: boolean;
 }
 
+/** Wallets whose polling is switched on; paused wallets keep their immutable history (§6.7). */
 export async function listTrackedWallets(sql: Sql): Promise<TrackedWalletRow[]> {
   const rows = await sql<{ address: string; discovery_source: string; is_owned: boolean }[]>`
-    select address, discovery_source, is_owned from intelligence.wallets order by first_seen_at asc`;
+    select address, discovery_source, is_owned from intelligence.wallets where tracking_active order by first_seen_at asc`;
   return rows.map((r) => ({ address: r.address as SolanaAddress, discoverySource: r.discovery_source, isOwned: r.is_owned }));
 }
 
@@ -21,6 +22,10 @@ export async function registerTrackedWallet(sql: Sql, w: { address: SolanaAddres
     insert into intelligence.wallets (address, discovery_source, labels, is_owned, first_seen_at)
     values (${w.address}, ${w.discoverySource}, ${sql.json(asJson(w.labels))}, ${w.isOwned}, ${w.firstSeenAt})
     on conflict (address) do update set is_owned = intelligence.wallets.is_owned or excluded.is_owned`;
+}
+
+export async function setWalletTracking(sql: Sql, wallet: SolanaAddress, active: boolean): Promise<void> {
+  await sql`update intelligence.wallets set tracking_active = ${active} where address = ${wallet}`;
 }
 
 export async function walletCursor(sql: Sql, wallet: SolanaAddress): Promise<{ lastSignature: TxSignature | null; lastSlot: Slot | null } | null> {

@@ -39,7 +39,7 @@ import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
-import { runEligibilityCycle } from './roles/eligibility.js';
+import { initialEligibilityHealthState, runEligibilityCycle } from './roles/eligibility.js';
 import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
@@ -240,6 +240,11 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, r
     // Each evaluation costs 40 Birdeye CU (security 25 + overview 15) and about a dozen Jupiter quotes;
     // the ledger stops the batch when the Birdeye allowance is gone.
     config: { batchSize: 5, reevaluateAfterMs: 6 * 3_600_000 },
+    health: {
+      contracts: defaultFreshnessContracts(BIRDEYE_TIERS[env.BIRDEYE_TIER]).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
+      state: initialEligibilityHealthState(),
+      upsert: (h: Parameters<typeof upsertFeedHealth>[1]) => upsertFeedHealth(sql, h),
+    },
   };
   logger.info('eligibility_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_ELIGIBILITY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, jupiterHost: env.JUPITER_API_KEY ? 'api.jup.ag' : 'lite-api.jup.ag', holder: shared.holder });
   await loopUnderLease('eligibility', intervalMs, logger, shared, async () => {

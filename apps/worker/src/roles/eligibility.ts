@@ -7,6 +7,8 @@ import {
   type Clock,
   type EligibilityPolicy,
   type EmergencyExitRouteSnapshot,
+  type FeedHealth,
+  type FreshnessContract,
   type JupiterQuoteClient,
   type MintAddress,
   type MintChainState,
@@ -19,7 +21,7 @@ import {
 } from '@sol-agent-trader/contracts';
 import { buildEmergencySnapshot, discoverEmergencyRoute, runRouteProbes } from '@sol-agent-trader/execution';
 import type { Logger } from '@sol-agent-trader/observability';
-import { BudgetExhaustedError, type BirdeyeClient } from '@sol-agent-trader/market';
+import { BudgetExhaustedError, evaluateFreshness, type BirdeyeClient } from '@sol-agent-trader/market';
 import { evaluateEligibility } from '@sol-agent-trader/risk';
 import { MintNotFoundError, readMintChainState, type SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
 
@@ -53,6 +55,21 @@ export interface EligibilityDeps {
     /** Re-evaluate anything older than this (§7.4 periodic refresh). */
     reevaluateAfterMs: number;
   };
+  /** Feed health for the classes this role consumes (TOKEN_SECURITY, TOKEN_OVERVIEW), published from its own calls (§21.1). */
+  health?: {
+    contracts: readonly FreshnessContract[];
+    state: EligibilityHealthState;
+    upsert: (health: FeedHealth) => Promise<void>;
+  };
+}
+
+export interface EligibilityHealthState {
+  lastSuccess: Partial<Record<string, ReturnType<Clock['now']>>>;
+  lastError: Partial<Record<string, string>>;
+  lastLatencyMs: Partial<Record<string, number>>;
+}
+export function initialEligibilityHealthState(): EligibilityHealthState {
+  return { lastSuccess: {}, lastError: {}, lastLatencyMs: {} };
 }
 
 export type EligibilityStep = 'CHAIN' | 'SECURITY' | 'OVERVIEW' | 'PROBES' | 'EMERGENCY_ROUTE' | 'PERSIST';
@@ -72,6 +89,15 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
   const due = await deps.repo.listAssetsForEvaluation({ limit: deps.config.batchSize, reevaluateAfter: addMs(now, -deps.config.reevaluateAfterMs) });
   report.considered = due.length;
   const fail = (assetId: Uuid, step: EligibilityStep, err: unknown) => report.errors.push({ assetId, step, error: err instanceof Error ? err.message : String(err) });
+  const feedOk = (cls: string, latencyMs: number) => {
+    if (!deps.health) return;
+    deps.health.state.lastSuccess[cls] = deps.clock.now();
+    deps.health.state.lastLatencyMs[cls] = latencyMs;
+    delete deps.health.state.lastError[cls];
+  };
+  const feedFail = (cls: string, err: unknown) => {
+    if (deps.health) deps.health.state.lastError[cls] = (err instanceof Error ? err.message : String(err)).slice(0, 512);
+  };
 
   for (const asset of due) {
     const mint = asset.mintAddress as MintAddress;
@@ -85,22 +111,28 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
 
     let security: TokenSecurityReport | null = null;
     try {
-      security = (await deps.birdeye.security(mint)).security;
+      const res = await deps.birdeye.security(mint);
+      security = res.security;
+      feedOk('TOKEN_SECURITY', res.meta.latencyMs);
     } catch (err) {
       if (err instanceof BudgetExhaustedError) {
         report.budgetExhausted = true;
         break;
       }
+      feedFail('TOKEN_SECURITY', err);
       fail(asset.id, 'SECURITY', err);
     }
     let overview: TokenOverview | null = null;
     try {
-      overview = (await deps.birdeye.overview(mint)).overview;
+      const res = await deps.birdeye.overview(mint);
+      overview = res.overview;
+      feedOk('TOKEN_OVERVIEW', res.meta.latencyMs);
     } catch (err) {
       if (err instanceof BudgetExhaustedError) {
         report.budgetExhausted = true;
         break;
       }
+      feedFail('TOKEN_OVERVIEW', err);
       fail(asset.id, 'OVERVIEW', err);
     }
 
@@ -169,6 +201,12 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
     }
   }
 
+  if (deps.health) {
+    for (const c of deps.health.contracts) {
+      const health = evaluateFreshness(c, { lastSuccessAt: deps.health.state.lastSuccess[c.dataClass] ?? null, now: deps.clock.now(), latencyMs: deps.health.state.lastLatencyMs[c.dataClass] ?? null, lastError: deps.health.state.lastError[c.dataClass] ?? null });
+      await deps.health.upsert(health);
+    }
+  }
   deps.logger.info('eligibility_cycle', { considered: report.considered, evaluated: report.evaluated, ...report.outcomes, snapshots: report.snapshots, errors: report.errors.length, budgetExhausted: report.budgetExhausted, cu: deps.birdeye.ledger.snapshot().used });
   for (const e of report.errors) deps.logger.warn('eligibility_step_failed', { assetId: e.assetId, step: e.step, error: e.error });
   return report;

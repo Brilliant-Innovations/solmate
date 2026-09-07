@@ -1,9 +1,9 @@
-import { DEFAULT_ELIGIBILITY_POLICY, fixedClock, toInstant, type AssetEligibility, type AssetStatus, type Bps, type EmergencyExitRouteSnapshot, type JupiterQuoteClient, type Quote, type QuoteOptions, type QuoteRequest, type QuoteRoutePlan, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, fixedClock, toInstant, type AssetEligibility, type AssetStatus, type Bps, type EmergencyExitRouteSnapshot, type FeedHealth, type JupiterQuoteClient, type Quote, type QuoteOptions, type QuoteRequest, type QuoteRoutePlan, type Uuid } from '@sol-agent-trader/contracts';
 import { NoRouteError } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
-import { BIRDEYE_TIERS, BirdeyeClient, type HttpResponse, type HttpTransport } from '@sol-agent-trader/market';
+import { BIRDEYE_TIERS, BirdeyeClient, defaultFreshnessContracts, type HttpResponse, type HttpTransport } from '@sol-agent-trader/market';
 import { base58Decode, SolanaRpcClient, TOKEN_PROGRAM_ID, type RpcTransport } from '@sol-agent-trader/solana-hard-state';
-import { runEligibilityCycle, type EligibilityRepo } from './eligibility.js';
+import { initialEligibilityHealthState, runEligibilityCycle, type EligibilityRepo } from './eligibility.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 7, 12, 0, 0));
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -141,5 +141,16 @@ describe('eligibility role (P2: chain truth first, analytics corroborates, route
     const r2 = await runEligibilityCycle(deps(repo2, missing, birdeye, jupiterFor()));
     expect(r2.errors).toEqual([{ assetId: ASSET, step: 'CHAIN', error: 'mint account not found' }]);
     expect(repo2.records).toHaveLength(0);
+  });
+
+  it('publishes feed health for security and overview from its own calls: a 401 on security is FAILED and blocks entries, overview stays HEALTHY', async () => {
+    const repo = new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]);
+    const published = new Map<string, FeedHealth>();
+    const health = { contracts: defaultFreshnessContracts(BIRDEYE_TIERS.STANDARD).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'), state: initialEligibilityHealthState(), upsert: async (h: FeedHealth) => void published.set(h.provider, h) };
+    const denied = (): HttpResponse => ({ status: 401, headers: {}, body: JSON.stringify({ success: false, message: 'API key lacks sufficient permissions' }) });
+    await runEligibilityCycle({ ...deps(repo, rpcFor(null), birdeyeFor({ '/defi/token_security': denied, '/defi/token_overview': OVERVIEW_OK }), null), health });
+    expect(published.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ state: 'FAILED', effectOnEntries: 'BLOCK', lastError: expect.stringContaining('401') });
+    expect(published.get('BIRDEYE:TOKEN_OVERVIEW')).toMatchObject({ state: 'HEALTHY', effectOnEntries: 'NONE', lastSuccessAt: NOW });
+    expect(published.size).toBe(2);
   });
 });

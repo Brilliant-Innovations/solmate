@@ -6,7 +6,9 @@ import { sha256Hex, type Amount, type ChainMovement, type ChainTransactionFacts,
  *  - an OWNED wallet yields nothing (INV-11): our own trades are never smart-money evidence;
  *  - a failed transaction yields nothing: balances did not move;
  *  - a non-quote asset received while a quote asset (settlement stablecoin or SOL) left is a BUY;
- *    the mirror image is a SELL; everything else is a plain transfer.
+ *    the mirror image is a SELL; one non-quote asset out and another in is a SELL of the first
+ *    quoted in the second plus a BUY of the second quoted in the first; everything else is a
+ *    plain transfer.
  * `firstSeenAt` is the ingestion instant the caller supplies, never the block time (D8).
  */
 
@@ -88,6 +90,20 @@ export async function deriveWalletEvents(tx: ChainTransactionFacts, opts: Derive
       const q = quoteIn[0]!;
       const f = baseOut[0]!;
       return [{ ...common(f), amount: sum(baseOut).toString() as Amount, mint, kind: 'SELL', quoteMint: q.mint, quoteAmount: sum(quoteIn.filter((x) => x.mint === q.mint)).toString() as Amount }];
+    }
+  }
+
+  // Token-for-token: a SELL of what left and a BUY of what arrived, each quoted in the other.
+  if (baseMints.size === 2 && baseIn.length > 0 && baseOut.length > 0 && quoteIn.length === 0 && quoteOut.length === 0) {
+    const inMint = baseIn[0]!.mint as MintAddress;
+    const outMint = baseOut[0]!.mint as MintAddress;
+    if (baseIn.every((f) => f.mint === inMint) && baseOut.every((f) => f.mint === outMint)) {
+      const inSum = sum(baseIn).toString() as Amount;
+      const outSum = sum(baseOut).toString() as Amount;
+      return [
+        { ...common(baseOut[0]!), amount: outSum, mint: outMint, kind: 'SELL', quoteMint: inMint, quoteAmount: inSum },
+        { ...common(baseIn[0]!), amount: inSum, mint: inMint, kind: 'BUY', quoteMint: outMint, quoteAmount: outSum },
+      ];
     }
   }
 
