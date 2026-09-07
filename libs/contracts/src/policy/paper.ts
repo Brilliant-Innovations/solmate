@@ -42,5 +42,5 @@ export const DEFAULT_PAPER_FILL_POLICY: PaperFillPolicy = {
 };
 
 /** Reasons an execution attempt can end without a fill; shared by paper and live so the parity suite compares like with like. */
-export const EXECUTION_REJECTIONS = ['NOT_PAPER_AUTHORITY', 'DUPLICATE_INTENT', 'INTENT_EXPIRED', 'QUOTE_STALE', 'NO_ROUTE', 'CHASE_EXCEEDED', 'IMPACT_ABOVE_MAX', 'SLIPPAGE_EXCEEDED'] as const;
+export const EXECUTION_REJECTIONS = ['NOT_PAPER_AUTHORITY', 'DUPLICATE_INTENT', 'INTENT_EXPIRED', 'QUOTE_STALE', 'NO_ROUTE', 'QUOTE_AMOUNT_MISMATCH', 'CHASE_EXCEEDED', 'IMPACT_ABOVE_MAX', 'SLIPPAGE_EXCEEDED'] as const;
 export type ExecutionRejection = (typeof EXECUTION_REJECTIONS)[number];

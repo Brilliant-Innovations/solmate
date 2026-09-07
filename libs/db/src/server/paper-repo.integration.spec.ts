@@ -94,7 +94,7 @@ describe.skipIf(!url)('paper book repository (§17, §6.11–6.20)', () => {
     await setIntentState(sql, intent.id, 'COMPLETED');
 
     const book2 = await paperBook(sql, account.id, USDC, '10000000000' as Amount, NOW);
-    expect(book2).toMatchObject({ settlementBalance: '9800000000', exposureAtCost: '200000000', pendingExposure: '0', inFlightIncreasing: 0, feesLamports: '25000' });
+    expect(book2).toMatchObject({ settlementBalance: '9800000000', exposureAtCost: '200000000', markValue: '200000000', pendingExposure: '0', inFlightIncreasing: 0, feesLamports: '25000', realizedBySleeve: { [sleeve.id]: '0' } });
     expect(book2.openPositions).toEqual([{ id: positionId, assetId, mint: intent.outputMint, quantity: '1987000000', costBasis: '200000000' }]);
     expect(book2.sleeves[0]).toMatchObject({ committedBaseUnits: '200000000' });
   });

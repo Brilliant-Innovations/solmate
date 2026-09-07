@@ -56,6 +56,8 @@ export function modelPaperFill(input: FillModelInput): FillModelOutcome {
   if (decisionAge > intent.constraints.maxQuoteAgeMs) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'QUOTE_STALE', detail: `decision quote age ${decisionAge}ms > ${intent.constraints.maxQuoteAgeMs}ms` };
   if (!x) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'NO_ROUTE', detail: 'no executable route at the modelled submission moment' };
   if (amountToBigInt(d.inputAmount) === 0n || amountToBigInt(x.inputAmount) === 0n) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'NO_ROUTE', detail: 'zero input amount' };
+  // The order is built for the intent's amount; a quote for any other amount is a provider anomaly, never a fill (INV-02).
+  if (amountToBigInt(x.inputAmount) !== amountToBigInt(intent.maxInputAmount)) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'QUOTE_AMOUNT_MISMATCH', detail: `executable quote for ${x.inputAmount}, intent ${intent.maxInputAmount}` };
   if (x.priceImpactBps === null || x.priceImpactBps > intent.constraints.maxPriceImpactBps) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'IMPACT_ABOVE_MAX', detail: `impact ${x.priceImpactBps ?? 'unknown'}bps > ${intent.constraints.maxPriceImpactBps}bps` };
   // Chase: executable output per input unit worse than the decision's by more than the tolerance.
   const dPrice = priceScaled(d);

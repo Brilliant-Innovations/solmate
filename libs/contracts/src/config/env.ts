@@ -133,6 +133,8 @@ export const WorkerEnv = Common.extend({
   PAPER_TRADING_WALLET: SolanaAddress.optional(),
   PAPER_STARTING_CAPITAL_BASE_UNITS: Amount.default('10000000000' as never),
   PAPER_ENTRY_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  /** MONITORED_EXIT cadence (§13.4–13.5): executable marks and deterministic exits for open paper positions. */
+  POSITION_MONITOR_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(30_000),
   /** S0 decision cadence (§12.1): RAW and SAFE action cycles over new candidates. */
   S0_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Git commit of the running build, recorded on strategy versions it registers (§6.21). */

@@ -99,6 +99,10 @@ export interface PaperBook {
   settlementBalance: Amount;
   /** Sum of open-lot cost basis, i.e. exposure at cost. */
   exposureAtCost: Amount;
+  /** Cost basis plus the stored unrealized P&L from the last mark (the position monitor's executable exit quote). */
+  markValue: Amount;
+  /** Realized P&L per sleeve from closed lots. */
+  realizedBySleeve: Record<string, string>;
   openPositions: { id: Uuid; assetId: Uuid; mint: MintAddress; quantity: Amount; costBasis: Amount }[];
   /** Exposure-increasing intents not yet terminal, plus provisional attempts (P1). */
   pendingExposure: Amount;
@@ -124,8 +128,10 @@ export async function paperBook(sql: Sql, accountId: Uuid, settlementMint: MintA
     join trading.order_attempts oa on oa.id = f.order_attempt_id
     join trading.intents i on i.id = oa.intent_id
     where i.account_id = ${accountId} and f.commitment = 'finalized'`;
-  const positions = await sql<{ id: string; asset_id: string; mint: string; quantity: string; cost_basis_base_units: string }[]>`
-    select id, asset_id, mint, quantity::text, cost_basis_base_units::text from trading.positions where account_id = ${accountId} and status <> 'CLOSED'`;
+  const positions = await sql<{ id: string; asset_id: string; mint: string; quantity: string; cost_basis_base_units: string; unrealized: string | null }[]>`
+    select id, asset_id, mint, quantity::text, cost_basis_base_units::text, unrealized_pnl_base_units::text as unrealized from trading.positions where account_id = ${accountId} and status <> 'CLOSED'`;
+  const realized = await sql<{ sleeve_id: string; pnl: string }[]>`
+    select l.sleeve_id, coalesce(sum(l.realized_pnl_base_units), 0)::text as pnl from trading.position_lots l join trading.positions p on p.id = l.position_id where p.account_id = ${accountId} group by l.sleeve_id`;
   const [pending] = await sql<{ pending: string; in_flight: number }[]>`
     select
       coalesce(sum(case when i.lifecycle_state in ('AUTHORIZED', 'APPROVED', 'EXECUTING') then i.max_input_amount else 0 end), 0)::text as pending,
@@ -150,10 +156,13 @@ export async function paperBook(sql: Sql, accountId: Uuid, settlementMint: MintA
   const sleeves = await listSleeves(sql, accountId);
   void settlementMint;
   const exposure = positions.reduce((acc, p) => acc + BigInt(p.cost_basis_base_units), 0n);
+  const mark = positions.reduce((acc, p) => acc + BigInt(p.cost_basis_base_units) + BigInt(p.unrealized ?? '0'), 0n);
   const balance = BigInt(startingCapital) - BigInt(flows?.entries ?? '0') + BigInt(flows?.exits ?? '0');
   return {
     settlementBalance: (balance < 0n ? 0n : balance).toString() as Amount,
     exposureAtCost: exposure.toString() as Amount,
+    markValue: (mark < 0n ? 0n : mark).toString() as Amount,
+    realizedBySleeve: Object.fromEntries(realized.map((r) => [r.sleeve_id, r.pnl])),
     openPositions: positions.map((p) => ({ id: p.id as Uuid, assetId: p.asset_id as Uuid, mint: p.mint as MintAddress, quantity: p.quantity as Amount, costBasis: p.cost_basis_base_units as Amount })),
     pendingExposure: (BigInt(pending?.pending ?? '0') + BigInt(provisional?.amount ?? '0')).toString() as Amount,
     inFlightIncreasing: pending?.in_flight ?? 0,

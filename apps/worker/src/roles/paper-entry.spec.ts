@@ -31,7 +31,7 @@ class MemoryRepo implements PaperEntryRepo {
   attempts: { order: Order; attempt: OrderAttempt; fill: Fill | null }[] = [];
   positions: { position: Position; lot: PositionLot }[] = [];
   snapshots: PortfolioSnapshot[] = [];
-  bookState: PaperBook = { settlementBalance: '10000000000' as Amount, exposureAtCost: '0' as Amount, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [sleeve], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: null, rollingHighEquity: null };
+  bookState: PaperBook = { settlementBalance: '10000000000' as Amount, exposureAtCost: '0' as Amount, markValue: '0' as Amount, realizedBySleeve: {}, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [sleeve], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: null, rollingHighEquity: null };
   healthState = { feedsBlockEntries: false, entriesPaused: false };
   async listAwaiting() { return this.rows.filter((r) => !this.evaluations.some((e) => e.actionCycleId === r.cycle.id)); }
   async book() { return this.bookState; }
@@ -40,7 +40,7 @@ class MemoryRepo implements PaperEntryRepo {
   async createIntent(intent: TradeIntent) { this.intents.push({ intent, states: ['AUTHORIZED'] }); }
   async setIntentState(intentId: Uuid, state: string) { this.intents.find((i) => i.intent.id === intentId)!.states.push(state); }
   async finishAttempt(order: Order, attempt: OrderAttempt, fill: Fill | null) { this.attempts.push({ order, attempt, fill }); }
-  async openPosition(position: Position, lot: PositionLot) { this.positions.push({ position, lot }); this.bookState = { ...this.bookState, openPositions: [...this.bookState.openPositions, { id: position.id, assetId: position.assetId, mint: position.mint, quantity: position.quantity, costBasis: position.costBasisBaseUnits }], exposureAtCost: (BigInt(this.bookState.exposureAtCost) + BigInt(position.costBasisBaseUnits)).toString() as Amount, settlementBalance: (BigInt(this.bookState.settlementBalance) - BigInt(position.costBasisBaseUnits)).toString() as Amount }; }
+  async openPosition(position: Position, lot: PositionLot) { this.positions.push({ position, lot }); this.bookState = { ...this.bookState, openPositions: [...this.bookState.openPositions, { id: position.id, assetId: position.assetId, mint: position.mint, quantity: position.quantity, costBasis: position.costBasisBaseUnits }], exposureAtCost: (BigInt(this.bookState.exposureAtCost) + BigInt(position.costBasisBaseUnits)).toString() as Amount, markValue: (BigInt(this.bookState.markValue) + BigInt(position.costBasisBaseUnits)).toString() as Amount, settlementBalance: (BigInt(this.bookState.settlementBalance) - BigInt(position.costBasisBaseUnits)).toString() as Amount }; }
   async writeSnapshot(s: PortfolioSnapshot) { this.snapshots.push(s); }
 }
 

@@ -215,9 +215,9 @@ export async function runPaperEntryCycle(deps: PaperEntryDeps): Promise<PaperEnt
   return report;
 }
 
-/** Paper equity marks open positions at cost until the position monitor supplies marks (next package). */
+/** Paper equity: settlement balance plus open positions at their last executable mark (cost until the monitor marks them). */
 export function equityOf(book: PaperBook): Amount {
-  return addAmounts(book.settlementBalance, book.exposureAtCost);
+  return addAmounts(book.settlementBalance, book.markValue);
 }
 
 function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBlockEntries: boolean; entriesPaused: boolean }, sleeve: StrategySleeve, assetId: Uuid): PortfolioState {
@@ -229,7 +229,7 @@ function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBl
     settlementMint: deps.account.settlementMint,
     settlementDecimals: deps.account.settlementDecimals,
     equityBaseUnits: equity,
-    exposureBaseUnits: book.exposureAtCost,
+    exposureBaseUnits: book.markValue,
     pendingExposureBaseUnits: book.pendingExposure,
     inFlightExposureIncreasing: book.inFlightIncreasing,
     openPositions: book.openPositions.length,
@@ -269,9 +269,9 @@ function snapshotOf(deps: PaperEntryDeps, book: PaperBook, now: Instant): Portfo
     settlementMint: deps.account.settlementMint,
     equityBaseUnits: equity,
     equityUsd: null,
-    exposureBaseUnits: book.exposureAtCost,
-    exposureFraction: eq > 0 ? Math.min(1, Number(amountToBigInt(book.exposureAtCost)) / eq) : 0,
-    perSleeve: book.sleeves.map((s) => ({ sleeveId: s.id, committedBaseUnits: s.committedBaseUnits, pnlBaseUnits: '0' as never })),
+    exposureBaseUnits: book.markValue,
+    exposureFraction: eq > 0 ? Math.min(1, Number(amountToBigInt(book.markValue)) / eq) : 0,
+    perSleeve: book.sleeves.map((s) => ({ sleeveId: s.id, committedBaseUnits: s.committedBaseUnits, pnlBaseUnits: (book.realizedBySleeve[s.id] ?? '0') as never })),
     perCohort: [],
     drawdown: { dailyFraction: fraction(book.dayStartEquity), rollingFraction: fraction(book.rollingHighEquity) },
     createdAt: now,

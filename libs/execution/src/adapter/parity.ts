@@ -23,7 +23,11 @@ export function scriptedQuoteClient(quotes: (Quote | null)[]): JupiterQuoteClien
     calls.push(request);
     const q = quotes[Math.min(calls.length - 1, quotes.length - 1)];
     if (!q) throw new NoRouteError('SCRIPTED', `${request.inputMint}->${request.outputMint}`);
-    return { quote: { ...q, quotedAt: request.requestedAt }, route: { hops: [], contextSlot: 1000 as Slot, providerImpactPct: null } };
+    // Like the provider: the quote is for the requested amount at the requested slippage (rate scaled linearly).
+    const requested = BigInt(request.inputAmount);
+    const expected = (BigInt(q.expectedOutputAmount) * requested) / BigInt(q.inputAmount);
+    const minOut = (expected * BigInt(10_000 - request.maxSlippageBps)) / 10_000n;
+    return { quote: { ...q, inputAmount: request.inputAmount, expectedOutputAmount: expected.toString() as Amount, minOutputAmount: minOut.toString() as Amount, slippageBps: request.maxSlippageBps, quotedAt: request.requestedAt }, route: { hops: [], contextSlot: 1000 as Slot, providerImpactPct: null } };
   };
   return {
     calls,

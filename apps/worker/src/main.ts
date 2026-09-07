@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
+  applyExit,
   createIntent,
   createSql,
   ensurePaperAccount,
@@ -8,13 +9,18 @@ import {
   ensureStrategyVersion,
   entryHealth,
   finishAttempt,
+  highSince,
   insertPortfolioSnapshot,
   journalAttempt,
   listCyclesAwaitingEntry,
+  listOpenPositionsForAccount,
   openPosition,
   paperBook,
+  recordExitDecision,
   recordRiskEvaluation,
   setIntentState,
+  tightenStop,
+  updateMark,
   listCandidatesAwaitingStrategy,
   persistS0Decisions,
   heldBucketTimes,
@@ -73,6 +79,7 @@ import { runFeaturesCycle } from './roles/features.js';
 import { runCandidatesCycle } from './roles/candidates.js';
 import { runS0Cycle } from './roles/s0.js';
 import { runPaperEntryCycle } from './roles/paper-entry.js';
+import { runPositionMonitorCycle } from './roles/position-monitor.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -125,7 +132,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -207,6 +214,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
   if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
   if (roles.has('paper-entry')) loops.push(paperEntryLoop(env, logger, shared));
+  if (roles.has('position-monitor')) loops.push(positionMonitorLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -538,6 +546,67 @@ async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
   logger.info('paper_entry_starting', { intervalMs, accountId: account.id, strategies: Object.keys(strategies), fillModel: DEFAULT_PAPER_FILL_POLICY.version, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
   await loopUnderLease('paper-entry', intervalMs, logger, shared, async () => {
     await runPaperEntryCycle(deps);
+  });
+}
+
+async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.POSITION_MONITOR_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('position_monitor_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const taker = env.PAPER_TRADING_WALLET;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  const startingCapital = env.PAPER_STARTING_CAPITAL_BASE_UNITS;
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
+  const activeFrom = systemClock.now();
+  const strategies: Record<string, ReturnType<typeof s0StrategyVersion>> = {};
+  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom)]) strategies[v.versionId] = v;
+  const adapter = new PaperExecutionAdapter({
+    quotes: shared.jupiter,
+    clock: systemClock,
+    policy: DEFAULT_PAPER_FILL_POLICY,
+    taker,
+    cluster: env.SOLANA_CLUSTER,
+    newId: () => randomUUID() as Uuid,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    journal: ({ order, attempt }) => journalAttempt(sql, order, attempt),
+  });
+  const deps = {
+    repo: {
+      listOpenPositions: (limit: number) => listOpenPositionsForAccount(sql, account.id, limit),
+      highSince: (assetId: Uuid, since: Parameters<typeof highSince>[2], until: Parameters<typeof highSince>[3]) => highSince(sql, assetId, since, until),
+      updateMark: (positionId: Uuid, pnl: Parameters<typeof updateMark>[2], next: Parameters<typeof updateMark>[3]) => updateMark(sql, positionId, pnl, next),
+      tightenStop: (positionId: Uuid, level: number) => tightenStop(sql, positionId, level),
+      recordExitDecision: (c: Parameters<typeof recordExitDecision>[1], p: Parameters<typeof recordExitDecision>[2], r: Parameters<typeof recordExitDecision>[3], e: Parameters<typeof recordExitDecision>[4]) => recordExitDecision(sql, c, p, r, e),
+      createIntent: (i: Parameters<typeof createIntent>[1], lifecycle: 'AUTHORIZED') => createIntent(sql, i, lifecycle),
+      setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
+      finishAttempt: (order: Parameters<typeof finishAttempt>[1], attempt: Parameters<typeof finishAttempt>[2], fill: Parameters<typeof finishAttempt>[3]) => finishAttempt(sql, order, attempt, fill),
+      applyExit: (x: Parameters<typeof applyExit>[1]) => applyExit(sql, x),
+      book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
+      writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
+    },
+    adapter,
+    exitQuote: async (inputMint: MintAddress, outputMint: MintAddress, inputAmount: typeof startingCapital, maxSlippageBps: Parameters<typeof shared.jupiter.quote>[0]['maxSlippageBps'], now: Parameters<typeof paperBook>[4]) => {
+      try {
+        const { quote } = await shared.jupiter.quote({ inputMint, outputMint, inputAmount, maxSlippageBps, taker, cluster: env.SOLANA_CLUSTER, requestedAt: now });
+        return { expectedOutputAmount: quote.expectedOutputAmount, impactBps: quote.priceImpactBps };
+      } catch (err) {
+        if (err instanceof NoRouteError) return null;
+        throw err;
+      }
+    },
+    clock: systemClock,
+    logger,
+    account: { id: account.id, settlementMint, settlementDecimals: 6 },
+    strategies,
+    policy: DEFAULT_RISK_POLICY,
+    config: { batchSize: 50, reassessMs: intervalMs },
+  };
+  logger.info('position_monitor_starting', { intervalMs, accountId: account.id, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
+  await loopUnderLease('position-monitor', intervalMs, logger, shared, async () => {
+    await runPositionMonitorCycle(deps);
   });
 }
 
