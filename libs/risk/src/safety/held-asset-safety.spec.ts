@@ -23,7 +23,7 @@ const ids = { id: '33333333-3333-4333-8333-333333333333' as Uuid, positionId: '4
 const chain = (over: Partial<MintChainState> = {}): MintChainState => ({
   mintAddress: MINT, readAt: NOW, slot: 500 as never, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as never, tokenProgram: 'TOKEN', isInitialized: true, decimals: 6, supply: '1000000000' as never,
   mintAuthority: 'NONE', freezeAuthority: 'NONE', extensions: [], transferFeeBps: null, maxTransferFee: null, transferHookProgram: null, permanentDelegate: null, defaultAccountFrozen: false, nonTransferable: false,
-  mintCloseAuthority: false, paused: false, largestAccounts: [], concentration: { source: 'CHAIN', chainSlot: 500 as never, top1: 0.05, top5: 0.1, top10: 0.2, top20: 0.25, analyticsMismatch: false }, concentrationUnavailableReason: null, ...over,
+  mintCloseAuthority: false, paused: false, largestAccounts: [], concentration: { source: 'CHAIN', chainSlot: 500 as never, top1: 0.05, top5: 0.1, top10: 0.2, top20: 0.25, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null }, concentrationUnavailableReason: null, ...over,
 });
 const probe = (over: Partial<PriceImpactProbe> = {}): PriceImpactProbe => ({ sizeUsd: 1000, inputAmount: '1000000' as never, impactBps: 40 as never, routeFound: true, probedAt: NOW, ...over });
 const snapshot = (over: Partial<EmergencyExitRouteSnapshot> = {}): EmergencyExitRouteSnapshot => ({
@@ -113,7 +113,7 @@ describe('held-asset safety engine (§7.5 states)', () => {
     ['market data unavailable', { overview: null }, 'MARKET_DATA_UNAVAILABLE'],
     ['liquidity drop', { overview: overview(45_000) }, 'LIQUIDITY_DROP'],
     ['chain read stale', { chain: chain({ readAt: addMs(NOW, -3_600_000) }) }, 'CHAIN_READ_STALE'],
-    ['concentration shock', { chain: chain({ concentration: { source: 'CHAIN', chainSlot: 500 as never, top1: 0.3, top5: 0.4, top10: 0.5, top20: 0.6, analyticsMismatch: false } }) }, 'CONCENTRATION_SHOCK'],
+    ['concentration shock', { chain: chain({ concentration: { source: 'CHAIN', chainSlot: 500 as never, top1: 0.3, top5: 0.4, top10: 0.5, top20: 0.6, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null } }) }, 'CONCENTRATION_SHOCK'],
     ['provider alert trigger', { triggers: ['PROVIDER_ALERT'] as SafetyInputs['triggers'] }, 'SECURITY_PROVIDER_ALERT'],
   ] as const)('DEGRADED: %s', (_l, over, reason) => {
     const r = evaluateHeldAssetSafety(healthy(over as Partial<SafetyInputs>));

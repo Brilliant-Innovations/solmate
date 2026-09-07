@@ -22,6 +22,43 @@ function programOf(owner: string): TokenProgram {
   return 'UNKNOWN';
 }
 
+export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+
+function parsedOwner(v: { data: unknown } | null): string | null {
+  const info = (v?.data as { parsed?: { info?: { owner?: unknown } } } | undefined)?.parsed?.info;
+  return typeof info?.owner === 'string' ? info.owner : null;
+}
+
+/**
+ * Which of the largest token accounts are program-controlled (D45 "direct largest-token-account
+ * balances" are raw; holder concentration must not count a DEX pool vault or a staking vault as a
+ * holder). An account whose owner does not exist on chain (a PDA authority) or whose owner is not a
+ * plain system account is program-controlled. Returns null when the classification reads fail, in
+ * which case the caller reports raw figures and says so.
+ */
+async function programControlled(rpc: SolanaRpcClient, accounts: readonly { address: SolanaAddress }[]): Promise<Set<string> | null> {
+  if (accounts.length === 0) return new Set();
+  try {
+    const parsed = await rpc.getMultipleAccountsParsed(accounts.map((a) => a.address));
+    const owners = parsed.value.map(parsedOwner);
+    const distinct = [...new Set(owners.filter((o): o is string => o !== null))];
+    const ownerInfos = distinct.length > 0 ? await rpc.getMultipleAccountsParsed(distinct) : { value: [] };
+    const wallet = new Set(distinct.filter((_, i) => {
+      const v = ownerInfos.value[i];
+      return v !== null && v !== undefined && !v.executable && v.owner === SYSTEM_PROGRAM_ID;
+    }));
+    const excluded = new Set<string>();
+    accounts.forEach((a, i) => {
+      const owner = owners[i] ?? null;
+      if (owner === null || !wallet.has(owner)) excluded.add(a.address);
+    });
+    return excluded;
+  } catch (err) {
+    if (!(err instanceof RpcError)) throw err;
+    return null;
+  }
+}
+
 function fraction(sum: bigint, supply: bigint): number {
   if (supply === 0n) return 0;
   // Two-decimal-place precision is plenty for policy and keeps the division in safe integer range.
@@ -48,7 +85,10 @@ export async function readMintChainState(rpc: SolanaRpcClient, mintAddress: Mint
     concentrationUnavailableReason = err.message.slice(0, 256);
   }
   const largest = (largestRes?.value ?? []).map((a) => ({ address: a.address as SolanaAddress, amount: a.amount as Amount }));
-  const sumTop = (n: number): bigint => largest.slice(0, n).reduce((acc, a) => acc + BigInt(a.amount), 0n);
+  const excluded = largestRes ? await programControlled(rpc, largest) : null;
+  const holders = excluded ? largest.filter((a) => !excluded.has(a.address)) : largest;
+  const sumTop = (n: number): bigint => holders.slice(0, n).reduce((acc, a) => acc + BigInt(a.amount), 0n);
+  const excludedSum = excluded ? largest.filter((a) => excluded.has(a.address)).reduce((acc, a) => acc + BigInt(a.amount), 0n) : 0n;
   const slot = Math.min(info.context.slot, supplyRes.context.slot, largestRes?.context.slot ?? Number.MAX_SAFE_INTEGER);
 
   return {
@@ -81,6 +121,8 @@ export async function readMintChainState(rpc: SolanaRpcClient, mintAddress: Mint
           top10: fraction(sumTop(10), supply),
           top20: fraction(sumTop(20), supply),
           analyticsMismatch: false,
+          programControlledFraction: excluded ? fraction(excludedSum, supply) : null,
+          excludedAccounts: excluded ? excluded.size : null,
         }
       : null,
     concentrationUnavailableReason,

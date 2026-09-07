@@ -117,6 +117,10 @@ export const WorkerEnv = Common.extend({
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
   WORKER_ROLES: z.string().default(''),
   ELIGIBILITY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
+  /** §7.4 periodic refresh: re-evaluate DISCOVERED/EVALUATING/ELIGIBLE assets older than this. */
+  ELIGIBILITY_REEVALUATE_AFTER_MS: z.coerce.number().int().min(60_000).max(7 * 86_400_000).default(6 * 3_600_000),
+  /** BLOCKED assets come back on this slower cadence; only RETIRED is final. */
+  ELIGIBILITY_BLOCKED_REEVALUATE_AFTER_MS: z.coerce.number().int().min(60_000).max(30 * 86_400_000).default(24 * 3_600_000),
   /** Held-asset safety revalidation cadence (§7.5); short because a CRITICAL_EXIT must be seen quickly. */
   HELD_ASSET_SAFETY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
   /** Chain/custody reconciliation cadence (D9); an unknown movement pauses new entries within one interval. */

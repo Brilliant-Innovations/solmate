@@ -40,6 +40,14 @@ export const ConcentrationMetrics = z.object({
   top20: Fraction,
   /** True when chain-derived and analytics-derived figures disagree materially; blocks new entry. */
   analyticsMismatch: z.boolean(),
+  /**
+   * Share of supply held by program-controlled token accounts among the largest accounts (pool
+   * vaults, staking, treasuries whose owner is a PDA or a program-owned account). Excluded from the
+   * top-N holder figures above; null when the owners could not be classified (then top-N is raw).
+   */
+  programControlledFraction: Fraction.nullable(),
+  /** Largest accounts excluded as program-controlled; null when unclassified. */
+  excludedAccounts: z.number().int().nonnegative().nullable(),
 });
 
 export const Token2022Profile = z.object({

@@ -148,7 +148,7 @@ describe('BirdeyeClient', () => {
       ok({
         success: true,
         data: {
-          creatorAddress: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS', creatorPercentage: '2.5', ownerAddress: 'not-an-address', ownerPercentage: 'n/a', top10HolderPercent: 41.2, top10UserPercent: null,
+          creatorAddress: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS', creatorPercentage: '2.5', ownerAddress: 'not-an-address', ownerPercentage: 'n/a', top10HolderPercent: 41.2, top10UserPercent: 0.194,
           mutableMetadata: true, freezeable: false, freezeAuthority: null, transferFeeEnable: true, transferFeeData: { transferFeeBasisPoints: 100 }, isToken2022: true, nonTransferable: false,
           jupStrictList: false, fakeToken: false, isTrueToken: true, creationTime: 1_780_000_000, totalSupply: '1000000000', preMarketHolder: [{}, {}],
         },
@@ -157,7 +157,7 @@ describe('BirdeyeClient', () => {
     const { client } = makeClient(transport);
     const { security, meta } = await client.security(MINT);
     expect(meta.computeUnits).toBe(25);
-    expect(security).toMatchObject({ provider: 'BIRDEYE', creatorAddress: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS', creatorPercentage: 2.5, ownerPercentage: null, top10HolderPercent: 41.2, top10UserPercent: null, transferFeeBps: 100, isToken2022: true, jupStrictList: false, preMarketHolderCount: 2, totalSupply: '1000000000', creationAt: toInstant(1_780_000_000_000) });
+    expect(security).toMatchObject({ provider: 'BIRDEYE', creatorAddress: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS', creatorPercentage: 2.5, ownerPercentage: null, top10HolderPercent: 41.2, top10UserPercent: 19.4, transferFeeBps: 100, isToken2022: true, jupStrictList: false, preMarketHolderCount: 2, totalSupply: '1000000000', creationAt: toInstant(1_780_000_000_000) });
   });
 
   it('normalises token overview windows and never fabricates missing figures', async () => {

@@ -46,6 +46,7 @@ export const EligibilityReason = z.enum([
   'MINT_CLOSE_AUTHORITY',
   'CREATOR_CONCENTRATION_HIGH',
   'TOP10_CONCENTRATION_HIGH',
+  'ANALYTICS_CONCENTRATION_DISAGREES',
   'NOT_ON_JUP_STRICT_LIST',
 ]);
 export type EligibilityReason = z.infer<typeof EligibilityReason>;

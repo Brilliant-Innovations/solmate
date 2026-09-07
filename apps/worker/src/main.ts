@@ -254,7 +254,7 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: SharedWit
     cluster: env.SOLANA_CLUSTER,
     // Each evaluation costs 40 Birdeye CU (security 25 + overview 15) and about a dozen Jupiter quotes;
     // the ledger stops the batch when the Birdeye allowance is gone.
-    config: { batchSize: 5, reevaluateAfterMs: 6 * 3_600_000, blockedReevaluateAfterMs: 24 * 3_600_000 },
+    config: { batchSize: 5, reevaluateAfterMs: env.ELIGIBILITY_REEVALUATE_AFTER_MS, blockedReevaluateAfterMs: env.ELIGIBILITY_BLOCKED_REEVALUATE_AFTER_MS },
     health: {
       contracts: defaultFreshnessContracts(BIRDEYE_TIERS[env.BIRDEYE_TIER]).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
       state: initialEligibilityHealthState(),

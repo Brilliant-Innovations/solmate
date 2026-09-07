@@ -216,9 +216,13 @@ export function normalizeSecurity(mintAddress: string, data: NonNullable<z.infer
     if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
     return null;
   };
+  // Birdeye reports holder/creator shares as fractions (top10HolderPercent 0.5367 = 53.67 %; observed live
+  // 2026-09-07); the contract carries percents. A value above 1 is taken as an already-scaled percent.
   const pctv = (v: number | string | null | undefined): number | null => {
     const n = numish(v);
-    return n !== null && n >= 0 && n <= 100 ? n : null;
+    if (n === null || n < 0) return null;
+    if (n <= 1) return Math.round(n * 100 * 10_000) / 10_000;
+    return n <= 100 ? n : null;
   };
   const addr = (v: string | null | undefined): string | null => (v && SolanaAddress.safeParse(v).success ? v : null);
   let transferFeeBps: number | null = null;

@@ -21,7 +21,7 @@ const cleanChain = (over: Partial<MintChainState> = {}): MintChainState => ({
   mintAddress: MINT, readAt: NOW, slot: 100 as MintChainState['slot'], programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as never, tokenProgram: 'TOKEN', isInitialized: true, decimals: 6,
   supply: '1000000000' as never, mintAuthority: 'NONE', freezeAuthority: 'NONE', extensions: [], transferFeeBps: null, maxTransferFee: null, transferHookProgram: null, permanentDelegate: null,
   defaultAccountFrozen: false, nonTransferable: false, mintCloseAuthority: false, paused: false, largestAccounts: [],
-  concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0.05, top5: 0.15, top10: 0.2, top20: 0.25, analyticsMismatch: false },
+  concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0.05, top5: 0.15, top10: 0.2, top20: 0.25, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null },
   concentrationUnavailableReason: null,
   ...over,
 });
@@ -58,7 +58,7 @@ describe('eligibility engine (§7.2–7.4, D45)', () => {
     ['unknown program', { chain: cleanChain({ tokenProgram: 'UNKNOWN' }) }, 'UNKNOWN_TOKEN_PROGRAM'],
     ['zero supply', { chain: cleanChain({ supply: '0' as never }) }, 'SUPPLY_ZERO'],
     ['paused', { chain: cleanChain({ paused: true, tokenProgram: 'TOKEN_2022' }) }, 'MINT_PAUSED'],
-    ['top-10 above max', { chain: cleanChain({ concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0.5, top5: 0.6, top10: 0.7, top20: 0.8, analyticsMismatch: false } }) }, 'TOP10_CONCENTRATION_ABOVE_MAX'],
+    ['top-10 above max', { chain: cleanChain({ concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0.5, top5: 0.6, top10: 0.7, top20: 0.8, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null } }) }, 'TOP10_CONCENTRATION_ABOVE_MAX'],
     ['liquidity below floor', { overview: healthyOverview({ liquidityUsd: 100 }) }, 'LIQUIDITY_BELOW_FLOOR'],
     ['stale security data', { security: freshSecurity({ observedAt: addMs(NOW, -2 * 3_600_000) }) }, 'SECURITY_DATA_STALE'],
     ['fake token', { security: freshSecurity({ fakeToken: true }) }, 'SECURITY_FAKE_TOKEN'],
@@ -78,8 +78,11 @@ describe('eligibility engine (§7.2–7.4, D45)', () => {
     expect(r.outcome).toBe('BLOCKED');
     expect(r.record.rejectionReasons).toContain('CHAIN_ANALYTICS_MISMATCH');
     expect(r.record.concentration?.analyticsMismatch).toBe(true);
+    // A different concentration figure is graded, not blocked: the provider counts holders its own way (review follow-up).
     const conc = evaluateEligibility(base({ security: freshSecurity({ top10HolderPercent: 60 }) }));
-    expect(conc.record.rejectionReasons).toContain('CHAIN_ANALYTICS_MISMATCH');
+    expect(conc.record.rejectionReasons).toContain('ANALYTICS_CONCENTRATION_DISAGREES');
+    expect(conc.record.rejectionReasons).not.toContain('CHAIN_ANALYTICS_MISMATCH');
+    expect(conc.outcome).toBe('ELIGIBLE');
     const within = evaluateEligibility(base({ security: freshSecurity({ top10HolderPercent: 30 }) }));
     expect(within.record.concentration?.analyticsMismatch).toBe(false);
   });
@@ -112,7 +115,7 @@ describe('eligibility engine (§7.2–7.4, D45)', () => {
       fc.property(chainArb, fc.boolean(), fc.boolean(), (c, hasSecurity, hasRoute) => {
         const r = evaluateEligibility(
           base({
-            chain: cleanChain({ mintAuthority: c.mintAuthority, freezeAuthority: c.freezeAuthority, nonTransferable: c.nonTransferable, concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0, top5: 0, top10: c.top10, top20: c.top10, analyticsMismatch: false } }),
+            chain: cleanChain({ mintAuthority: c.mintAuthority, freezeAuthority: c.freezeAuthority, nonTransferable: c.nonTransferable, concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0, top5: 0, top10: c.top10, top20: c.top10, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null } }),
             security: hasSecurity ? freshSecurity({ top10HolderPercent: c.top10 * 100 }) : null,
             probes: hasRoute ? goodProbes() : [],
             settlementRouteConfirmed: hasRoute ? true : null,

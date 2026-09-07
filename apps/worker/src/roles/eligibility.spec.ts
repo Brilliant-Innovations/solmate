@@ -74,7 +74,7 @@ class MemoryRepo implements EligibilityRepo {
   }
 }
 
-const SECURITY_OK = () => ok({ success: true, data: { creatorAddress: AUTH, creatorPercentage: 1, top10HolderPercent: 10, mutableMetadata: false, freezeable: false, isToken2022: false, nonTransferable: false, fakeToken: false, jupStrictList: true, creationTime: 1_700_000_000 } });
+const SECURITY_OK = () => ok({ success: true, data: { creatorAddress: AUTH, creatorPercentage: 0.01, top10HolderPercent: 0.1, mutableMetadata: false, freezeable: false, isToken2022: false, nonTransferable: false, fakeToken: false, jupStrictList: true, creationTime: 1_700_000_000 } });
 const OVERVIEW_OK = () => ok({ success: true, data: { address: MINT, price: 1, liquidity: 1e6, holder: 10_000, v24hUSD: 5e6, lastTradeUnixTime: 1_788_000_000 } });
 
 const deps = (repo: MemoryRepo, rpc: SolanaRpcClient, birdeye: BirdeyeClient, jupiter: JupiterQuoteClient | null) => ({

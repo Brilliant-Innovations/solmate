@@ -125,6 +125,13 @@ export const SignatureInfo = z.object({
 });
 export type SignatureInfo = z.infer<typeof SignatureInfo>;
 
+/** getMultipleAccounts with jsonParsed encoding; `data` is left loose because non-token accounts come back as base64 tuples. */
+export const MultipleAccountsParsed = z.object({
+  context: z.object({ slot: z.number().int().nonnegative() }),
+  value: z.array(z.object({ owner: z.string(), lamports: z.number(), executable: z.boolean(), data: z.unknown() }).nullable()),
+});
+export type MultipleAccountsParsed = z.infer<typeof MultipleAccountsParsed>;
+
 export class SolanaRpcClient {
   private readonly transport: RpcTransport;
   private readonly commitment: Commitment;
@@ -218,6 +225,11 @@ export class SolanaRpcClient {
 
   getTokenLargestAccounts(mint: string): Promise<z.infer<typeof TokenLargestAccounts>> {
     return this.call('getTokenLargestAccounts', [mint, { commitment: this.commitment }], TokenLargestAccounts);
+  }
+
+  /** Up to 100 accounts in one call; null entries for addresses that do not exist on chain. */
+  getMultipleAccountsParsed(addresses: readonly string[]): Promise<MultipleAccountsParsed> {
+    return this.call('getMultipleAccounts', [addresses, { encoding: 'jsonParsed', commitment: this.commitment }], MultipleAccountsParsed);
   }
 
   getBalance(address: string): Promise<z.infer<typeof Balance>> {

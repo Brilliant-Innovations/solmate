@@ -18,7 +18,7 @@ describe.skipIf(!url)('eligibility repository (§6.2 append-only records, status
   const token = (m: DiscoveredToken['mintAddress']): DiscoveredToken => ({ mintAddress: m, symbol: 'T', name: 'T', decimals: 6, source: 'MANUAL', rank: null, liquidityUsd: null, volume24hUsd: null, priceUsd: null, marketCapUsd: null, listedAt: null, providerUpdatedAt: null, observedAt: NOW });
   const record = (assetId: Uuid, over: Partial<AssetEligibility> = {}): AssetEligibility => ({
     id: randomUUID() as Uuid, assetId, evaluatedAt: NOW, policyVersion: 'eligibility-v1' as never, eligible: false, hardReject: true, rejectionReasons: ['ROUTE_PROBE_UNAVAILABLE'], grade: 90,
-    liquidityUsd: 1000, volume24hUsd: null, holderCount: null, concentration: { source: 'CHAIN', chainSlot: 5 as never, top1: 0.1, top5: 0.2, top10: 0.3, top20: 0.4, analyticsMismatch: false },
+    liquidityUsd: 1000, volume24hUsd: null, holderCount: null, concentration: { source: 'CHAIN', chainSlot: 5 as never, top1: 0.1, top5: 0.2, top10: 0.3, top20: 0.4, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null },
     mintAuthority: 'NONE', freezeAuthority: 'NONE', token2022: null, securityFlags: [], transferRestrictions: [], jupiterRouteAvailable: false, settlementRouteConfirmed: false, priceImpactProbes: [],
     insiderMetrics: null, emergencyExitRouteSnapshotId: null, freshness: { securityProviderAt: NOW, chainReadAt: NOW, chainSlot: 5 as never }, ...over,
   });

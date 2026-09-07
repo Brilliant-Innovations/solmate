@@ -87,9 +87,10 @@ describe('readMintChainState (D45 chain truth)', () => {
       }),
     });
     const s = await readMintChainState(client, MINT, fixedClock(T0));
-    expect(calls).toEqual(['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts']);
+    // Owner classification is not scripted here: the reader falls back to raw figures and says so.
+    expect(calls).toEqual(['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts', 'getMultipleAccounts']);
     expect(s).toMatchObject({ mintAddress: MINT, readAt: T0, slot: 103, tokenProgram: 'TOKEN', mintAuthority: 'NONE', freezeAuthority: 'PRESENT', supply: '1000000', decimals: 6, extensions: [] });
-    expect(s.concentration).toEqual({ source: 'CHAIN', chainSlot: 103, top1: 0.4, top5: 0.55, top10: 0.55, top20: 0.55, analyticsMismatch: false });
+    expect(s.concentration).toEqual({ source: 'CHAIN', chainSlot: 103, top1: 0.4, top5: 0.55, top10: 0.55, top20: 0.55, analyticsMismatch: false, programControlledFraction: null, excludedAccounts: null });
     expect(s.largestAccounts).toHaveLength(3);
   });
 
@@ -128,5 +129,27 @@ describe('readMintChainState (D45 chain truth)', () => {
     expect(s.concentration?.top10).toBe(0);
     const missing = rpc({ getAccountInfo: () => ({ context: { slot: 1 }, value: null }) });
     await expect(readMintChainState(missing.client, MINT, fixedClock(T0))).rejects.toThrow(MintNotFoundError);
+  });
+
+  it('holder concentration excludes program-controlled accounts: a pool vault owned by a PDA that has no account, and an account whose owner is program-owned (D45 holder-only top-N)', async () => {
+    const WALLET_OWNER = 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS';
+    const PDA_OWNER = 'DJNtGuBGEQiUCWE8F981M2C3ZghZt2XLD8f2sQdZ6rsZ';
+    const PROG_OWNED_OWNER = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+    const VAULT = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+    const STAKE = '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM';
+    const acct = (owner: string) => ({ owner: TOKEN_PROGRAM_ID, lamports: 2_039_280, executable: false, data: { program: 'spl-token', parsed: { type: 'account', info: { mint: MINT, owner, tokenAmount: { amount: '1', decimals: 6 } } } } });
+    let multiCall = 0;
+    const { client } = rpc({
+      getAccountInfo: () => ({ context: { slot: 105 }, value: { data: [splMintB64(null, 1_000_000n), 'base64'], owner: TOKEN_PROGRAM_ID, lamports: 1, executable: false } }),
+      getTokenSupply: () => ({ context: { slot: 103 }, value: { amount: '1000000', decimals: 6 } }),
+      getTokenLargestAccounts: () => ({ context: { slot: 104 }, value: [{ address: VAULT, amount: '500000', decimals: 6 }, { address: STAKE, amount: '200000', decimals: 6 }, { address: AUTH, amount: '100000', decimals: 6 }] }),
+      getMultipleAccounts: () => (multiCall++ === 0
+        ? { context: { slot: 104 }, value: [acct(PDA_OWNER), acct(PROG_OWNED_OWNER), acct(WALLET_OWNER)] }
+        : { context: { slot: 104 }, value: [null, { owner: TOKEN_2022_PROGRAM_ID, lamports: 1, executable: false, data: ['', 'base64'] }, { owner: '11111111111111111111111111111111', lamports: 5, executable: false, data: ['', 'base64'] }] }),
+    });
+    const s = await readMintChainState(client, MINT, fixedClock(T0));
+    // Only the wallet-owned account counts as a holder: 100000 / 1000000.
+    expect(s.concentration).toEqual({ source: 'CHAIN', chainSlot: 103, top1: 0.1, top5: 0.1, top10: 0.1, top20: 0.1, analyticsMismatch: false, programControlledFraction: 0.7, excludedAccounts: 2 });
+    expect(s.largestAccounts).toHaveLength(3);
   });
 });

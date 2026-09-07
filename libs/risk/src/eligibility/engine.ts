@@ -56,6 +56,7 @@ const GRADE_PENALTY: Partial<Record<EligibilityReason, number>> = {
   MINT_CLOSE_AUTHORITY: 5,
   CREATOR_CONCENTRATION_HIGH: 15,
   TOP10_CONCENTRATION_HIGH: 15,
+  ANALYTICS_CONCENTRATION_DISAGREES: 10,
   NOT_ON_JUP_STRICT_LIST: 5,
 };
 
@@ -124,10 +125,14 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
       (security.transferFeeEnabled === true && chain.transferFeeBps === null);
     const analyticsTop10 = pct(security.top10HolderPercent);
     const concentrationDisagrees = analyticsTop10 !== null && chain.concentration !== null && Math.abs(analyticsTop10 - chain.concentration.top10) > policy.concentrationMismatchTolerance;
-    if (contradicts || concentrationDisagrees) {
+    // A security flag the chain contradicts is a hard mismatch. A different concentration figure is
+    // not: the provider counts holders its own way while the chain figure is holder-only top-N over
+    // the largest accounts; it is recorded and graded, and the chain figure alone drives the policy.
+    if (contradicts) {
       analyticsMismatch = true;
       hard.add('CHAIN_ANALYTICS_MISMATCH');
     }
+    if (concentrationDisagrees) soft.add('ANALYTICS_CONCENTRATION_DISAGREES');
     if (security.mutableMetadata === true) soft.add('MUTABLE_METADATA');
     if (security.creatorPercentage !== null && security.creatorPercentage > policy.maxCreatorPercentage) soft.add('CREATOR_CONCENTRATION_HIGH');
     if (security.jupStrictList === false) soft.add('NOT_ON_JUP_STRICT_LIST');
