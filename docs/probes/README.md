@@ -32,3 +32,11 @@ PASS / FAIL / PARTIAL, one paragraph.
 - ADR-NNNN written / not needed.
 - Plan rows affected.
 ```
+
+## Milestone gate evidence
+
+Live-evidence walks of an exit gate, gathered by the authoring session and referenced from the plan §8 checklist. They are not provider probes and need no isolated environment.
+
+| Milestone | File |
+| --- | --- |
+| M4 | `m4-exit-gate-2026-09-07.md` — gate items with hosted-stack evidence; one item blocked by the Birdeye tier |
