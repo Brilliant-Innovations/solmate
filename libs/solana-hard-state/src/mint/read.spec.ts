@@ -93,6 +93,30 @@ describe('readMintChainState (D45 chain truth)', () => {
     expect(s.largestAccounts).toHaveLength(3);
   });
 
+  it('when the endpoint refuses getTokenLargestAccounts, authorities are still read and concentration is unknown, not zero', async () => {
+    const limited = new SolanaRpcClient({
+      url: 'https://rpc.example.test',
+      allowedOrigins: ALLOW,
+      maxAttempts: 1,
+      sleep: async () => undefined,
+      transport: async (req) => {
+        const { id, method } = JSON.parse(req.body) as { id: number; method: string };
+        if (method === 'getTokenLargestAccounts') return { status: 429, body: '' };
+        const r =
+          method === 'getAccountInfo'
+            ? { context: { slot: 7 }, value: { data: [splMintB64(AUTH, 1_000_000n), 'base64'], owner: TOKEN_PROGRAM_ID, lamports: 1, executable: false } }
+            : { context: { slot: 7 }, value: { amount: '1000000', decimals: 6 } };
+        return { status: 200, body: JSON.stringify({ jsonrpc: '2.0', id, result: r }) };
+      },
+    });
+    const s = await readMintChainState(limited, MINT, fixedClock(T0));
+    expect(s.freezeAuthority).toBe('PRESENT');
+    expect(s.concentration).toBeNull();
+    expect(s.largestAccounts).toEqual([]);
+    expect(s.concentrationUnavailableReason).toMatch(/HTTP 429/);
+    expect(s.slot).toBe(7);
+  });
+
   it('an unknown owner program is reported as UNKNOWN, a missing account throws, zero supply gives zero fractions', async () => {
     const { client } = rpc({
       getAccountInfo: () => ({ context: { slot: 1 }, value: { data: [splMintB64(null, 0n), 'base64'], owner: AUTH, lamports: 1, executable: false } }),
@@ -101,7 +125,7 @@ describe('readMintChainState (D45 chain truth)', () => {
     });
     const s = await readMintChainState(client, MINT, fixedClock(T0));
     expect(s.tokenProgram).toBe('UNKNOWN');
-    expect(s.concentration.top10).toBe(0);
+    expect(s.concentration?.top10).toBe(0);
     const missing = rpc({ getAccountInfo: () => ({ context: { slot: 1 }, value: null }) });
     await expect(readMintChainState(missing.client, MINT, fixedClock(T0))).rejects.toThrow(MintNotFoundError);
   });

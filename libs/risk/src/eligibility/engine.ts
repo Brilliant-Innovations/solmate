@@ -120,7 +120,7 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
       (security.nonTransferable === true && !chain.nonTransferable) ||
       (security.transferFeeEnabled === true && chain.transferFeeBps === null);
     const analyticsTop10 = pct(security.top10HolderPercent);
-    const concentrationDisagrees = analyticsTop10 !== null && Math.abs(analyticsTop10 - chain.concentration.top10) > policy.concentrationMismatchTolerance;
+    const concentrationDisagrees = analyticsTop10 !== null && chain.concentration !== null && Math.abs(analyticsTop10 - chain.concentration.top10) > policy.concentrationMismatchTolerance;
     if (contradicts || concentrationDisagrees) {
       analyticsMismatch = true;
       hard.add('CHAIN_ANALYTICS_MISMATCH');
@@ -132,8 +132,9 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
     else if (instantToMs(now) - instantToMs(security.creationAt) < policy.minTokenAgeMs) soft.add('TOKEN_AGE_BELOW_MIN');
   }
 
-  // --- concentration policy on chain figures -------------------------------------------------------
-  if (chain.concentration.top10 > policy.maxTop10Fraction) hard.add('TOP10_CONCENTRATION_ABOVE_MAX');
+  // --- concentration policy on chain figures (unknown = not eligible, not unsafe) --------------------
+  if (chain.concentration === null) hard.add('CONCENTRATION_UNAVAILABLE');
+  else if (chain.concentration.top10 > policy.maxTop10Fraction) hard.add('TOP10_CONCENTRATION_ABOVE_MAX');
   else if (chain.concentration.top10 > policy.softTop10Fraction) soft.add('TOP10_CONCENTRATION_HIGH');
 
   // --- market structure ------------------------------------------------------------------------------
@@ -177,7 +178,7 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
     liquidityUsd: liquidity,
     volume24hUsd: volume24h,
     holderCount: holders,
-    concentration: { ...chain.concentration, analyticsMismatch },
+    concentration: chain.concentration ? { ...chain.concentration, analyticsMismatch } : null,
     mintAuthority: chain.mintAuthority,
     freezeAuthority: chain.freezeAuthority,
     token2022:

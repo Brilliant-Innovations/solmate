@@ -22,6 +22,7 @@ const cleanChain = (over: Partial<MintChainState> = {}): MintChainState => ({
   supply: '1000000000' as never, mintAuthority: 'NONE', freezeAuthority: 'NONE', extensions: [], transferFeeBps: null, maxTransferFee: null, transferHookProgram: null, permanentDelegate: null,
   defaultAccountFrozen: false, nonTransferable: false, mintCloseAuthority: false, paused: false, largestAccounts: [],
   concentration: { source: 'CHAIN', chainSlot: 100 as never, top1: 0.05, top5: 0.15, top10: 0.2, top20: 0.25, analyticsMismatch: false },
+  concentrationUnavailableReason: null,
   ...over,
 });
 const freshSecurity = (over: Partial<TokenSecurityReport> = {}): TokenSecurityReport => ({
@@ -84,7 +85,7 @@ describe('eligibility engine (§7.2–7.4, D45)', () => {
   });
 
   it('missing required data fails closed as EVALUATING, never as ELIGIBLE and never as BLOCKED', () => {
-    for (const over of [{ security: null }, { overview: null }, { probes: [] }, { settlementRouteConfirmed: null }] as Partial<EligibilityInputs>[]) {
+    for (const over of [{ security: null }, { overview: null }, { probes: [] }, { settlementRouteConfirmed: null }, { chain: cleanChain({ concentration: null, concentrationUnavailableReason: 'rpc getTokenLargestAccounts: HTTP 429' }) }] as Partial<EligibilityInputs>[]) {
       const r = evaluateEligibility(base(over));
       expect(r.outcome).toBe('EVALUATING');
       expect(r.record.eligible).toBe(false);

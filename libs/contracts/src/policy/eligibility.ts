@@ -35,6 +35,7 @@ export const EligibilityReason = z.enum([
   'SECURITY_DATA_UNAVAILABLE',
   'MARKET_DATA_UNAVAILABLE',
   'ROUTE_PROBE_UNAVAILABLE',
+  'CONCENTRATION_UNAVAILABLE',
   // soft findings (grade only)
   'VOLUME_BELOW_FLOOR',
   'HOLDERS_BELOW_FLOOR',
@@ -49,7 +50,7 @@ export const EligibilityReason = z.enum([
 export type EligibilityReason = z.infer<typeof EligibilityReason>;
 
 /** Reasons that mean "we do not know yet", never "unsafe": the asset keeps EVALUATING. */
-export const UNAVAILABLE_REASONS: readonly EligibilityReason[] = ['SECURITY_DATA_UNAVAILABLE', 'MARKET_DATA_UNAVAILABLE', 'ROUTE_PROBE_UNAVAILABLE'];
+export const UNAVAILABLE_REASONS: readonly EligibilityReason[] = ['SECURITY_DATA_UNAVAILABLE', 'MARKET_DATA_UNAVAILABLE', 'ROUTE_PROBE_UNAVAILABLE', 'CONCENTRATION_UNAVAILABLE'];
 
 export const EligibilityPolicy = z.strictObject({
   version: VersionId,

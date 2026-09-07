@@ -1,5 +1,5 @@
 import type { Amount, Clock, MintAddress, MintChainState, SolanaAddress, TokenProgram } from '@sol-agent-trader/contracts';
-import type { SolanaRpcClient } from '../rpc/client.js';
+import { RpcError, type SolanaRpcClient } from '../rpc/client.js';
 import { decodeMint, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from './decode.js';
 
 /**
@@ -35,11 +35,21 @@ export async function readMintChainState(rpc: SolanaRpcClient, mintAddress: Mint
   const decoded = decodeMint(new Uint8Array(Buffer.from(info.value.data[0], 'base64')));
 
   const supplyRes = await rpc.getTokenSupply(mintAddress);
-  const largestRes = await rpc.getTokenLargestAccounts(mintAddress);
   const supply = BigInt(supplyRes.value.amount);
-  const largest = largestRes.value.map((a) => ({ address: a.address as SolanaAddress, amount: a.amount as Amount }));
+
+  // Public endpoints restrict getTokenLargestAccounts; its absence must not hide the authoritative
+  // facts already read. Concentration is then reported as unknown, never as zero.
+  let largestRes: Awaited<ReturnType<SolanaRpcClient['getTokenLargestAccounts']>> | null = null;
+  let concentrationUnavailableReason: string | null = null;
+  try {
+    largestRes = await rpc.getTokenLargestAccounts(mintAddress);
+  } catch (err) {
+    if (!(err instanceof RpcError)) throw err;
+    concentrationUnavailableReason = err.message.slice(0, 256);
+  }
+  const largest = (largestRes?.value ?? []).map((a) => ({ address: a.address as SolanaAddress, amount: a.amount as Amount }));
   const sumTop = (n: number): bigint => largest.slice(0, n).reduce((acc, a) => acc + BigInt(a.amount), 0n);
-  const slot = Math.min(info.context.slot, supplyRes.context.slot, largestRes.context.slot);
+  const slot = Math.min(info.context.slot, supplyRes.context.slot, largestRes?.context.slot ?? Number.MAX_SAFE_INTEGER);
 
   return {
     mintAddress,
@@ -62,14 +72,17 @@ export async function readMintChainState(rpc: SolanaRpcClient, mintAddress: Mint
     mintCloseAuthority: decoded.mintCloseAuthority,
     paused: decoded.paused,
     largestAccounts: largest,
-    concentration: {
-      source: 'CHAIN',
-      chainSlot: slot as MintChainState['slot'],
-      top1: fraction(sumTop(1), supply),
-      top5: fraction(sumTop(5), supply),
-      top10: fraction(sumTop(10), supply),
-      top20: fraction(sumTop(20), supply),
-      analyticsMismatch: false,
-    },
+    concentration: largestRes
+      ? {
+          source: 'CHAIN',
+          chainSlot: slot as MintChainState['slot'],
+          top1: fraction(sumTop(1), supply),
+          top5: fraction(sumTop(5), supply),
+          top10: fraction(sumTop(10), supply),
+          top20: fraction(sumTop(20), supply),
+          analyticsMismatch: false,
+        }
+      : null,
+    concentrationUnavailableReason,
   };
 }

@@ -60,10 +60,15 @@ export const MintChainState = z.object({
   nonTransferable: z.boolean(),
   mintCloseAuthority: z.boolean(),
   paused: z.boolean(),
-  /** Up to 20 largest token accounts at `slot` (getTokenLargestAccounts). */
+  /** Up to 20 largest token accounts at `slot` (getTokenLargestAccounts); empty when that read was unavailable. */
   largestAccounts: z.array(LargestTokenAccount).max(20),
-  /** Chain-derived top-N concentration over `supply`; analyticsMismatch is decided by the engine. */
-  concentration: ConcentrationMetrics,
+  /**
+   * Chain-derived top-N concentration over `supply`; analyticsMismatch is decided by the engine.
+   * Null when the endpoint refused getTokenLargestAccounts (public RPCs restrict it): the
+   * authorities and extensions above are still authoritative, concentration is simply unknown.
+   */
+  concentration: ConcentrationMetrics.nullable(),
+  concentrationUnavailableReason: z.string().max(256).nullable(),
 });
 export type MintChainState = z.infer<typeof MintChainState>;
 
