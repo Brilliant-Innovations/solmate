@@ -16,6 +16,14 @@ export async function requestPauseNewEntries(): Promise<void> {
   revalidatePath('/');
 }
 
+export async function requestStartSession(): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return;
+  const { error } = await supabase.schema('ops').from('control_requests').insert({ kind: 'START_SESSION', payload: { source: 'control-room' } });
+  if (error) throw new Error(`control request refused: ${error.message}`);
+  revalidatePath('/');
+}
+
 export async function requestEndSession(): Promise<void> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return;

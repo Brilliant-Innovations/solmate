@@ -1,6 +1,7 @@
 import type { ActivityState, AlertSeverity, CapitalAuthority, ProviderHealth } from '@sol-agent-trader/contracts';
 import { requestEndSession, requestPauseNewEntries } from '../app/(app)/actions';
 import { activityTone, alertsLabel, authorityTone, entriesLabel, freshnessLabel, healthTone, valueOrMissing, worstHealth, type Tone } from '../lib/status';
+import { baseToUsd, loadEquity, loadPaperAccount } from '../lib/paper';
 import { createSupabaseServerClient } from '../lib/supabase/server';
 import { ScopeSelector } from './scope-selector';
 
@@ -49,6 +50,10 @@ export async function loadStatusSnapshot(): Promise<StatusSnapshot> {
       supabase.schema('ops').from('notifications').select('severity').is('resolved_at', null),
       supabase.auth.getUser().then(async ({ data }) => (data.user ? supabase.schema('ops').from('operators').select('role').eq('user_id', data.user.id).maybeSingle() : { data: null })),
     ]);
+    const account = await loadPaperAccount();
+    const equity = account ? await loadEquity(account.id) : { latest: null, dayStart: null };
+    const latestEquity = baseToUsd(equity.latest?.equity_base_units);
+    const dayStartEquity = baseToUsd(equity.dayStart?.equity_base_units);
     const paused = (session.data?.paused as { active?: boolean } | null)?.active ?? false;
     const heartbeat = session.data?.last_presence_heartbeat_at ? Date.now() - Date.parse(session.data.last_presence_heartbeat_at) : null;
     const ages = (providers.data ?? []).map((p) => p.freshness_age_ms).filter((a): a is number => a !== null);
@@ -64,9 +69,10 @@ export async function loadStatusSnapshot(): Promise<StatusSnapshot> {
       worstProvider: worstHealth((providers.data ?? []).map((p) => p.state)),
       db: session.error || providers.error ? 'failed' : 'ok',
       openAlerts: (alerts.data ?? []).map((a) => a.severity),
-      equityUsd: null,
-      exposureFraction: null,
-      dayPnlFraction: null,
+      // Paper book, settlement is USDC so base units read as USD (§20.1); absent until the first snapshot.
+      equityUsd: latestEquity,
+      exposureFraction: equity.latest?.exposure_fraction ?? null,
+      dayPnlFraction: latestEquity !== null && dayStartEquity !== null && dayStartEquity > 0 ? (latestEquity - dayStartEquity) / dayStartEquity : null,
       canControl: role === 'operator' || role === 'admin',
     };
   } catch {
