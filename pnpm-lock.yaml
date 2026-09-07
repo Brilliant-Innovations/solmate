@@ -201,6 +201,9 @@ importers:
       '@simplewebauthn/server':
         specifier: ^14.0.1
         version: 14.0.1
+      '@sol-agent-trader/agents':
+        specifier: workspace:*
+        version: link:../../libs/agents
       '@sol-agent-trader/contracts':
         specifier: workspace:*
         version: link:../../libs/contracts
@@ -228,6 +231,9 @@ importers:
       '@sol-agent-trader/solana-hard-state':
         specifier: workspace:*
         version: link:../../libs/solana-hard-state
+      '@sol-agent-trader/strategies':
+        specifier: workspace:*
+        version: link:../../libs/strategies
 
   libs/agents:
     dependencies:
@@ -361,6 +367,12 @@ importers:
 
   libs/strategies:
     dependencies:
+      '@sol-agent-trader/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@sol-agent-trader/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       tslib:
         specifier: ^2.3.0
         version: 2.8.1

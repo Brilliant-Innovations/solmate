@@ -129,6 +129,10 @@ export const WorkerEnv = Common.extend({
   FEATURES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Candidate scan cadence (§9.1, §9.7). */
   CANDIDATES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  /** S0 decision cadence (§12.1): RAW and SAFE action cycles over new candidates. */
+  S0_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  /** Git commit of the running build, recorded on strategy versions it registers (§6.21). */
+  GIT_SHA: z.string().regex(/^[0-9a-f]{7,40}$/).default('0000000'),
   /** Tracked-wallet polling cadence (§3.2); webhooks replace polling once a public receiver exists. */
   TRACKED_WALLETS_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(120_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),

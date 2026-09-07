@@ -57,6 +57,12 @@
     },
     {
       "path": "../../libs/signals/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/strategies/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/agents/tsconfig.lib.json"
     }
   ]
 }

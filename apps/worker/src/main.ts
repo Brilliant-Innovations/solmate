@@ -1,6 +1,9 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
+  ensureStrategyVersion,
+  listCandidatesAwaitingStrategy,
+  persistS0Decisions,
   heldBucketTimes,
   insertEmergencyRouteSnapshot,
   insertSnapshot,
@@ -43,6 +46,7 @@ import {
   type Sql,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient } from '@sol-agent-trader/execution';
+import { s0StrategyVersion } from '@sol-agent-trader/strategies';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
@@ -54,6 +58,7 @@ import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
 import { runFeaturesCycle } from './roles/features.js';
 import { runCandidatesCycle } from './roles/candidates.js';
+import { runS0Cycle } from './roles/s0.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -106,7 +111,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -186,6 +191,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   }
   if (roles.has('features')) loops.push(featuresLoop(env, logger, shared));
   if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
+  if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -412,6 +418,33 @@ async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
   logger.info('candidates_starting', { intervalMs, trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY.version, holder: shared.holder });
   await loopUnderLease('candidates', intervalMs, logger, shared, async () => {
     await runCandidatesCycle(deps);
+  });
+}
+
+async function s0Loop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.S0_INTERVAL_MS;
+  const { sql } = shared;
+  const activeFrom = systemClock.now();
+  const strategies = { RAW: s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), SAFE: s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom) };
+  for (const v of [strategies.RAW, strategies.SAFE]) {
+    const outcome = await ensureStrategyVersion(sql, v);
+    logger.info('strategy_version', { versionId: v.versionId, outcome, gitSha: v.gitSha });
+  }
+  if (env.GIT_SHA === '0000000') logger.warn('git_sha_unknown', { hint: 'set GIT_SHA so registered strategy versions carry the build commit' });
+  const deps = {
+    repo: {
+      listAwaiting: (versionId: Parameters<typeof listCandidatesAwaitingStrategy>[1], now: Parameters<typeof listCandidatesAwaitingStrategy>[2], limit: number) => listCandidatesAwaitingStrategy(sql, versionId, now, limit),
+      persist: (candidateId: Parameters<typeof persistS0Decisions>[1], decisions: Parameters<typeof persistS0Decisions>[2], status: Parameters<typeof persistS0Decisions>[3], reason: Parameters<typeof persistS0Decisions>[4]) => persistS0Decisions(sql, candidateId, decisions, status, reason),
+    },
+    clock: systemClock,
+    logger,
+    strategies,
+    gatePolicy: DEFAULT_S0_SAFETY_GATE_POLICY,
+    config: { batchSize: 100 },
+  };
+  logger.info('s0_starting', { intervalMs, gate: DEFAULT_S0_SAFETY_GATE_POLICY.version, holder: shared.holder });
+  await loopUnderLease('s0', intervalMs, logger, shared, async () => {
+    await runS0Cycle(deps);
   });
 }
 
