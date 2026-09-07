@@ -1713,6 +1713,14 @@ export type Database = {
         Args: { from_month: string; months: number }
         Returns: undefined
       }
+      maintain_candle_partitions: { Args: never; Returns: undefined }
+      prune_candles: {
+        Args: never
+        Returns: {
+          deleted: number
+          resolution: Database["enums"]["Enums"]["candle_resolution"]
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
@@ -2054,6 +2062,24 @@ export type Database = {
           provider?: string
           rate_limit_state?: string | null
           state?: Database["enums"]["Enums"]["provider_health"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      retention_policies: {
+        Row: {
+          resolution: Database["enums"]["Enums"]["candle_resolution"]
+          retention_days: number | null
+          updated_at: string
+        }
+        Insert: {
+          resolution: Database["enums"]["Enums"]["candle_resolution"]
+          retention_days?: number | null
+          updated_at?: string
+        }
+        Update: {
+          resolution?: Database["enums"]["Enums"]["candle_resolution"]
+          retention_days?: number | null
           updated_at?: string
         }
         Relationships: []

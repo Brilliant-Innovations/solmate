@@ -104,6 +104,13 @@ export const WorkerEnv = Common.extend({
   PROJECTION_SIGNING_PUBLIC_KEY: Ed25519PublicKeyHex,
   EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
   SENTRY_DSN_WORKER: Url.optional(),
+  // Market-data providers (M4). Absent key = that provider's roles stay disabled and report FAILED.
+  BIRDEYE_API_KEY: NonEmpty.optional(),
+  BIRDEYE_TIER: z.enum(['STANDARD', 'LITE', 'STARTER', 'PREMIUM', 'BUSINESS']).default('STANDARD'),
+  JUPITER_API_KEY: NonEmpty.optional(),
+  /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
+  WORKER_ROLES: z.string().default(''),
+  MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
 });
 
 export function parseWorkerEnv(env: Record<string, string | undefined>) {

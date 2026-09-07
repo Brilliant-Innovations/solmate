@@ -1,6 +1,7 @@
 export * from './common.js';
 export * from './core.js';
 export * from './market.js';
+export * from './market-data.js';
 export * from './intelligence.js';
 export * from './signals.js';
 export * from './agents.js';

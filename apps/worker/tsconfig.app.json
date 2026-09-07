@@ -2,11 +2,15 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "rootDir": "src",
     "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts"
+  ],
   "exclude": [
     "out-tsc",
     "dist",
@@ -32,6 +36,12 @@
     },
     {
       "path": "../../libs/contracts/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/market/tsconfig.lib.json"
+    },
+    {
+      "path": "../../libs/db/tsconfig.lib.json"
     }
   ]
 }

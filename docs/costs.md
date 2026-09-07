@@ -22,9 +22,9 @@ Filled in as each account is created (plan §3 prerequisites table). Tier limits
 | Supabase | 2026-09-06 | Free | 500 MB DB, 1 GB file storage, 2 M realtime messages, 200 concurrent realtime peers, API rate limits per `supabase/config.toml` `[auth.rate_limit]` | M2 |
 | Sentry | 2026-09-06 | Developer | 5 000 errors, 10 M spans, 50 replays per month; 1 user | M2 |
 | Independent Solana RPC | | | | M3 |
-| Jupiter API | | | | MP |
+| Jupiter API | not yet (Price V3 works keyless on `lite-api.jup.ag`) | Lite (free) → Pro/Ultra with `x-api-key` on `api.jup.ag` | 50 ids per Price V3 request; adapter defaults to 1 rps keyless, 10 rps with a key (`libs/market/jupiter`) | MP / M4 |
 | Turnkey | | | | MP |
-| Birdeye | | | | M4 |
+| Birdeye | not yet (`BIRDEYE_API_KEY` absent → market feeds report FAILED) | Standard $0 (30k CU, 1 rps, no WS) · Lite $39 (2.5M CU, 15 rps) · Starter $99 (8M CU, 15 rps) · Premium $199 (20M CU, 50 rps, WS) · Business $499 (60M CU, 100 rps, WS); verified 2026-09-06 | CU per call: ohlcv v3 45–100, multi_price ⌈3·n^0.8⌉, trending 25, new_listing 20, token/list 50, overview 15, security 25, holders 30; token/list scroll 2 rps. `BIRDEYE_TIER` sizes the adapter's rate and CU budgets (`libs/market/birdeye/tiers.ts`); Standard cannot sustain a 60 s loop (≈1 000 CU/day), Lite is the realistic P1A floor | M4 |
 | Helius | | | | M4 |
 | LunarCrush | | | | M6 |
 | CryptoPanic | | | | M6 |

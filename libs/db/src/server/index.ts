@@ -6,3 +6,4 @@ export * from './leases.js';
 export * from './consumer.js';
 export * from './audit.js';
 export * from './runtime-session-repo.js';
+export * from './market-repo.js';
