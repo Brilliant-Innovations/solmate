@@ -38,6 +38,30 @@ describe('SolanaRpcClient (read-only, allowlisted)', () => {
     expect(() => new SolanaRpcClient({ url: 'https://evil.example/rpc', allowedOrigins: ALLOW, transport: async () => ({ status: 200, body: '' }) })).toThrow(/allowlist/);
   });
 
+  it('paces to the configured rate and retries 429/5xx with backoff before giving up', async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const client = new SolanaRpcClient({
+      url: 'https://rpc.example.test',
+      allowedOrigins: ALLOW,
+      requestsPerSecond: 1,
+      nowMs: () => 0,
+      sleep: async (ms) => void sleeps.push(ms),
+      transport: async (req) => {
+        calls++;
+        const { id } = JSON.parse(req.body) as { id: number };
+        return calls < 3 ? { status: 429, body: '' } : { status: 200, body: JSON.stringify({ jsonrpc: '2.0', id, result: 42 }) };
+      },
+    });
+    await expect(client.getSlot()).resolves.toBe(42);
+    expect(calls).toBe(3);
+    // backoff 1s then 2s, plus one pacing wait per attempt after the first (1 rps, frozen clock)
+    expect(sleeps).toEqual([1000, 1000, 2000, 1000]);
+
+    const always429 = new SolanaRpcClient({ url: 'https://rpc.example.test', allowedOrigins: ALLOW, requestsPerSecond: 100, maxAttempts: 2, sleep: async () => undefined, transport: async () => ({ status: 429, body: '' }) });
+    await expect(always429.getSlot()).rejects.toThrow(/HTTP 429/);
+  });
+
   it('surfaces JSON-RPC errors, non-JSON bodies and malformed results as RpcError', async () => {
     const { client } = rpc({ getSlot: () => new Error('node is behind') });
     await expect(client.getSlot()).rejects.toThrow(RpcError);

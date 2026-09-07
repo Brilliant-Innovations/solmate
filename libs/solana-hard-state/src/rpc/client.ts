@@ -59,6 +59,13 @@ export interface SolanaRpcClientOptions {
   transport?: RpcTransport;
   commitment?: Commitment;
   timeoutMs?: number;
+  /** Pacing for the endpoint's published limit; the public mainnet endpoint tolerates only a few per second. Default 4. */
+  requestsPerSecond?: number;
+  /** Bounded retry on 429/5xx/transport failure. Default 4 attempts with 1s·2^n backoff. */
+  maxAttempts?: number;
+  sleep?: (ms: number) => Promise<void>;
+  /** Millisecond clock for pacing; injectable for tests. */
+  nowMs?: () => number;
 }
 
 export const AccountInfo = z.object({
@@ -89,7 +96,13 @@ export class SolanaRpcClient {
   private readonly transport: RpcTransport;
   private readonly commitment: Commitment;
   private readonly timeoutMs: number;
+  private readonly ratePerSecond: number;
+  private readonly maxAttempts: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly nowMs: () => number;
   private nextId = 1;
+  private tokens: number;
+  private lastRefillMs: number;
 
   constructor(private readonly opts: SolanaRpcClientOptions) {
     const origin = new URL(opts.url).origin;
@@ -97,25 +110,65 @@ export class SolanaRpcClient {
     this.transport = opts.transport ?? fetchRpcTransport;
     this.commitment = opts.commitment ?? 'confirmed';
     this.timeoutMs = opts.timeoutMs ?? 8_000;
+    this.ratePerSecond = opts.requestsPerSecond ?? 4;
+    this.maxAttempts = opts.maxAttempts ?? 4;
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.nowMs = opts.nowMs ?? (() => Date.now());
+    this.tokens = Math.max(1, Math.floor(this.ratePerSecond));
+    this.lastRefillMs = this.nowMs();
+  }
+
+  /** Token bucket: waits until a request is within the configured rate. */
+  private async pace(): Promise<void> {
+    const now = this.nowMs();
+    const burst = Math.max(1, Math.floor(this.ratePerSecond));
+    this.tokens = Math.min(burst, this.tokens + ((now - this.lastRefillMs) / 1000) * this.ratePerSecond);
+    this.lastRefillMs = now;
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return;
+    }
+    const waitMs = Math.ceil(((1 - this.tokens) / this.ratePerSecond) * 1000);
+    await this.sleep(waitMs);
+    this.tokens = 0;
+    this.lastRefillMs = this.nowMs();
   }
 
   private async call<T extends z.ZodType>(method: ReadOnlyMethod, params: unknown[], schema: T): Promise<z.infer<T>> {
     if (!READ_ONLY_METHODS.includes(method)) throw new RpcError(method, null, 'method not permitted');
     const id = this.nextId++;
-    const res = await this.transport({ url: this.opts.url, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), timeoutMs: this.timeoutMs });
-    if (res.status !== 200) throw new RpcError(method, null, `HTTP ${res.status}`);
-    let json: unknown;
-    try {
-      json = JSON.parse(res.body);
-    } catch {
-      throw new RpcError(method, null, 'response is not JSON');
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    let lastError: RpcError | null = null;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      await this.pace();
+      let res: RpcHttpResponse;
+      try {
+        res = await this.transport({ url: this.opts.url, body, timeoutMs: this.timeoutMs });
+      } catch (err) {
+        lastError = new RpcError(method, null, `transport: ${err instanceof Error ? err.message : String(err)}`);
+        await this.sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
+        continue;
+      }
+      if (res.status === 429 || res.status >= 500) {
+        lastError = new RpcError(method, null, `HTTP ${res.status}`);
+        await this.sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
+        continue;
+      }
+      if (res.status !== 200) throw new RpcError(method, null, `HTTP ${res.status}`);
+      let json: unknown;
+      try {
+        json = JSON.parse(res.body);
+      } catch {
+        throw new RpcError(method, null, 'response is not JSON');
+      }
+      const env = RpcEnvelope.safeParse(json);
+      if (!env.success) throw new RpcError(method, null, 'malformed JSON-RPC envelope');
+      if (env.data.error) throw new RpcError(method, env.data.error.code, env.data.error.message);
+      const parsed = schema.safeParse(env.data.result);
+      if (!parsed.success) throw new RpcError(method, null, `unexpected result shape: ${parsed.error.issues[0]?.message ?? ''}`);
+      return parsed.data;
     }
-    const env = RpcEnvelope.safeParse(json);
-    if (!env.success) throw new RpcError(method, null, 'malformed JSON-RPC envelope');
-    if (env.data.error) throw new RpcError(method, env.data.error.code, env.data.error.message);
-    const parsed = schema.safeParse(env.data.result);
-    if (!parsed.success) throw new RpcError(method, null, `unexpected result shape: ${parsed.error.issues[0]?.message ?? ''}`);
-    return parsed.data;
+    throw lastError ?? new RpcError(method, null, 'exhausted attempts');
   }
 
   getSlot(): Promise<number> {
