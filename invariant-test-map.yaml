@@ -50,10 +50,14 @@ invariants:
       - ALWAYS
     owner_modules:
       - libs/risk/src/sizing
+      - libs/risk/src/rules
       - apps/risk-authorizer/src/authorize
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - libs/risk/src/sizing/size.spec.ts
+      - libs/risk/src/rules/entry.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-03
     statement: "No entry for an ineligible asset."

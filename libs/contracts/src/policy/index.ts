@@ -5,3 +5,4 @@ export * from './reconciliation.js';
 export * from './freshness.js';
 export * from './features.js';
 export * from './candidates.js';
+export * from './risk.js';
