@@ -15,6 +15,8 @@ import { toInstant, type Amount, type ChainMovement, type ChainTransactionFacts,
  *                  nativeTransfers[{fromUserAccount,toUserAccount,amount}], tokenTransfers[{fromUserAccount,toUserAccount,fromTokenAccount,
  *                  toTokenAccount,rawTokenAmount,decimals,mint,tokenStandard}], accountData[{account,nativeBalanceChange,...}], summary{type,description} } }
  * The legacy Enhanced Transactions shape (tokenAmount as a decimal, timestamp, type) is accepted too so recorded webhook payloads replay.
+ * Observed live 2026-09-07: v1 items carry slot, blockTime, fee, feePayer, transactionStatus ('OK'|'ERROR', agreeing with the RPC err flag),
+ * error, decodedError, nativeTransfers, tokenTransfers, summary, instructions — and no accountData, so SOL deltas come from fee + transfers.
  */
 
 const Addr = z.string().min(32).max(44);
