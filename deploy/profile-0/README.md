@@ -27,6 +27,31 @@ pnpm nx serve @sol-agent-trader/execution-service
 
 Each reads its own env file from the shell you start it in; `.env.example` at the repo root lists the names per service. Every service validates its environment before anything else runs (`libs/contracts/src/config/env.ts`): a missing required name or a credential outside its trust class is fatal (`event: env_invalid`, names only, never values). `node main.js --print-digest` prints the contract digest without touching the environment; CI and the image workflow use it.
 
+## First worker run (market ingestion against the hosted Supabase)
+
+The worker validates its whole credential set before it does anything, so the env file has to be complete. Nothing below goes to Vercel or GitHub; Vercel holds only the web app's two public values.
+
+1. Generate throwaway signing keys and paste the worker block into `deploy/profile-0/.env.worker` (or `.env.local` for the process route):
+
+   ```sh
+   node tools/dev-keys.mjs
+   ```
+
+2. Fill the Supabase values from the hosted project's dashboard: `SUPABASE_URL` (Project Settings → API), `SUPABASE_SERVICE_ROLE_KEY` (the `sb_secret_…` key; worker only, never the browser), `SUPABASE_DB_URL` (Project Settings → Database → connection string, session mode, with the database password). For the local stack use the values already in the `.example` file.
+
+3. Add the market-data settings. The free Birdeye tier meters compute units, not calls (about 1,000 units a day; one OHLCV request is 45), so keep the interval long:
+
+   ```
+   BIRDEYE_API_KEY=<key>
+   BIRDEYE_TIER=STANDARD
+   WORKER_ROLES=market-ingest
+   MARKET_INGEST_INTERVAL_MS=1800000
+   ```
+
+4. Start it. Container route: `docker compose up --build worker` from this directory. Process route: `pnpm nx serve @sol-agent-trader/worker` with the values exported in the shell. A successful start logs `startup`, then `market_ingest_starting` with the budgets computed from the tier, then one `market_ingest_cycle` line per cycle with counts of candles written and rejected, assets discovered, snapshots and errors. Feed health lands in `ops.provider_health` and is visible to the web app.
+
+If the worker exits with `env_invalid`, the log names the missing or forbidden variables (never their values). If it logs `market_ingest_lease_unavailable`, another worker holds the `market-ingest` lease; stop it or wait for the 90-second lease to lapse.
+
 ## Not here
 
 Profile 1B (Vercel Sandbox), Profile 2 (isolated VM holding live credentials) and Profiles 3/4 (fixed-price VM, three hosts) are declared in `config/profiles/` and provisioned in M11 (ADR-0002).
