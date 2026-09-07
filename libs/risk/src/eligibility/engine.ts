@@ -34,6 +34,8 @@ export interface EligibilityInputs {
   probes: readonly PriceImpactProbe[];
   /** Whether a route back to SOL/USDC was confirmed at probe time; null when no probe ran. */
   settlementRouteConfirmed: boolean | null;
+  /** Persisted provider-independent exit route (§6.2, §14.6), when discovery found and verified one. */
+  emergencyExitRouteSnapshotId?: Uuid | null;
   now: Instant;
   policy: EligibilityPolicy;
 }
@@ -200,7 +202,7 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
     insiderMetrics: security
       ? { creatorPercentage: security.creatorPercentage, ownerPercentage: security.ownerPercentage, top10UserPercent: security.top10UserPercent, preMarketHolderCount: security.preMarketHolderCount, source: 'BIRDEYE' }
       : null,
-    emergencyExitRouteSnapshotId: null,
+    emergencyExitRouteSnapshotId: input.emergencyExitRouteSnapshotId ?? null,
     freshness: { securityProviderAt: security?.observedAt ?? null, chainReadAt: chain.readAt, chainSlot: chain.slot },
   };
   return { record, outcome };

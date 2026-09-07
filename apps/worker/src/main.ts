@@ -2,6 +2,7 @@ import { DEFAULT_ELIGIBILITY_POLICY, getContractSetDigest, parseWorkerEnv, syste
 import {
   createSql,
   heldBucketTimes,
+  insertEmergencyRouteSnapshot,
   insertSnapshot,
   LeaseManager,
   listAssetsForEvaluation,
@@ -14,6 +15,7 @@ import {
   writeCandles,
   type Sql,
 } from '@sol-agent-trader/db/server';
+import { JupiterSwapClient } from '@sol-agent-trader/execution';
 import { BIRDEYE_TIERS, BirdeyeClient, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
@@ -162,21 +164,27 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared, 
 async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
   const intervalMs = env.ELIGIBILITY_INTERVAL_MS;
   const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
+  // The one shared Jupiter quote client (ADR-0003): keyless lite host at 1 rps, keyed host faster.
+  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_API_KEY ? 10 : 1 });
   const { sql } = shared;
   const deps = {
     rpc,
     birdeye: shared.birdeye,
+    jupiter,
     repo: {
       listAssetsForEvaluation: (opts: { limit: number; reevaluateAfter: ReturnType<typeof systemClock.now> }) => listAssetsForEvaluation(sql, opts),
       recordEligibility: (record: Parameters<typeof recordEligibility>[1], status: Parameters<typeof recordEligibility>[2]) => recordEligibility(sql, record, status),
+      insertEmergencyRouteSnapshot: (snapshot: Parameters<typeof insertEmergencyRouteSnapshot>[1]) => insertEmergencyRouteSnapshot(sql, snapshot),
     },
     clock: systemClock,
     logger,
     policy: DEFAULT_ELIGIBILITY_POLICY,
-    // Each evaluation costs 40 Birdeye CU (security 25 + overview 15); the ledger stops the batch when the allowance is gone.
+    cluster: env.SOLANA_CLUSTER,
+    // Each evaluation costs 40 Birdeye CU (security 25 + overview 15) and about a dozen Jupiter quotes;
+    // the ledger stops the batch when the Birdeye allowance is gone.
     config: { batchSize: 5, reevaluateAfterMs: 6 * 3_600_000 },
   };
-  logger.info('eligibility_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_ELIGIBILITY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, holder: shared.holder });
+  logger.info('eligibility_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_ELIGIBILITY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, jupiterHost: env.JUPITER_API_KEY ? 'api.jup.ag' : 'lite-api.jup.ag', holder: shared.holder });
   await loopUnderLease('eligibility', intervalMs, logger, shared, async () => {
     await runEligibilityCycle(deps);
   });

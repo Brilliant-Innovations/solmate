@@ -121,9 +121,45 @@ export const ExecutionResult = z.object({
 });
 export type ExecutionResult = z.infer<typeof ExecutionResult>;
 
+// --- Route detail (for probes and emergency-route discovery, §7.2, §14.6) ----------------------
+
+export const QuoteRouteHop = z.object({
+  /** Pool/market account the router used. */
+  ammKey: SolanaAddress,
+  /** Router's venue label (e.g. "Raydium CLMM", "Whirlpool"). */
+  label: z.string().min(1).max(64),
+  /** Program id when the label maps to a known program; null for venues we do not model. */
+  programId: SolanaAddress.nullable(),
+  inputMint: MintAddress,
+  outputMint: MintAddress,
+  inputAmount: Amount,
+  outputAmount: Amount,
+  percent: z.number().min(0).max(100),
+});
+export type QuoteRouteHop = z.infer<typeof QuoteRouteHop>;
+
+export const QuoteRoutePlan = z.object({
+  hops: z.array(QuoteRouteHop),
+  contextSlot: Slot.nullable(),
+  /** The provider's own impact figure, kept verbatim for attribution; policy uses the measured impact in Quote. */
+  providerImpactPct: z.string().max(64).nullable(),
+});
+export type QuoteRoutePlan = z.infer<typeof QuoteRoutePlan>;
+
+export const QuoteOptions = z.object({
+  /** Single-hop routes only. */
+  onlyDirectRoutes: z.boolean().optional(),
+  /** Restrict to these router labels (e.g. the direct-pool families of §14.6). */
+  dexes: z.array(z.string().min(1)).optional(),
+  maxAccounts: z.number().int().positive().optional(),
+});
+export type QuoteOptions = z.infer<typeof QuoteOptions>;
+
 // --- Interfaces (types only) -------------------------------------------------------------------
 
 export interface JupiterQuoteClient {
+  /** GET /swap/v1/quote: normalized quote plus the route plan. Never signs, never builds a transaction. */
+  quote(request: QuoteRequest, options?: QuoteOptions): Promise<{ quote: Quote; route: QuoteRoutePlan }>;
   /** GET /swap/v2/order (or the price/quote-only form). Never signs. */
   buildOrder(request: QuoteRequest): Promise<OrderBuild>;
 }

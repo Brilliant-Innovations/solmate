@@ -1,5 +1,13 @@
-import type { AssetEligibility, AssetStatus, Instant, Uuid } from '@sol-agent-trader/contracts';
+import type { AssetEligibility, AssetStatus, EmergencyExitRouteSnapshot, Instant, Uuid } from '@sol-agent-trader/contracts';
 import { asJson, type Sql } from './sql.js';
+
+/** Persists a discovered, chain-verified emergency exit route (§6.2, §14.6). Rows are append-only history. */
+export async function insertEmergencyRouteSnapshot(sql: Sql, s: EmergencyExitRouteSnapshot): Promise<void> {
+  await sql`
+    insert into core.emergency_exit_route_snapshots (id, asset_id, hops, settlement_mint, pool_state_ref, last_refreshed_at, last_refresh_slot, capacity, token2022_compatible, last_dry_run)
+    values (${s.id}, ${s.assetId}, ${sql.json(asJson(s.hops))}, ${s.settlementMint}, ${s.poolStateRef}, ${s.lastRefreshedAt}, ${s.lastRefreshSlot}, ${sql.json(asJson(s.capacity))}, ${s.token2022Compatible},
+      ${s.lastDryRun ? sql.json(asJson(s.lastDryRun)) : null})`;
+}
 
 /**
  * Eligibility persistence (blueprint §6.2, §7.4). Records are append-only (trigger); the asset's

@@ -76,8 +76,13 @@ export const EligibilityPolicy = z.strictObject({
   /** Standard probe sizes and the impact ceiling per size (§7.2 "maximum simulated/quoted price impact"). */
   probeSizesUsd: z.array(UsdValue.refine((v) => v > 0)).min(1),
   maxImpactBps: Bps,
+  /** Settlement mints an exit must be able to reach (§7.2 "route token back to SOL/USDC"); first is preferred. */
+  settlementMints: z.array(MintAddress).min(1),
   denylist: z.array(MintAddress),
 });
+
+export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export type EligibilityPolicy = z.infer<typeof EligibilityPolicy>;
 
 export const DEFAULT_ELIGIBILITY_POLICY: EligibilityPolicy = {
@@ -99,5 +104,6 @@ export const DEFAULT_ELIGIBILITY_POLICY: EligibilityPolicy = {
   maxEligibilityAgeMs: 15 * 60_000,
   probeSizesUsd: [250, 1_000, 5_000],
   maxImpactBps: 300 as Bps,
+  settlementMints: [USDC_MINT as MintAddress, WSOL_MINT as MintAddress],
   denylist: [],
 };

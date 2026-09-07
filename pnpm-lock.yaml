@@ -207,6 +207,9 @@ importers:
       '@sol-agent-trader/db':
         specifier: workspace:*
         version: link:../../libs/db
+      '@sol-agent-trader/execution':
+        specifier: workspace:*
+        version: link:../../libs/execution
       '@sol-agent-trader/market':
         specifier: workspace:*
         version: link:../../libs/market
@@ -262,6 +265,9 @@ importers:
       tslib:
         specifier: ^2.3.0
         version: 2.8.1
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
 
   libs/intelligence:
     dependencies:

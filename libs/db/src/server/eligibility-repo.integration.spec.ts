@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { addMs, toInstant, type AssetEligibility, type DiscoveredToken, type Uuid } from '@sol-agent-trader/contracts';
-import { latestEligibility, listAssetsForEvaluation, recordEligibility } from './eligibility-repo.js';
+import { insertEmergencyRouteSnapshot, latestEligibility, listAssetsForEvaluation, recordEligibility } from './eligibility-repo.js';
 import { upsertDiscoveredAssets } from './market-repo.js';
 import { createSql, databaseUrlFromEnv, type Sql } from './sql.js';
 
@@ -47,6 +47,23 @@ describe.skipIf(!url)('eligibility repository (§6.2 append-only records, status
     await expect(sql`update core.asset_eligibility set eligible = false where id = ${first.id}`).rejects.toThrow();
     const [count] = await sql<{ n: number }[]>`select count(*)::int as n from core.asset_eligibility where asset_id = ${a!.id}`;
     expect(count!.n).toBe(2);
+  });
+
+  it('an emergency route snapshot is persisted and an eligibility record can reference it', async () => {
+    const [a] = await upsertDiscoveredAssets(sql, [token(mint())], NOW);
+    const snapshotId = randomUUID() as Uuid;
+    await insertEmergencyRouteSnapshot(sql, {
+      id: snapshotId, assetId: a!.id,
+      hops: [{ program: 'RAYDIUM_CLMM', programId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK' as never, poolAddress: 'DJNtGuBGEQiUCWE8F981M2C3ZghZt2XLD8f2sQdZ6rsZ' as never, inputMint: a!.mintAddress as never, outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' as never }],
+      settlementMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' as never, poolStateRef: 'CAMM:abc', lastRefreshedAt: NOW, lastRefreshSlot: 445_000_000 as never,
+      capacity: [{ inputAmount: '1000000' as never, expectedOutputAmount: '990000' as never, impactBps: 20 as never }], token2022Compatible: true, lastDryRun: null,
+    });
+    await recordEligibility(sql, record(a!.id, { emergencyExitRouteSnapshotId: snapshotId }), 'EVALUATING');
+    const latest = await latestEligibility(sql, a!.id);
+    expect(latest?.emergencyExitRouteSnapshotId).toBe(snapshotId);
+    const [row] = await sql<{ hops: unknown; capacity: unknown }[]>`select hops, capacity from core.emergency_exit_route_snapshots where id = ${snapshotId}`;
+    expect((row!.hops as unknown[]).length).toBe(1);
+    expect((row!.capacity as unknown[]).length).toBe(1);
   });
 
   it('evaluation queue: never-evaluated assets come first, recently evaluated ones wait, retired ones are skipped', async () => {
