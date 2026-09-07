@@ -47,7 +47,7 @@ describe.skipIf(!url)('strategies repository (§6.21, §6.10D, §6.11)', () => {
     const newer: FeatureSnapshot = { ...older, id: randomUUID() as Uuid, asOf: NOW, features: { ret_1h: 0.9 } };
     await insertFeatureSnapshot(sql, older);
     await insertFeatureSnapshot(sql, newer);
-    const candidate: Candidate = { id: randomUUID() as Uuid, assetId, discoveredAt: addMs(NOW, -30_000), triggerFamily: 'MOMENTUM_CONTINUATION', triggerDetails: {}, scannerScore: 70, status: 'DETECTED', featureSnapshotId: older.id, eligibilityEvaluationId: eligibilityId, expiresAt: addMs(NOW, 600_000), deterministicRejectionReason: null, dedupeKey: `${assetId}:MOMENTUM_CONTINUATION:1`, strategyVersionIds: [] };
+    const candidate: Candidate = { id: randomUUID() as Uuid, assetId, discoveredAt: addMs(NOW, -30_000), triggerFamily: 'MOMENTUM_CONTINUATION', triggerDetails: {}, scannerScore: 70, status: 'DETECTED', featureSnapshotId: older.id, eligibilityEvaluationId: eligibilityId, /* far expiry: the candidates-repo spec expires everything due within ten minutes of its NOW */ expiresAt: addMs(NOW, 30 * 86_400_000), deterministicRejectionReason: null, dedupeKey: `${assetId}:MOMENTUM_CONTINUATION:1`, strategyVersionIds: [] };
     await insertCandidate(sql, candidate);
 
     const awaiting = await listCandidatesAwaitingStrategy(sql, strategy.versionId, NOW, 10_000);

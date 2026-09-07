@@ -40,13 +40,13 @@ jobs:
           cp /tmp/main.bak apps/risk-authorizer/src/main.ts
       - name: Clock discipline is live (Date.now in strategy code must fail lint)
         run: |
-          cp libs/strategies/src/lib/strategies.ts /tmp/strat.bak
-          printf "\nexport const leak = () => Date.now();\n" >> libs/strategies/src/lib/strategies.ts
+          cp libs/strategies/src/s0/gate.ts /tmp/strat.bak
+          printf "\nexport const leak = () => Date.now();\n" >> libs/strategies/src/s0/gate.ts
           if pnpm nx lint @sol-agent-trader/strategies --skip-nx-cache >/tmp/lint2.log 2>&1; then
             echo "::error::lint did not reject Date.now() in libs/strategies"; cat /tmp/lint2.log; exit 1
           fi
           grep -q 'no-restricted-properties' /tmp/lint2.log || { echo "::error::lint failed for a different reason"; cat /tmp/lint2.log; exit 1; }
-          cp /tmp/strat.bak libs/strategies/src/lib/strategies.ts
+          cp /tmp/strat.bak libs/strategies/src/s0/gate.ts
       - name: Contract-set lock matches the compiled contracts
         run: pnpm nx test @sol-agent-trader/contracts --skip-nx-cache
       - name: Nx targets
