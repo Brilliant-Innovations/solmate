@@ -70,6 +70,7 @@ invariants:
     tests:
       - libs/risk/src/policy/eligibility-gate.spec.ts
       - libs/risk/src/eligibility/engine.spec.ts
+      - apps/worker/src/roles/candidates.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -217,10 +218,13 @@ invariants:
     owner_modules:
       - libs/signals/src/self-influence
       - libs/onchain/src/owned-addresses
+      - libs/signals/src/candidates
     tests:
       - libs/signals/src/self-influence/guard.spec.ts
       - libs/onchain/src/owned-addresses/registry.spec.ts
       - libs/onchain/src/wallet-events/derive.spec.ts
+      - libs/signals/src/candidates/detector.spec.ts
+      - apps/worker/src/roles/candidates.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped

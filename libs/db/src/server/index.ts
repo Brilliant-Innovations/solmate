@@ -13,3 +13,4 @@ export * from './reconciliation-repo.js';
 export * from './provider-spend-repo.js';
 export * from './wallet-events-repo.js';
 export * from './features-repo.js';
+export * from './candidates-repo.js';

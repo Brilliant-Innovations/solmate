@@ -1,4 +1,4 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
   heldBucketTimes,
@@ -9,8 +9,13 @@ import {
   LeaseManager,
   ledgerExpectations,
   chargeProviderSpend,
+  expireCandidates,
   ingestWalletEvents,
+  insertCandidate,
   insertFeatureSnapshot,
+  lastTerminalCandidateAt,
+  listOpenCandidates,
+  listScanInputs,
   latestEligibility,
   latestMarketSnapshotId,
   listAssetsForFeatures,
@@ -48,6 +53,7 @@ import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
 import { runFeaturesCycle } from './roles/features.js';
+import { runCandidatesCycle } from './roles/candidates.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -67,6 +73,7 @@ import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './rol
  *   reconciliation  chain/custody truth per trading account, movements via Helius, unknown-movement pause (D9; needs SOLANA_RPC_URL; HELIUS_API_KEY to explain movements)
  *   tracked-wallets  Helius parsed history for intelligence.wallets → append-only wallet events, owned wallets skipped (§6.7, D26; needs HELIUS_API_KEY)
  *   features        versioned point-in-time feature vectors per eligible/evaluating asset from closed 1m candles (§6.8, D63 warm-up)
+ *   candidates      deterministic momentum trigger over the latest vectors under the entry gate and the self-influence guard; dedupe, cooldown, expiry (§9.1, §9.7)
  * All roles share one Birdeye client so the purchased compute-unit allowance is one budget.
  */
 const SERVICE = 'worker' as const;
@@ -99,7 +106,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -178,6 +185,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
     else loops.push(reconciliationLoop(env, logger, shared, rpcFinalized, env.SOLANA_RPC_URL));
   }
   if (roles.has('features')) loops.push(featuresLoop(env, logger, shared));
+  if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -373,6 +381,37 @@ async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pro
   logger.info('features_starting', { intervalMs, engine: FEATURE_ENGINE_V1.version, holder: shared.holder });
   await loopUnderLease('features', intervalMs, logger, shared, async () => {
     await runFeaturesCycle(deps);
+  });
+}
+
+async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.CANDIDATES_INTERVAL_MS;
+  const { sql } = shared;
+  const deps = {
+    repo: {
+      listScanInputs: (limit: number) => listScanInputs(sql, limit),
+      latestEligibility: (assetId: Parameters<typeof latestEligibility>[1]) => latestEligibility(sql, assetId),
+      listOpenCandidates: (assetId: Parameters<typeof listOpenCandidates>[1], family: Parameters<typeof listOpenCandidates>[2]) => listOpenCandidates(sql, assetId, family),
+      lastTerminalCandidateAt: (assetId: Parameters<typeof lastTerminalCandidateAt>[1], family: Parameters<typeof lastTerminalCandidateAt>[2]) => lastTerminalCandidateAt(sql, assetId, family),
+      insertCandidate: (candidate: Parameters<typeof insertCandidate>[1]) => insertCandidate(sql, candidate),
+      expireCandidates: (now: Parameters<typeof expireCandidates>[1]) => expireCandidates(sql, now),
+      // No fills exist before the paper adapter lands; the guard still runs with an empty set.
+      recentOwnFills: async () => [],
+      listOwnedAddresses: () => listOwnedAddresses(sql),
+      // SOL relative strength waits on a tracked SOL series (wSOL is BLOCKED by SUPPLY_ZERO today); null = no evidence either way.
+      solReturn1h: async () => null,
+    },
+    clock: systemClock,
+    logger,
+    spec: FEATURE_ENGINE_V1,
+    trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY,
+    eligibility: DEFAULT_ELIGIBILITY_POLICY,
+    selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY,
+    config: { batchSize: 200 },
+  };
+  logger.info('candidates_starting', { intervalMs, trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY.version, holder: shared.holder });
+  await loopUnderLease('candidates', intervalMs, logger, shared, async () => {
+    await runCandidatesCycle(deps);
   });
 }
 
