@@ -13,12 +13,14 @@ export interface TradingAccountRow {
   cluster: SolanaCluster;
   tradingWallet: SolanaAddress;
   settlementMint: MintAddress;
+  mode: 'LIVE' | 'PAPER';
 }
 
+/** LIVE accounts only: a PAPER account has virtual custody and nothing on chain to reconcile (§17). */
 export async function listTradingAccounts(sql: Sql): Promise<TradingAccountRow[]> {
   const rows = await sql<{ id: string; name: string; cluster: SolanaCluster; trading_wallet: string; settlement_mint: string }[]>`
-    select id, name, cluster, trading_wallet, settlement_mint from trading.accounts order by created_at asc`;
-  return rows.map((r) => ({ id: r.id as Uuid, name: r.name, cluster: r.cluster, tradingWallet: r.trading_wallet as SolanaAddress, settlementMint: r.settlement_mint as MintAddress }));
+    select id, name, cluster, trading_wallet, settlement_mint from trading.accounts where mode = 'LIVE' order by created_at asc`;
+  return rows.map((r) => ({ id: r.id as Uuid, name: r.name, cluster: r.cluster, tradingWallet: r.trading_wallet as SolanaAddress, settlementMint: r.settlement_mint as MintAddress, mode: 'LIVE' as const }));
 }
 
 export interface CustodyRow {

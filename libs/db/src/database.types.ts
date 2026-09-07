@@ -916,6 +916,7 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
+      account_mode: "LIVE" | "PAPER"
       action_cycle_state:
         | "TRIGGERED"
         | "CONTEXT_BUILT"
@@ -3059,6 +3060,7 @@ export type Database = {
           cluster: Database["enums"]["Enums"]["solana_cluster"]
           created_at: string
           id: string
+          mode: Database["enums"]["Enums"]["account_mode"]
           name: string
           settlement_mint: string
           trading_wallet: string
@@ -3067,6 +3069,7 @@ export type Database = {
           cluster: Database["enums"]["Enums"]["solana_cluster"]
           created_at?: string
           id?: string
+          mode?: Database["enums"]["Enums"]["account_mode"]
           name: string
           settlement_mint: string
           trading_wallet: string
@@ -3075,6 +3078,7 @@ export type Database = {
           cluster?: Database["enums"]["Enums"]["solana_cluster"]
           created_at?: string
           id?: string
+          mode?: Database["enums"]["Enums"]["account_mode"]
           name?: string
           settlement_mint?: string
           trading_wallet?: string
@@ -4398,6 +4402,7 @@ export const Constants = {
   },
   enums: {
     Enums: {
+      account_mode: ["LIVE", "PAPER"],
       action_cycle_state: [
         "TRIGGERED",
         "CONTEXT_BUILT",

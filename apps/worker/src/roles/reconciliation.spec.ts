@@ -66,7 +66,7 @@ class MemoryRepo implements ReconciliationRepo {
     private readonly lifecycles: Record<string, { lifecycleId: Uuid; movementType: 'SWAP_V2' }> = {},
   ) {}
   async listTradingAccounts(): Promise<TradingAccountRow[]> {
-    return [{ id: ACCOUNT, name: 'paper', cluster: 'mainnet-beta', tradingWallet: WALLET, settlementMint: USDC as never }];
+    return [{ id: ACCOUNT, name: 'live', cluster: 'mainnet-beta', tradingWallet: WALLET, settlementMint: USDC as never, mode: 'LIVE' }];
   }
   async listCustodyAccounts() {
     return this.custody;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Bps, Ed25519PublicKeyHex, KeyId, MintAddress, SolanaAddress, SolanaCluster, Sha256Hex } from '../primitives.js';
+import { Amount, Bps, Ed25519PublicKeyHex, KeyId, MintAddress, SolanaAddress, SolanaCluster, Sha256Hex } from '../primitives.js';
 import { DeploymentProfile } from '../enums.js';
 
 /**
@@ -129,6 +129,10 @@ export const WorkerEnv = Common.extend({
   FEATURES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Candidate scan cadence (§9.1, §9.7). */
   CANDIDATES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  /** Paper book (§17): the account's wallet identifier (quotes and attribution only, never custody), starting settlement capital, entry cadence. */
+  PAPER_TRADING_WALLET: SolanaAddress.optional(),
+  PAPER_STARTING_CAPITAL_BASE_UNITS: Amount.default('10000000000' as never),
+  PAPER_ENTRY_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** S0 decision cadence (§12.1): RAW and SAFE action cycles over new candidates. */
   S0_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Git commit of the running build, recorded on strategy versions it registers (§6.21). */

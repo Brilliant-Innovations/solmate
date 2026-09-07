@@ -1,7 +1,20 @@
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
+import { randomUUID } from 'node:crypto';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
+  createIntent,
   createSql,
+  ensurePaperAccount,
+  ensureSleeve,
   ensureStrategyVersion,
+  entryHealth,
+  finishAttempt,
+  insertPortfolioSnapshot,
+  journalAttempt,
+  listCyclesAwaitingEntry,
+  openPosition,
+  paperBook,
+  recordRiskEvaluation,
+  setIntentState,
   listCandidatesAwaitingStrategy,
   persistS0Decisions,
   heldBucketTimes,
@@ -45,7 +58,7 @@ import {
   writeCandles,
   type Sql,
 } from '@sol-agent-trader/db/server';
-import { JupiterSwapClient } from '@sol-agent-trader/execution';
+import { JupiterSwapClient, NoRouteError, PaperExecutionAdapter } from '@sol-agent-trader/execution';
 import { s0StrategyVersion } from '@sol-agent-trader/strategies';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
@@ -59,6 +72,7 @@ import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
 import { runFeaturesCycle } from './roles/features.js';
 import { runCandidatesCycle } from './roles/candidates.js';
 import { runS0Cycle } from './roles/s0.js';
+import { runPaperEntryCycle } from './roles/paper-entry.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -111,7 +125,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -192,6 +206,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('features')) loops.push(featuresLoop(env, logger, shared));
   if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
   if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
+  if (roles.has('paper-entry')) loops.push(paperEntryLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -445,6 +460,84 @@ async function s0Loop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<v
   logger.info('s0_starting', { intervalMs, gate: DEFAULT_S0_SAFETY_GATE_POLICY.version, holder: shared.holder });
   await loopUnderLease('s0', intervalMs, logger, shared, async () => {
     await runS0Cycle(deps);
+  });
+}
+
+async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.PAPER_ENTRY_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('paper_entry_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const taker = env.PAPER_TRADING_WALLET;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  const startingCapital = env.PAPER_STARTING_CAPITAL_BASE_UNITS;
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
+  const activeFrom = systemClock.now();
+  const versions = [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom)];
+  const strategies: Record<string, (typeof versions)[number]> = {};
+  const sleeves: Record<string, Awaited<ReturnType<typeof ensureSleeve>>> = {};
+  for (const v of versions) {
+    await ensureStrategyVersion(sql, v);
+    strategies[v.versionId] = v;
+    sleeves[v.versionId] = await ensureSleeve(sql, {
+      id: randomUUID() as Uuid,
+      accountId: account.id,
+      strategyVersionId: v.versionId,
+      versionId: 'sleeve-v1' as (typeof v)['versionId'],
+      settlementMint,
+      capitalCapBaseUnits: mulDiv(startingCapital, 40n, 100n, 'FLOOR'),
+      riskBudgetBaseUnits: mulDiv(startingCapital, 5n, 100n, 'FLOOR'),
+      committedBaseUnits: '0' as typeof startingCapital,
+      riskUsedBaseUnits: '0' as typeof startingCapital,
+      active: true,
+      createdAt: activeFrom,
+    });
+  }
+  const adapter = new PaperExecutionAdapter({
+    quotes: shared.jupiter,
+    clock: systemClock,
+    policy: DEFAULT_PAPER_FILL_POLICY,
+    taker,
+    cluster: env.SOLANA_CLUSTER,
+    newId: () => randomUUID() as Uuid,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    journal: ({ order, attempt }) => journalAttempt(sql, order, attempt),
+  });
+  const deps = {
+    repo: {
+      listAwaiting: (ids: Parameters<typeof listCyclesAwaitingEntry>[1], limit: number) => listCyclesAwaitingEntry(sql, ids, limit),
+      book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
+      health: () => entryHealth(sql),
+      recordRiskEvaluation: (e: Parameters<typeof recordRiskEvaluation>[1]) => recordRiskEvaluation(sql, e),
+      createIntent: (i: Parameters<typeof createIntent>[1], lifecycle: 'AUTHORIZED') => createIntent(sql, i, lifecycle),
+      setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
+      finishAttempt: (order: Parameters<typeof finishAttempt>[1], attempt: Parameters<typeof finishAttempt>[2], fill: Parameters<typeof finishAttempt>[3]) => finishAttempt(sql, order, attempt, fill),
+      openPosition: (p: Parameters<typeof openPosition>[1], lot: Parameters<typeof openPosition>[2]) => openPosition(sql, p, lot),
+      writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
+    },
+    adapter,
+    referenceQuote: async (inputMint: MintAddress, outputMint: MintAddress, inputAmount: typeof startingCapital, maxSlippageBps: Parameters<typeof shared.jupiter.quote>[0]['maxSlippageBps'], now: Parameters<typeof paperBook>[4]) => {
+      try {
+        const { quote } = await shared.jupiter.quote({ inputMint, outputMint, inputAmount, maxSlippageBps, taker, cluster: env.SOLANA_CLUSTER, requestedAt: now });
+        return { impactBps: quote.priceImpactBps, expectedOutputAmount: quote.expectedOutputAmount, slippageBps: quote.slippageBps, quotedAt: quote.quotedAt };
+      } catch (err) {
+        if (err instanceof NoRouteError) return null;
+        throw err;
+      }
+    },
+    clock: systemClock,
+    logger,
+    account: { id: account.id, settlementMint, settlementDecimals: 6, startingCapital, virtualSolLamports: '1000000000' as typeof startingCapital },
+    strategies,
+    sleeves,
+    policy: DEFAULT_RISK_POLICY,
+    config: { batchSize: 20, featureMaxAgeMs: DEFAULT_S0_SAFETY_GATE_POLICY.maxFeatureAgeMs },
+  };
+  logger.info('paper_entry_starting', { intervalMs, accountId: account.id, strategies: Object.keys(strategies), fillModel: DEFAULT_PAPER_FILL_POLICY.version, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
+  await loopUnderLease('paper-entry', intervalMs, logger, shared, async () => {
+    await runPaperEntryCycle(deps);
   });
 }
 

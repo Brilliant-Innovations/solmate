@@ -15,3 +15,4 @@ export * from './wallet-events-repo.js';
 export * from './features-repo.js';
 export * from './candidates-repo.js';
 export * from './strategies-repo.js';
+export * from './paper-repo.js';
