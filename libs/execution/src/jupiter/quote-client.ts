@@ -177,7 +177,7 @@ export class JupiterSwapClient implements JupiterQuoteClient {
     throw lastError ?? new JupiterHttpError(0, 'exhausted attempts');
   }
 
-  private normalize(raw: z.infer<typeof QuoteRaw>, request: QuoteRequest, impactBps: number): { quote: Quote; route: QuoteRoutePlan } {
+  private normalize(raw: z.infer<typeof QuoteRaw>, request: QuoteRequest, impactBps: number | null): { quote: Quote; route: QuoteRoutePlan } {
     const hops = raw.routePlan.map((h) => {
       const known = programForLabel(h.swapInfo.label);
       return QuoteRouteHop.parse({
@@ -200,7 +200,7 @@ export class JupiterSwapClient implements JupiterQuoteClient {
       inputAmount: raw.inAmount,
       expectedOutputAmount: raw.outAmount,
       minOutputAmount: raw.otherAmountThreshold,
-      priceImpactBps: impactBps,
+      priceImpactBps: impactBps as Bps | null,
       slippageBps: raw.slippageBps,
       routeProgramIds: [...new Set(hops.map((h) => h.programId).filter((p): p is SolanaAddressType => p !== null))],
       usesAddressLookupTables: false,
@@ -219,12 +219,18 @@ export class JupiterSwapClient implements JupiterQuoteClient {
     const raw = await this.rawQuote(request.inputMint, request.outputMint, amount, request.maxSlippageBps, options);
     // Impact: rate at size vs rate at size/divisor (both ExactIn on the same pair and route constraints).
     const refAmount = BigInt(amount) / BigInt(this.divisor);
-    let impactBps = 0;
+    let impactBps: number | null = 0;
     if (refAmount > 0n && refAmount < BigInt(amount)) {
-      const ref = await this.rawQuote(request.inputMint, request.outputMint, refAmount.toString(), request.maxSlippageBps, options);
-      impactBps = measureImpactBps({ inAmount: raw.inAmount, outAmount: raw.outAmount }, { inAmount: ref.inAmount, outAmount: ref.outAmount });
+      // The reference quote only measures impact: its failure (no route at 1/100 size, 429, 5xx)
+      // must not turn a successful sized quote into a failure or a 100 % impact.
+      try {
+        const ref = await this.rawQuote(request.inputMint, request.outputMint, refAmount.toString(), request.maxSlippageBps, options);
+        impactBps = measureImpactBps({ inAmount: raw.inAmount, outAmount: raw.outAmount }, { inAmount: ref.inAmount, outAmount: ref.outAmount });
+      } catch {
+        impactBps = null;
+      }
     }
-    return this.normalize(raw, request, impactBps as Bps);
+    return this.normalize(raw, request, impactBps as Bps | null);
   }
 
   async buildOrder(request: QuoteRequest): Promise<OrderBuild> {
@@ -233,10 +239,10 @@ export class JupiterSwapClient implements JupiterQuoteClient {
   }
 }
 
-/** Shortfall of the sized rate against the reference rate, in basis points (never negative). */
-export function measureImpactBps(sized: { inAmount: string; outAmount: string }, reference: { inAmount: string; outAmount: string }): number {
+/** Shortfall of the sized rate against the reference rate, in basis points (never negative); null when the reference is unusable. */
+export function measureImpactBps(sized: { inAmount: string; outAmount: string }, reference: { inAmount: string; outAmount: string }): number | null {
   const sizedRate = Number(sized.outAmount) / Number(sized.inAmount);
   const refRate = Number(reference.outAmount) / Number(reference.inAmount);
-  if (!(refRate > 0) || !Number.isFinite(sizedRate)) return 10_000;
+  if (!(refRate > 0) || !Number.isFinite(sizedRate)) return null;
   return Math.min(10_000, Math.max(0, Math.round((1 - sizedRate / refRate) * 10_000)));
 }

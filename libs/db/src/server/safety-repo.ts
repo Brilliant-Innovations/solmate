@@ -26,12 +26,23 @@ export async function recordPositionSafety(sql: Sql, evaluation: HeldAssetSafety
   await sql`select trading.record_position_safety(${sql.json(asJson(evaluation))})`;
 }
 
-/** Baseline for the next evaluation: the previous evaluation's observed facts. */
-export async function previousSafetyBaseline(sql: Sql, positionId: Uuid): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: Instant } | null> {
-  const [r] = await sql<{ observed: Omit<SafetyBaseline, 'source'>; state: PositionSafetyState; evaluated_at: string }[]>`
-    select observed, state, evaluated_at from trading.position_safety_evaluations where position_id = ${positionId} order by evaluated_at desc limit 1`;
+/**
+ * What the next evaluation compares against: the baseline the position was entered at (carried
+ * unchanged through every evaluation, so a slow drain is measured against entry, not against last
+ * minute), the last state, and how many consecutive recent evaluations could not measure the
+ * primary route.
+ */
+export async function previousSafetyBaseline(sql: Sql, positionId: Uuid): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: Instant; unknownRouteCycles: number } | null> {
+  const rows = await sql<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluated_at: string; reasons: string[] }[]>`
+    select baseline, state, evaluated_at, reasons from trading.position_safety_evaluations where position_id = ${positionId} order by evaluated_at desc limit 50`;
+  const r = rows[0];
   if (!r) return null;
-  return { baseline: { source: 'PREVIOUS_SAFETY', ...r.observed }, state: r.state, evaluatedAt: new Date(r.evaluated_at).toISOString() as Instant };
+  let unknownRouteCycles = 0;
+  for (const row of rows) {
+    if (!row.reasons.includes('PRIMARY_ROUTE_UNKNOWN')) break;
+    unknownRouteCycles++;
+  }
+  return { baseline: r.baseline, state: r.state, evaluatedAt: new Date(r.evaluated_at).toISOString() as Instant, unknownRouteCycles };
 }
 
 export async function latestEmergencySnapshot(sql: Sql, assetId: Uuid): Promise<EmergencyExitRouteSnapshot | null> {

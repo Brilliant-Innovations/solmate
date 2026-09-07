@@ -35,7 +35,7 @@ import { MintNotFoundError, readMintChainState, type SolanaRpcClient } from '@so
 
 export interface SafetyRepo {
   listOpenPositions(limit: number): Promise<{ id: Uuid; assetId: Uuid; mint: MintAddress; quantity: HeldAssetSafety['positionQuantity']; safetyState: PositionSafetyState }[]>;
-  previousSafetyBaseline(positionId: Uuid): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: Instant } | null>;
+  previousSafetyBaseline(positionId: Uuid): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: Instant; unknownRouteCycles: number } | null>;
   latestEligibilityBaseline(assetId: Uuid): Promise<{ liquidityUsd: number | null; freezeAuthorityPresent: boolean; transferHook: boolean; permanentDelegate: boolean; transferFeeBps: Bps | null; top10: number | null } | null>;
   latestEmergencySnapshot(assetId: Uuid): Promise<EmergencyExitRouteSnapshot | null>;
   recordPositionSafety(evaluation: HeldAssetSafety): Promise<void>;
@@ -94,6 +94,7 @@ export async function runHeldAssetSafetyCycle(deps: SafetyDeps, triggers: Safety
 
     // Primary exit: quote the whole position through the shared Jupiter client.
     let primarySellProbe: PriceImpactProbe | null = null;
+    let primaryQuoteUnavailable = !deps.jupiter;
     if (deps.jupiter) {
       const now = deps.clock.now();
       const sizeUsd = overview?.priceUsd ? (Number(position.quantity) / 10 ** chain.decimals) * overview.priceUsd : 0;
@@ -102,7 +103,10 @@ export async function runHeldAssetSafetyCycle(deps: SafetyDeps, triggers: Safety
         primarySellProbe = { sizeUsd, inputAmount: position.quantity, impactBps: quote.priceImpactBps, routeFound: true, probedAt: now };
       } catch (err) {
         if (err instanceof NoRouteError) primarySellProbe = { sizeUsd, inputAmount: position.quantity, impactBps: null, routeFound: false, probedAt: now };
-        else fail(position.id, 'SELL_PROBE', err);
+        else {
+          primaryQuoteUnavailable = true;
+          fail(position.id, 'SELL_PROBE', err);
+        }
       }
     }
 
@@ -140,6 +144,8 @@ export async function runHeldAssetSafetyCycle(deps: SafetyDeps, triggers: Safety
       baseline,
       chain,
       primarySellProbe,
+      primaryQuoteUnavailable,
+      previousUnknownRouteCycles: previous?.unknownRouteCycles ?? 0,
       emergencySnapshot,
       emergencyPoolVerified,
       overview,

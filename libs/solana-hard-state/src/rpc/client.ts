@@ -230,9 +230,10 @@ export class SolanaRpcClient {
   }
 
   /** Signatures touching `address`, newest first, stopping at `until` (exclusive) when given. */
-  getSignaturesForAddress(address: string, opts: { until?: string | null; limit?: number } = {}): Promise<SignatureInfo[]> {
+  getSignaturesForAddress(address: string, opts: { until?: string | null; before?: string | null; limit?: number } = {}): Promise<SignatureInfo[]> {
     const params: Record<string, unknown> = { commitment: this.commitment, limit: opts.limit ?? 100 };
     if (opts.until) params['until'] = opts.until;
+    if (opts.before) params['before'] = opts.before;
     return this.call('getSignaturesForAddress', [address, params], z.array(SignatureInfo));
   }
 }

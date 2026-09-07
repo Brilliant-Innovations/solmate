@@ -37,7 +37,7 @@ import {
  */
 
 export interface MarketRepo {
-  listTrackedAssets(limit: number): Promise<{ id: Uuid; mintAddress: string }[]>;
+  listTrackedAssets(limit: number): Promise<{ id: Uuid; mintAddress: string; priority?: 'POSITION' | 'WATCH' }[]>;
   heldBucketTimes(assetId: Uuid, resolution: CandleResolution, from: Instant, to: Instant): Promise<Instant[]>;
   writeCandles(candles: Parameters<typeof buildMarketSnapshot>[0]['candles1m']): Promise<{ inserted: number; replacedOpen: number; ignored: number }>;
   loadCandles(assetId: Uuid, resolution: CandleResolution, from: Instant, to: Instant): Promise<Parameters<typeof buildMarketSnapshot>[0]['candles1m']>;
@@ -119,7 +119,7 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
       const from = addMs(to, -(deps.config.lookbackBuckets[res] - 1) * RESOLUTION_MS[res]);
       held[res] = await deps.repo.heldBucketTimes(a.id, res, from, to);
     }
-    tracked.push({ assetId: a.id, mintAddress: a.mintAddress, priority: 'WATCH', held });
+    tracked.push({ assetId: a.id, mintAddress: a.mintAddress, priority: a.priority ?? 'WATCH', held });
   }
 
   const discoveryDue = state.lastDiscoveryAt === null || Date.parse(now) - Date.parse(state.lastDiscoveryAt) >= deps.config.discoveryIntervalMs;
@@ -151,14 +151,17 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
         report.candlesWritten += w.inserted + w.replacedOpen;
         report.candlesRejected += res.rejected.length;
         touchedAssets.add(action.assetId);
-        ok('CANDLES', res.meta.latencyMs);
+        // Health means usable data arrived: a 200 whose every candle was rejected is a failure.
+        if (res.candles.length > 0) ok('CANDLES', res.meta.latencyMs);
+        else fail('CANDLES', 'CANDLES', new Error(`no accepted candles (${res.rejected.length} rejected)`));
         return;
       }
       case 'PRICES': {
         const res = await deps.birdeye.prices(action.mints, action.priority);
         quotes.push(...res.quotes);
         report.quotes += res.quotes.length;
-        ok(action.priority === 'CRITICAL' ? 'ACTIVE_POSITION_PRICE' : 'CANDIDATE_PRICE', res.meta.latencyMs);
+        if (res.quotes.length > 0) ok(action.priority === 'CRITICAL' ? 'ACTIVE_POSITION_PRICE' : 'CANDIDATE_PRICE', res.meta.latencyMs);
+        else fail(action.priority === 'CRITICAL' ? 'ACTIVE_POSITION_PRICE' : 'CANDIDATE_PRICE', 'PRICES', new Error('no usable prices returned'));
         if (deps.jupiter && action.priority === 'CRITICAL') {
           try {
             const j = await deps.jupiter.prices(action.mints.slice(0, 50));

@@ -19,7 +19,7 @@ import { toInstant, type Amount, type ChainMovement, type ChainTransactionFacts,
  * error, decodedError, nativeTransfers, tokenTransfers, summary, instructions — and no accountData, so SOL deltas come from fee + transfers.
  */
 
-const Addr = z.string().min(32).max(44);
+const Addr = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 const NativeTransfer = z.object({ fromUserAccount: Addr.nullable().optional(), toUserAccount: Addr.nullable().optional(), amount: z.number().int().nonnegative() }).loose();
 const TokenTransfer = z
   .object({
@@ -72,12 +72,17 @@ function rawAmount(t: z.infer<typeof TokenTransfer>): { amount: bigint; decimals
     const s = typeof raw === 'number' ? raw.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 0 }) : raw;
     if (!/^-?\d+$/.test(s) || decimals === undefined) return null;
     const v = BigInt(s);
-    return { amount: v < 0n ? -v : v, decimals };
+    const abs = v < 0n ? -v : v;
+    if (abs > 18446744073709551615n) return null;
+    return { amount: abs, decimals };
   }
   if (t.tokenAmount !== undefined && decimals !== undefined) {
     // Legacy decimal-scaled amount: scale back without floating error by string arithmetic.
+    if (!Number.isFinite(t.tokenAmount) || Math.abs(t.tokenAmount) >= 1e21) return null;
     const [int = '0', frac = ''] = Math.abs(t.tokenAmount).toFixed(decimals).split('.');
-    return { amount: BigInt(int + frac.padEnd(decimals, '0').slice(0, decimals)), decimals };
+    const digits = int + frac.padEnd(decimals, '0').slice(0, decimals);
+    if (!/^\d+$/.test(digits)) return null;
+    return { amount: BigInt(digits), decimals };
   }
   return null;
 }

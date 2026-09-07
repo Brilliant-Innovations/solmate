@@ -22,16 +22,22 @@ export interface AssetForEvaluation {
   lastEvaluatedAt: Instant | null;
 }
 
-/** Assets due for (re-)evaluation: never evaluated first, then oldest evaluation first (§7.4 periodic refresh). */
-export async function listAssetsForEvaluation(sql: Sql, opts: { limit: number; reevaluateAfter: Instant }): Promise<AssetForEvaluation[]> {
+/**
+ * Assets due for (re-)evaluation: never evaluated first, then oldest evaluation first (§7.4 periodic
+ * refresh). BLOCKED is a per-evaluation verdict, not a life sentence: blocked assets come back on
+ * the slower `blockedReevaluateAfter` cadence (liquidity grows, launches distribute, providers
+ * recover); only RETIRED is final.
+ */
+export async function listAssetsForEvaluation(sql: Sql, opts: { limit: number; reevaluateAfter: Instant; blockedReevaluateAfter?: Instant }): Promise<AssetForEvaluation[]> {
+  const blockedAfter = opts.blockedReevaluateAfter ?? opts.reevaluateAfter;
   const rows = await sql<{ id: string; mint_address: string; status: AssetStatus; last_evaluated_at: string | null }[]>`
     select a.id, a.mint_address, a.status, e.last_evaluated_at
     from core.assets a
     left join lateral (
       select max(evaluated_at) as last_evaluated_at from core.asset_eligibility x where x.asset_id = a.id
     ) e on true
-    where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE')
-      and (e.last_evaluated_at is null or e.last_evaluated_at < ${opts.reevaluateAfter})
+    where (a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') and (e.last_evaluated_at is null or e.last_evaluated_at < ${opts.reevaluateAfter}))
+       or (a.status = 'BLOCKED' and (e.last_evaluated_at is null or e.last_evaluated_at < ${blockedAfter}))
     order by e.last_evaluated_at asc nulls first, a.first_observed_at desc
     limit ${opts.limit}`;
   return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address, status: r.status, lastEvaluatedAt: r.last_evaluated_at ? (new Date(r.last_evaluated_at).toISOString() as Instant) : null }));

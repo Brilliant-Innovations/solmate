@@ -35,7 +35,7 @@ import { MintNotFoundError, readMintChainState, type SolanaRpcClient } from '@so
  */
 
 export interface EligibilityRepo {
-  listAssetsForEvaluation(opts: { limit: number; reevaluateAfter: ReturnType<Clock['now']> }): Promise<{ id: Uuid; mintAddress: string; status: AssetStatus }[]>;
+  listAssetsForEvaluation(opts: { limit: number; reevaluateAfter: ReturnType<Clock['now']>; blockedReevaluateAfter: ReturnType<Clock['now']> }): Promise<{ id: Uuid; mintAddress: string; status: AssetStatus }[]>;
   recordEligibility(record: AssetEligibility, status: AssetStatus): Promise<void>;
   insertEmergencyRouteSnapshot(snapshot: EmergencyExitRouteSnapshot): Promise<void>;
 }
@@ -54,6 +54,8 @@ export interface EligibilityDeps {
     batchSize: number;
     /** Re-evaluate anything older than this (§7.4 periodic refresh). */
     reevaluateAfterMs: number;
+    /** BLOCKED assets come back on this slower cadence; only RETIRED is final. */
+    blockedReevaluateAfterMs: number;
   };
   /** Feed health for the classes this role consumes (TOKEN_SECURITY, TOKEN_OVERVIEW), published from its own calls (§21.1). */
   health?: {
@@ -86,7 +88,7 @@ export interface EligibilityCycleReport {
 export async function runEligibilityCycle(deps: EligibilityDeps): Promise<EligibilityCycleReport> {
   const now = deps.clock.now();
   const report: EligibilityCycleReport = { considered: 0, evaluated: 0, outcomes: { ELIGIBLE: 0, BLOCKED: 0, EVALUATING: 0 }, snapshots: 0, errors: [], budgetExhausted: false };
-  const due = await deps.repo.listAssetsForEvaluation({ limit: deps.config.batchSize, reevaluateAfter: addMs(now, -deps.config.reevaluateAfterMs) });
+  const due = await deps.repo.listAssetsForEvaluation({ limit: deps.config.batchSize, reevaluateAfter: addMs(now, -deps.config.reevaluateAfterMs), blockedReevaluateAfter: addMs(now, -deps.config.blockedReevaluateAfterMs) });
   report.considered = due.length;
   const fail = (assetId: Uuid, step: EligibilityStep, err: unknown) => report.errors.push({ assetId, step, error: err instanceof Error ? err.message : String(err) });
   const feedOk = (cls: string, latencyMs: number) => {
@@ -204,6 +206,12 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
   if (deps.health) {
     for (const c of deps.health.contracts) {
       const health = evaluateFreshness(c, { lastSuccessAt: deps.health.state.lastSuccess[c.dataClass] ?? null, now: deps.clock.now(), latencyMs: deps.health.state.lastLatencyMs[c.dataClass] ?? null, lastError: deps.health.state.lastError[c.dataClass] ?? null });
+      // Nothing was due this cycle: the row reflects the scheduler, not the provider, so it carries no effect.
+      if (report.considered === 0) {
+        health.effectOnEntries = 'NONE';
+        health.effectOnExits = 'NONE';
+        health.lastError = health.lastError ?? 'NO_DEMAND: no asset was due for evaluation this cycle';
+      }
       await deps.health.upsert(health);
     }
   }

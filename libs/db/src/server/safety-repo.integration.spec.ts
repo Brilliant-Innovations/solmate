@@ -55,7 +55,9 @@ describe.skipIf(!url)('safety repository (§7.5 append-only evaluations, positio
     expect(row!.safety_state).toBe('DEGRADED');
     const prev = await previousSafetyBaseline(sql, positionId);
     expect(prev?.state).toBe('DEGRADED');
-    expect(prev?.baseline).toEqual({ source: 'PREVIOUS_SAFETY', freezeAuthorityPresent: false, transferHook: false, permanentDelegate: false, transferFeeBps: null, liquidityUsd: 100_000, top10: 0.2, emergencyPoolAddress: null });
+    // The entry baseline is carried unchanged for the life of the position (review R4-03).
+    expect(prev?.baseline).toEqual({ source: 'ENTRY_ELIGIBILITY', freezeAuthorityPresent: false, transferHook: false, permanentDelegate: false, transferFeeBps: null, liquidityUsd: 120_000, top10: 0.18, emergencyPoolAddress: null });
+    expect(prev?.unknownRouteCycles).toBe(0);
 
     await recordPositionSafety(sql, evaluation(positionId, assetId, { evaluatedAt: addMs(NOW, 60_000), state: 'CRITICAL_EXIT', previousState: 'DEGRADED', reasons: ['MINT_PAUSED'] }));
     const [row2] = await sql<{ safety_state: string }[]>`select safety_state from trading.positions where id = ${positionId}`;

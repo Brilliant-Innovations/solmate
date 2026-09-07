@@ -20,6 +20,8 @@ export const SafetyPolicy = z.strictObject({
   maxEmergencySnapshotAgeMs: Milliseconds,
   maxSecurityAgeMs: Milliseconds,
   maxChainReadAgeMs: Milliseconds,
+  /** Consecutive cycles the primary route may stay unmeasurable (provider unreachable) before the position is EXIT_RECOMMENDED with a CRITICAL_UNABLE_TO_EXIT-class alert. */
+  maxUnknownRouteCycles: z.number().int().min(1).max(100),
 });
 export type SafetyPolicy = z.infer<typeof SafetyPolicy>;
 
@@ -33,4 +35,5 @@ export const DEFAULT_SAFETY_POLICY: SafetyPolicy = {
   maxEmergencySnapshotAgeMs: 6 * 3_600_000,
   maxSecurityAgeMs: 6 * 3_600_000,
   maxChainReadAgeMs: 10 * 60_000,
+  maxUnknownRouteCycles: 5,
 };

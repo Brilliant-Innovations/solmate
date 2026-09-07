@@ -75,6 +75,7 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
   if (chain.tokenProgram === 'UNKNOWN') hard.add('UNKNOWN_TOKEN_PROGRAM');
   if (chain.supply === '0') hard.add('SUPPLY_ZERO');
   if (chain.mintAuthority === 'PRESENT' && policy.rejectMintAuthority) hard.add('MINT_AUTHORITY_PRESENT');
+  if (chain.mintAuthority === 'UNKNOWN' || chain.freezeAuthority === 'UNKNOWN') hard.add('AUTHORITY_UNKNOWN');
   if (chain.freezeAuthority === 'PRESENT') {
     transferRestrictions.add('FREEZE_AUTHORITY_PRESENT');
     if (policy.rejectFreezeAuthority) hard.add('FREEZE_AUTHORITY_PRESENT');
@@ -130,8 +131,10 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
     if (security.mutableMetadata === true) soft.add('MUTABLE_METADATA');
     if (security.creatorPercentage !== null && security.creatorPercentage > policy.maxCreatorPercentage) soft.add('CREATOR_CONCENTRATION_HIGH');
     if (security.jupStrictList === false) soft.add('NOT_ON_JUP_STRICT_LIST');
-    if (security.creationAt === null) soft.add('TOKEN_AGE_UNKNOWN');
-    else if (instantToMs(now) - instantToMs(security.creationAt) < policy.minTokenAgeMs) soft.add('TOKEN_AGE_BELOW_MIN');
+    // §7.2: minimum token age is a required gate, not a grade penalty, unless the policy overrides it.
+    const ageBucket = policy.allowYoungAssets ? soft : hard;
+    if (security.creationAt === null) ageBucket.add('TOKEN_AGE_UNKNOWN');
+    else if (instantToMs(now) - instantToMs(security.creationAt) < policy.minTokenAgeMs) ageBucket.add('TOKEN_AGE_BELOW_MIN');
   }
 
   // --- concentration policy on chain figures (unknown = not eligible, not unsafe) --------------------
@@ -156,7 +159,9 @@ export function evaluateEligibility(input: EligibilityInputs): EligibilityResult
   if (routeUnavailable) hard.add('ROUTE_PROBE_UNAVAILABLE');
   else {
     if (!jupiterRouteAvailable || !settlementRouteConfirmed) hard.add('NO_EXIT_ROUTE');
-    if (probesAtStandardSizes.some((p) => p !== null && p.routeFound && (p.impactBps === null || p.impactBps > policy.maxImpactBps))) hard.add('PRICE_IMPACT_ABOVE_MAX');
+    // A routed probe whose impact could not be measured is unavailable data, not a 100 % impact.
+    if (probesAtStandardSizes.some((p) => p !== null && p.routeFound && p.impactBps === null)) hard.add('ROUTE_PROBE_UNAVAILABLE');
+    if (probesAtStandardSizes.some((p) => p !== null && p.routeFound && p.impactBps !== null && p.impactBps > policy.maxImpactBps)) hard.add('PRICE_IMPACT_ABOVE_MAX');
   }
 
   // --- grade and outcome ----------------------------------------------------------------------------

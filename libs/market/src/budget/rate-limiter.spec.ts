@@ -38,4 +38,16 @@ describe('compute-unit ledger persistence (§21.1, D43)', () => {
     ledger.charge('/defi/ohlcv', 1);
     expect(seen).toHaveLength(4);
   });
+
+  it('several workers share one allowance: sync adopts the store total, never lowers the local count, ignores other months (review R4-09)', () => {
+    const ledger = new ComputeUnitLedger(fixedClock(SEPT), 30_000);
+    ledger.charge('/defi/ohlcv', 45);
+    ledger.sync('2026-09', 29_000);
+    expect(ledger.snapshot().used).toBe(29_000);
+    expect(ledger.allows(2_000, 'NORMAL')).toBe(false);
+    ledger.sync('2026-09', 10);
+    expect(ledger.snapshot().used).toBe(29_000);
+    ledger.sync('2026-08', 1_000_000);
+    expect(ledger.snapshot().used).toBe(29_000);
+  });
 });

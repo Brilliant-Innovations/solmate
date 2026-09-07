@@ -90,6 +90,13 @@ export class ComputeUnitLedger {
     this.sink = sink;
   }
 
+  /** Adopts the authoritative monthly total from the shared store (several workers share one allowance); never lowers the local count. */
+  sync(month: string, usedTotal: number): void {
+    this.rollover();
+    if (month !== this.monthKey) return;
+    this.used = Math.max(this.used, usedTotal);
+  }
+
   private static monthOf(ms: number): string {
     const d = new Date(ms);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;

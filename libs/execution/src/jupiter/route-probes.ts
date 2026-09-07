@@ -56,8 +56,11 @@ function baseUnits(value: number, decimals: number): Amount {
   return String(Math.max(1, scaled)) as Amount;
 }
 
-/** Token base units worth `sizeUsd` at `priceUsd`. */
-export function tokenAmountForUsd(sizeUsd: number, target: ProbeTarget): Amount {
+/** Token base units worth `sizeUsd` at `priceUsd`; null when the price cannot size a probe (zero, negative, absurd). */
+export function tokenAmountForUsd(sizeUsd: number, target: ProbeTarget): Amount | null {
+  if (!(target.priceUsd > 0) || !Number.isFinite(target.priceUsd) || !(sizeUsd > 0)) return null;
+  const units = (sizeUsd / target.priceUsd) * 10 ** target.decimals;
+  if (!Number.isFinite(units) || units > Number.MAX_SAFE_INTEGER) return null;
   return baseUnits(sizeUsd / target.priceUsd, target.decimals);
 }
 
@@ -88,6 +91,10 @@ export async function runRouteProbes(client: JupiterQuoteClient, target: ProbeTa
   let settlementMint: MintAddress | null = null;
   if (largestRoutedSize > 0) {
     const sellAmount = tokenAmountForUsd(largestRoutedSize, target);
+    if (sellAmount === null) {
+      errors.push('sell: price cannot size the probe');
+      return { probes, settlementRouteConfirmed: false, settlementMint: null, errors };
+    }
     for (const mint of policy.settlementMints) {
       const request: QuoteRequest = { inputMint: target.mintAddress, outputMint: mint as MintAddress, inputAmount: sellAmount, maxSlippageBps: 50 as Bps, taker: PROBE_TAKER, cluster, requestedAt: now };
       try {
@@ -122,11 +129,13 @@ export interface DiscoveredEmergencyRoute {
 export async function discoverEmergencyRoute(client: JupiterQuoteClient, target: ProbeTarget, policy: EligibilityPolicy, cluster: SolanaCluster, now: Instant): Promise<DiscoveredEmergencyRoute | null> {
   const options = { onlyDirectRoutes: true, dexes: [...DIRECT_POOL_LABELS] };
   const smallest = Math.min(...policy.probeSizesUsd);
+  const smallestAmount = tokenAmountForUsd(smallest, target);
+  if (smallestAmount === null) return null;
   for (const mint of policy.settlementMints) {
     const settlementMint = mint as MintAddress;
     let first: { quote: Quote; route: QuoteRoutePlan };
     try {
-      first = await client.quote({ inputMint: target.mintAddress, outputMint: settlementMint, inputAmount: tokenAmountForUsd(smallest, target), maxSlippageBps: 50 as Bps, taker: PROBE_TAKER, cluster, requestedAt: now }, options);
+      first = await client.quote({ inputMint: target.mintAddress, outputMint: settlementMint, inputAmount: smallestAmount, maxSlippageBps: 50 as Bps, taker: PROBE_TAKER, cluster, requestedAt: now }, options);
     } catch (err) {
       if (err instanceof NoRouteError) continue;
       throw err;
@@ -139,10 +148,11 @@ export async function discoverEmergencyRoute(client: JupiterQuoteClient, target:
     const capacity: EmergencyExitRouteSnapshot['capacity'] = [];
     for (const sizeUsd of policy.probeSizesUsd) {
       const inputAmount = tokenAmountForUsd(sizeUsd, target);
+      if (inputAmount === null) continue;
       try {
         const { quote, route } = await client.quote({ inputMint: target.mintAddress, outputMint: settlementMint, inputAmount, maxSlippageBps: 50 as Bps, taker: PROBE_TAKER, cluster, requestedAt: now }, options);
         // Capacity counts only when the router still uses the same pool at this size.
-        if (route.hops.length === 1 && route.hops[0]?.ammKey === hop.ammKey) capacity.push({ inputAmount, expectedOutputAmount: quote.expectedOutputAmount, impactBps: quote.priceImpactBps });
+        if (route.hops.length === 1 && route.hops[0]?.ammKey === hop.ammKey && quote.priceImpactBps !== null) capacity.push({ inputAmount, expectedOutputAmount: quote.expectedOutputAmount, impactBps: quote.priceImpactBps });
       } catch (err) {
         if (!(err instanceof NoRouteError)) throw err;
       }

@@ -100,20 +100,30 @@ async function main(): Promise<void> {
 
 interface Shared {
   sql: Sql;
-  birdeye: BirdeyeClient;
+  /** Null without BIRDEYE_API_KEY: market roles are disabled, chain roles keep running (review R4-12). */
+  birdeye: BirdeyeClient | null;
+  /** One Jupiter quote client per process (ADR-0003; review R4-17): one rate bucket for every role. */
+  jupiter: JupiterSwapClient;
+  /** One read-only RPC client per process at `confirmed` for operational reads, plus one at `finalized` for reconciliation (review R4-13). */
+  rpc: SolanaRpcClient | null;
+  rpcFinalized: SolanaRpcClient | null;
   leases: LeaseManager;
   holder: string;
   stopping: () => boolean;
 }
 
+const MARKET_ROLES = new Set(['market-ingest', 'eligibility', 'held-asset-safety']);
+
 async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Promise<void> {
-  if (!env.BIRDEYE_API_KEY) {
-    logger.warn('roles_disabled', { roles: [...roles], reason: 'BIRDEYE_API_KEY not set; market feeds will report FAILED' });
-    return;
-  }
   const tier = BIRDEYE_TIERS[env.BIRDEYE_TIER];
   const holder = env.SERVICE_INSTANCE_ID ?? `worker-${process.pid}`;
   const sql = createSql({ url: env.SUPABASE_DB_URL, applicationName: 'worker' });
+  let writes: Promise<void> = Promise.resolve();
+  let birdeye: BirdeyeClient | null = null;
+  if (!env.BIRDEYE_API_KEY) {
+    const disabled = [...roles].filter((r) => MARKET_ROLES.has(r));
+    if (disabled.length) logger.warn('roles_disabled', { roles: disabled, reason: 'BIRDEYE_API_KEY not set; market feeds will report FAILED' });
+  } else {
   // The purchased Birdeye allowance is metered per calendar month by the provider, so the ledger
   // resumes from the persisted spend instead of resetting on every restart (a restart loop could
   // otherwise burn the whole month). Charges are written through in order; a failed write is
@@ -123,38 +133,43 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   const persisted = await loadProviderSpend(sql, 'BIRDEYE', month);
   if (persisted) ledger.restore({ month, used: persisted.usedCu, byEndpoint: persisted.byEndpoint });
   logger.info('birdeye_ledger_restored', { month, used: ledger.snapshot().used, allowance: tier.computeUnitsPerMonth });
-  let writes: Promise<void> = Promise.resolve();
   ledger.onCharge((c) => {
     writes = writes
       .then(async () => {
-        await chargeProviderSpend(sql, 'BIRDEYE', c.month, c.endpoint, c.cu);
+        const total = await chargeProviderSpend(sql, 'BIRDEYE', c.month, c.endpoint, c.cu);
+        ledger.sync(c.month, total);
       })
       .catch((err: unknown) => {
         logger.error('birdeye_ledger_persist_failed', { error: err instanceof Error ? err.message : String(err) });
       });
   });
-  const birdeye = new BirdeyeClient({ apiKey: env.BIRDEYE_API_KEY, tier, transport: fetchTransport, clock: systemClock, ledger });
+  birdeye = new BirdeyeClient({ apiKey: env.BIRDEYE_API_KEY, tier, transport: fetchTransport, clock: systemClock, ledger });
+  }
+  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
+  const rpc = env.SOLANA_RPC_URL ? new SolanaRpcClient({ url: env.SOLANA_RPC_URL, allowedOrigins: [new URL(env.SOLANA_RPC_URL).origin], nowMs: () => systemClock.nowMs() }) : null;
+  const rpcFinalized = env.SOLANA_RPC_URL ? new SolanaRpcClient({ url: env.SOLANA_RPC_URL, allowedOrigins: [new URL(env.SOLANA_RPC_URL).origin], commitment: 'finalized', nowMs: () => systemClock.nowMs() }) : null;
   let stopping = false;
   const stop = () => {
     stopping = true;
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
-  const shared: Shared = { sql, birdeye, leases: new LeaseManager(sql, holder), holder, stopping: () => stopping };
+  const shared: Shared = { sql, birdeye, jupiter, rpc, rpcFinalized, leases: new LeaseManager(sql, holder), holder, stopping: () => stopping };
 
   const loops: Promise<void>[] = [];
-  if (roles.has('market-ingest')) loops.push(marketIngestLoop(env, logger, shared, tier));
-  if (roles.has('eligibility')) {
-    if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['eligibility'], reason: 'SOLANA_RPC_URL not set' });
-    else loops.push(eligibilityLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  const noRpc = (role: string) => logger.warn('roles_disabled', { roles: [role], reason: 'SOLANA_RPC_URL not set' });
+  if (roles.has('market-ingest') && birdeye) loops.push(marketIngestLoop(env, logger, { ...shared, birdeye }, tier));
+  if (roles.has('eligibility') && birdeye) {
+    if (!rpc || !env.SOLANA_RPC_URL) noRpc('eligibility');
+    else loops.push(eligibilityLoop(env, logger, { ...shared, birdeye }, rpc, env.SOLANA_RPC_URL));
   }
-  if (roles.has('held-asset-safety')) {
-    if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['held-asset-safety'], reason: 'SOLANA_RPC_URL not set' });
-    else loops.push(heldAssetSafetyLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  if (roles.has('held-asset-safety') && birdeye) {
+    if (!rpc || !env.SOLANA_RPC_URL) noRpc('held-asset-safety');
+    else loops.push(heldAssetSafetyLoop(env, logger, { ...shared, birdeye }, rpc, env.SOLANA_RPC_URL));
   }
   if (roles.has('reconciliation')) {
-    if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['reconciliation'], reason: 'SOLANA_RPC_URL not set' });
-    else loops.push(reconciliationLoop(env, logger, shared, env.SOLANA_RPC_URL));
+    if (!rpcFinalized || !env.SOLANA_RPC_URL) noRpc('reconciliation');
+    else loops.push(reconciliationLoop(env, logger, shared, rpcFinalized, env.SOLANA_RPC_URL));
   }
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
@@ -185,7 +200,9 @@ async function loopUnderLease(role: string, intervalMs: number, logger: Logger, 
   if (!ran) logger.warn(`${role.replace('-', '_')}_lease_unavailable`, { holder: shared.holder });
 }
 
-async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared, tier: (typeof BIRDEYE_TIERS)[keyof typeof BIRDEYE_TIERS]): Promise<void> {
+type SharedWithBirdeye = Shared & { birdeye: BirdeyeClient };
+
+async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: SharedWithBirdeye, tier: (typeof BIRDEYE_TIERS)[keyof typeof BIRDEYE_TIERS]): Promise<void> {
   const intervalMs = env.MARKET_INGEST_INTERVAL_MS;
   const cyclesPerMonth = (30 * 86_400_000) / intervalMs;
   // Smoothing only: the client's compute-unit ledger is the hard monthly cap.
@@ -218,18 +235,16 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared, 
   });
 }
 
-async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
+async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: SharedWithBirdeye, rpc: SolanaRpcClient, rpcUrl: string): Promise<void> {
   const intervalMs = env.ELIGIBILITY_INTERVAL_MS;
-  const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
   // The one shared Jupiter quote client (ADR-0003): keyless lite host at 1 rps, keyed host faster.
-  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
-  const { sql } = shared;
+  const { sql, jupiter } = shared;
   const deps = {
     rpc,
     birdeye: shared.birdeye,
     jupiter,
     repo: {
-      listAssetsForEvaluation: (opts: { limit: number; reevaluateAfter: ReturnType<typeof systemClock.now> }) => listAssetsForEvaluation(sql, opts),
+      listAssetsForEvaluation: (opts: { limit: number; reevaluateAfter: ReturnType<typeof systemClock.now>; blockedReevaluateAfter: ReturnType<typeof systemClock.now> }) => listAssetsForEvaluation(sql, opts),
       recordEligibility: (record: Parameters<typeof recordEligibility>[1], status: Parameters<typeof recordEligibility>[2]) => recordEligibility(sql, record, status),
       insertEmergencyRouteSnapshot: (snapshot: Parameters<typeof insertEmergencyRouteSnapshot>[1]) => insertEmergencyRouteSnapshot(sql, snapshot),
     },
@@ -239,7 +254,7 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, r
     cluster: env.SOLANA_CLUSTER,
     // Each evaluation costs 40 Birdeye CU (security 25 + overview 15) and about a dozen Jupiter quotes;
     // the ledger stops the batch when the Birdeye allowance is gone.
-    config: { batchSize: 5, reevaluateAfterMs: 6 * 3_600_000 },
+    config: { batchSize: 5, reevaluateAfterMs: 6 * 3_600_000, blockedReevaluateAfterMs: 24 * 3_600_000 },
     health: {
       contracts: defaultFreshnessContracts(BIRDEYE_TIERS[env.BIRDEYE_TIER]).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
       state: initialEligibilityHealthState(),
@@ -252,11 +267,9 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, r
   });
 }
 
-async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
+async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: SharedWithBirdeye, rpc: SolanaRpcClient, rpcUrl: string): Promise<void> {
   const intervalMs = env.HELD_ASSET_SAFETY_INTERVAL_MS;
-  const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
-  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
-  const { sql } = shared;
+  const { sql, jupiter } = shared;
   const deps = {
     rpc,
     birdeye: shared.birdeye,
@@ -283,9 +296,8 @@ async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: Share
   });
 }
 
-async function reconciliationLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
+async function reconciliationLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpc: SolanaRpcClient, rpcUrl: string): Promise<void> {
   const intervalMs = env.RECONCILIATION_INTERVAL_MS;
-  const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
   const helius = env.HELIUS_API_KEY ? new HeliusClient({ apiKey: env.HELIUS_API_KEY, clock: systemClock }) : null;
   if (!helius) logger.warn('reconciliation_without_helius', { effect: 'any signature touching a trading wallet pauses new entries until HELIUS_API_KEY is set' });
   const { sql } = shared;

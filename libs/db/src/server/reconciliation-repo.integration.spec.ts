@@ -52,6 +52,7 @@ describe.skipIf(!url)('reconciliation repository (D9, D26)', () => {
     await registerOwnedAddress(sql, { address: WALLET, purpose: 'OTHER', cluster: 'devnet', accountId: null, registeredAt: NOW, retiredAt: null });
     const owned = (await listOwnedAddresses(sql)).filter((o) => o.address === WALLET);
     expect(owned).toHaveLength(1);
-    expect(owned[0]).toMatchObject({ purpose: 'TRADING_WALLET', cluster: 'mainnet-beta', accountId, registeredAt: NOW, retiredAt: null });
+    // The account insert trigger registered the wallet first (migration 001800); re-registration never re-purposes it.
+    expect(owned[0]).toMatchObject({ purpose: 'TRADING_WALLET', cluster: 'mainnet-beta', accountId, retiredAt: null });
   });
 });

@@ -38,7 +38,8 @@ export const Quote = z.object({
   inputAmount: Amount,
   expectedOutputAmount: Amount,
   minOutputAmount: Amount,
-  priceImpactBps: Bps,
+  /** Null when the reference quote for impact measurement was unavailable; the sized quote itself succeeded. */
+  priceImpactBps: Bps.nullable(),
   slippageBps: Bps,
   /** Program ids on the route, for signer-policy and executor checks (D55, §15.7A). */
   routeProgramIds: z.array(SolanaAddress),

@@ -94,8 +94,8 @@ describe('eligibility engine (§7.2–7.4, D45)', () => {
     }
   });
 
-  it('soft findings lower the grade without blocking', () => {
-    const r = evaluateEligibility(base({ overview: healthyOverview({ holderCount: 10, windows: healthyOverview().windows }), security: freshSecurity({ mutableMetadata: true, creationAt: addMs(NOW, -3_600_000), jupStrictList: false }) }));
+  it('soft findings lower the grade without blocking (token age only with the explicit policy override, §7.2)', () => {
+    const r = evaluateEligibility(base({ policy: { ...DEFAULT_ELIGIBILITY_POLICY, allowYoungAssets: true }, overview: healthyOverview({ holderCount: 10, windows: healthyOverview().windows }), security: freshSecurity({ mutableMetadata: true, creationAt: addMs(NOW, -3_600_000), jupStrictList: false }) }));
     expect(r.outcome).toBe('ELIGIBLE');
     expect(r.record.rejectionReasons.sort()).toEqual(['HOLDERS_BELOW_FLOOR', 'MUTABLE_METADATA', 'NOT_ON_JUP_STRICT_LIST', 'TOKEN_AGE_BELOW_MIN'].sort());
     expect(r.record.grade).toBe(100 - 15 - 5 - 5 - 15);

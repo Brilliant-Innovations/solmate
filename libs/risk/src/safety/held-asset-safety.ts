@@ -35,6 +35,13 @@ export interface ExitFacts {
   chain: MintChainState;
   /** Sell probe for the whole position through the primary (Jupiter) route; null when it could not be quoted. */
   primarySellProbe: PriceImpactProbe | null;
+  /**
+   * True when the primary route could not be measured this cycle (provider unreachable, throttled,
+   * no quote client). Distinct from `routeFound: false`, which is the provider saying no route exists.
+   */
+  primaryQuoteUnavailable: boolean;
+  /** How many previous consecutive evaluations already carried PRIMARY_ROUTE_UNKNOWN (0 on first sighting). */
+  previousUnknownRouteCycles: number;
   emergencySnapshot: EmergencyExitRouteSnapshot | null;
   /** Result of re-reading the snapshot's pool on chain: true = still owned by the expected program. */
   emergencyPoolVerified: boolean | null;
@@ -73,7 +80,7 @@ export interface SafetyInputs extends ExitFacts {
 
 const SEVERITY: Record<PositionSafetyState, number> = { NORMAL: 0, DEGRADED: 1, EXIT_RECOMMENDED: 2, CRITICAL_EXIT: 3 };
 const CRITICAL: ReadonlySet<SafetyReason> = new Set(['MINT_PAUSED', 'NON_TRANSFERABLE_NOW', 'DEFAULT_ACCOUNT_FROZEN_NOW', 'FREEZE_AUTHORITY_ADDED', 'TRANSFER_HOOK_ADDED', 'PERMANENT_DELEGATE_ADDED', 'NO_EXIT_PATH']);
-const EXIT_RECOMMENDED: ReadonlySet<SafetyReason> = new Set(['NO_PRIMARY_EXIT_ROUTE', 'SELL_IMPACT_ABOVE_MAX', 'LIQUIDITY_COLLAPSE', 'TRANSFER_FEE_RAISED']);
+const EXIT_RECOMMENDED: ReadonlySet<SafetyReason> = new Set(['NO_PRIMARY_EXIT_ROUTE', 'SELL_IMPACT_ABOVE_MAX', 'LIQUIDITY_COLLAPSE', 'TRANSFER_FEE_RAISED', 'EXIT_PATH_UNVERIFIED']);
 
 export function baselineFromChainState(chain: MintChainState, liquidityUsd: number | null, emergencyPoolAddress: string | null, source: SafetyBaseline['source']): SafetyBaseline {
   return {
@@ -104,8 +111,19 @@ export function evaluateHeldAssetSafety(input: SafetyInputs): HeldAssetSafety {
   if (instantToMs(now) - instantToMs(chain.readAt) > policy.maxChainReadAgeMs) reasons.add('CHAIN_READ_STALE');
 
   // --- exit paths -------------------------------------------------------------------------------------
-  if (!compat.canReduceNow) reasons.add('NO_EXIT_PATH');
-  else if (!compat.primaryRouteAvailable) reasons.add('NO_PRIMARY_EXIT_ROUTE');
+  // A route the provider says does not exist is a fact; a route we could not measure is not (§21.2:
+  // Jupiter unavailability means no new entries and bounded retries, never a forced exit).
+  const primaryUnknown = input.primaryQuoteUnavailable || input.primarySellProbe === null;
+  const primaryRefused = input.primarySellProbe !== null && !input.primarySellProbe.routeFound;
+  if (!compat.canReduceNow) {
+    if (primaryUnknown && !primaryRefused) {
+      reasons.add('PRIMARY_ROUTE_UNKNOWN');
+      if (input.previousUnknownRouteCycles + 1 >= policy.maxUnknownRouteCycles) reasons.add('EXIT_PATH_UNVERIFIED');
+    } else reasons.add('NO_EXIT_PATH');
+  } else if (!compat.primaryRouteAvailable) {
+    if (primaryUnknown && !primaryRefused) reasons.add('PRIMARY_ROUTE_UNKNOWN');
+    else reasons.add('NO_PRIMARY_EXIT_ROUTE');
+  }
   if (compat.primaryImpactBps !== null && compat.primaryImpactBps > policy.maxSellImpactBps) reasons.add('SELL_IMPACT_ABOVE_MAX');
   if (!input.emergencySnapshot) reasons.add('EMERGENCY_ROUTE_MISSING');
   else {

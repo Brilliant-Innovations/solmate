@@ -9,13 +9,14 @@ import { instantToMs, type AssetEligibility, type EligibilityPolicy, type Instan
 
 export type EntryGateVerdict =
   | { allowed: true }
-  | { allowed: false; reason: 'NO_ELIGIBILITY_RECORD' | 'NOT_ELIGIBLE' | 'HARD_REJECT' | 'ELIGIBILITY_STALE' | 'POLICY_VERSION_MISMATCH' | 'EVALUATED_IN_FUTURE' };
+  | { allowed: false; reason: 'NO_ELIGIBILITY_RECORD' | 'NOT_ELIGIBLE' | 'HARD_REJECT' | 'GRADE_BELOW_MIN' | 'ELIGIBILITY_STALE' | 'POLICY_VERSION_MISMATCH' | 'EVALUATED_IN_FUTURE' };
 
 export function entryAllowed(record: AssetEligibility | null, now: Instant, policy: EligibilityPolicy): EntryGateVerdict {
   if (!record) return { allowed: false, reason: 'NO_ELIGIBILITY_RECORD' };
   if (record.policyVersion !== policy.version) return { allowed: false, reason: 'POLICY_VERSION_MISMATCH' };
   if (record.hardReject) return { allowed: false, reason: 'HARD_REJECT' };
   if (!record.eligible) return { allowed: false, reason: 'NOT_ELIGIBLE' };
+  if (record.grade !== null && record.grade < policy.minGrade) return { allowed: false, reason: 'GRADE_BELOW_MIN' };
   const age = instantToMs(now) - instantToMs(record.evaluatedAt);
   if (age < 0) return { allowed: false, reason: 'EVALUATED_IN_FUTURE' };
   if (age > policy.maxEligibilityAgeMs) return { allowed: false, reason: 'ELIGIBILITY_STALE' };

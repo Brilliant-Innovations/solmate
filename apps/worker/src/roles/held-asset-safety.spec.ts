@@ -78,9 +78,15 @@ class MemoryRepo implements SafetyRepo {
   async listOpenPositions() {
     return [{ id: POSITION, assetId: ASSET, mint: MINT, quantity: '5000000' as never, safetyState: this.initialState }];
   }
-  async previousSafetyBaseline(): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: typeof NOW } | null> {
+  async previousSafetyBaseline(): Promise<{ baseline: SafetyBaseline; state: PositionSafetyState; evaluatedAt: typeof NOW; unknownRouteCycles: number } | null> {
     const last = this.evaluations.at(-1);
-    return last ? { baseline: { source: 'PREVIOUS_SAFETY', ...last.observed }, state: last.state, evaluatedAt: last.evaluatedAt } : null;
+    if (!last) return null;
+    let unknownRouteCycles = 0;
+    for (const e of [...this.evaluations].reverse()) {
+      if (!e.reasons.includes('PRIMARY_ROUTE_UNKNOWN')) break;
+      unknownRouteCycles++;
+    }
+    return { baseline: last.baseline, state: last.state, evaluatedAt: last.evaluatedAt, unknownRouteCycles };
   }
   async latestEligibilityBaseline() {
     return this.entry;
@@ -110,14 +116,14 @@ describe('held-asset-safety role (§7.5, D34)', () => {
     expect(e.exitCompatibility.primaryImpactBps).toBe(30);
   });
 
-  it('liquidity collapse since entry is EXIT_RECOMMENDED; the next cycle carries the new baseline forward', async () => {
+  it('liquidity collapse since entry is EXIT_RECOMMENDED and stays so: the entry baseline is carried, never re-based (review R4-03)', async () => {
     const repo = new MemoryRepo(SNAPSHOT);
     await runHeldAssetSafetyCycle(deps(repo, rpcFor(), birdeyeFor(10_000), jupiterFor('routes')));
     expect(repo.evaluations[0]!.state).toBe('EXIT_RECOMMENDED');
     expect(repo.evaluations[0]!.reasons).toContain('LIQUIDITY_COLLAPSE');
     await runHeldAssetSafetyCycle(deps(repo, rpcFor(), birdeyeFor(10_000), jupiterFor('routes')));
-    expect(repo.evaluations[1]!.baseline).toMatchObject({ source: 'PREVIOUS_SAFETY', liquidityUsd: 10_000 });
-    expect(repo.evaluations[1]!.state).toBe('NORMAL');
+    expect(repo.evaluations[1]!.baseline).toMatchObject({ source: 'ENTRY_ELIGIBILITY', liquidityUsd: 100_000 });
+    expect(repo.evaluations[1]!.state).toBe('EXIT_RECOMMENDED');
     expect(repo.evaluations[1]!.previousState).toBe('EXIT_RECOMMENDED');
   });
 
@@ -145,12 +151,13 @@ describe('held-asset-safety role (§7.5, D34)', () => {
     expect(repo2.evaluations[0]!.exitCompatibility).toMatchObject({ primaryRouteAvailable: true, emergencyRouteAvailable: false, canReduceNow: true });
   });
 
-  it('without a quote client the primary route is unknown: the emergency route alone still keeps canReduceNow true', async () => {
+  it('without a quote client the primary route is unknown, not refused: DEGRADED with the emergency route keeping canReduceNow true (review R4-02)', async () => {
     const repo = new MemoryRepo(SNAPSHOT);
     await runHeldAssetSafetyCycle(deps(repo, rpcFor(), birdeyeFor(100_000), null));
     const e = repo.evaluations[0]!;
     expect(e.exitCompatibility).toMatchObject({ primaryRouteAvailable: false, emergencyRouteAvailable: true, canReduceNow: true });
-    expect(e.state).toBe('EXIT_RECOMMENDED');
-    expect(e.reasons).toContain('NO_PRIMARY_EXIT_ROUTE');
+    expect(e.state).toBe('DEGRADED');
+    expect(e.reasons).toContain('PRIMARY_ROUTE_UNKNOWN');
+    expect(e.reasons).not.toContain('NO_PRIMARY_EXIT_ROUTE');
   });
 });

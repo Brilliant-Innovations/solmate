@@ -228,7 +228,9 @@ export function normalizeSecurity(mintAddress: string, data: NonNullable<z.infer
     const n = numish(raw as number | string | null | undefined);
     if (n !== null && Number.isInteger(n) && n >= 0 && n <= 10_000) transferFeeBps = n;
   }
+  // Supplies at or above 1e21 print in exponent form from Number; keep the provider's digits when it sent digits, else drop only the supply.
   const supply = numish(data.totalSupply);
+  const supplyText = typeof data.totalSupply === 'string' && /^[0-9]+(\.[0-9]+)?$/.test(data.totalSupply) ? data.totalSupply : supply !== null && supply >= 0 && Number.isFinite(supply) && supply < 1e21 ? String(supply) : null;
   const r = TokenSecurityReport.safeParse({
     mintAddress,
     provider: 'BIRDEYE',
@@ -250,7 +252,7 @@ export function normalizeSecurity(mintAddress: string, data: NonNullable<z.infer
     fakeToken: data.fakeToken ?? null,
     isTrueToken: data.isTrueToken ?? null,
     creationAt: finite(data.creationTime) && data.creationTime > 0 ? toInstant(data.creationTime * 1000) : null,
-    totalSupply: supply !== null && supply >= 0 ? String(supply) : null,
+    totalSupply: supplyText,
     preMarketHolderCount: Array.isArray(data.preMarketHolder) ? data.preMarketHolder.length : null,
   });
   return r.success ? r.data : null;

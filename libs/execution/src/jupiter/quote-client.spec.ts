@@ -106,6 +106,7 @@ describe('JupiterSwapClient (ADR-0003 shared quote path; quote-only, never signs
     expect(measureImpactBps({ inAmount: '100000000000', outAmount: '10429191883' }, { inAmount: '1000000000', outAmount: '104338307' })).toBe(4);
     expect(measureImpactBps({ inAmount: '100', outAmount: '50' }, { inAmount: '1', outAmount: '1' })).toBe(5000);
     expect(measureImpactBps({ inAmount: '100', outAmount: '200' }, { inAmount: '1', outAmount: '1' })).toBe(0);
-    expect(measureImpactBps({ inAmount: '100', outAmount: '0' }, { inAmount: '1', outAmount: '0' })).toBe(10_000);
+    // An unusable reference is no measurement, never a 100 % impact (review R4-05).
+    expect(measureImpactBps({ inAmount: '100', outAmount: '0' }, { inAmount: '1', outAmount: '0' })).toBeNull();
   });
 });

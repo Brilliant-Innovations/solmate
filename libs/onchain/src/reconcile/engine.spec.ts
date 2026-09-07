@@ -91,6 +91,8 @@ describe('custody reconciliation engine (D9, §13.6)', () => {
     expect(r.reasons).toEqual(['MOVEMENT_UNPARSEABLE']);
     expect(r.pauseTriggered).toBe(true);
     expect(r.balances[0]!.expected).toBeNull();
+    // The cursor stops before the unparsed signature and the SOL baseline is kept, so nothing is forgotten (review R4-08).
+    expect(r.cursor).toEqual({ lastSignature: null, lastSlot: null, solLamports: '1000000000' });
     const backlog = reconcileCustody(base({ signatureBacklog: true, previousCursor: { lastSignature: SIG, lastSlot: 400 as Slot, solLamports: '7' as Amount } }));
     expect(backlog.reasons).toEqual(['SIGNATURE_BACKLOG']);
     expect(backlog.cursor).toEqual({ lastSignature: SIG, lastSlot: 400, solLamports: '7' });

@@ -41,13 +41,13 @@ const security = (over: Partial<NonNullable<SafetyInputs['security']>> = {}): No
 });
 
 const healthy = (over: Partial<SafetyInputs> = {}): SafetyInputs => ({
-  ...ids, positionQuantity: '1000000' as never, previousState: 'NORMAL', baseline: baseline(), chain: chain(), primarySellProbe: probe(), emergencySnapshot: snapshot(), emergencyPoolVerified: true,
+  ...ids, positionQuantity: '1000000' as never, previousState: 'NORMAL', baseline: baseline(), chain: chain(), primarySellProbe: probe(), primaryQuoteUnavailable: false, previousUnknownRouteCycles: 0, emergencySnapshot: snapshot(), emergencyPoolVerified: true,
   overview: overview(100_000), security: security(), triggers: ['PERIODIC'], now: NOW, policy: DEFAULT_SAFETY_POLICY, ...over,
 });
 
 describe('exit compatibility (D34; M4 exit gate: entry ineligibility never disables the exit path)', () => {
   it('is a function of route facts and chain state only: an ineligible-for-entry asset still reduces', () => {
-    const facts = { chain: chain({ mintAuthority: 'PRESENT' }), primarySellProbe: probe(), emergencySnapshot: snapshot(), emergencyPoolVerified: true, now: NOW, policy: DEFAULT_SAFETY_POLICY };
+    const facts = { chain: chain({ mintAuthority: 'PRESENT' }), primarySellProbe: probe(), primaryQuoteUnavailable: false, previousUnknownRouteCycles: 0, emergencySnapshot: snapshot(), emergencyPoolVerified: true, now: NOW, policy: DEFAULT_SAFETY_POLICY };
     const compat = exitCompatibility(facts);
     expect(compat).toEqual({ primaryRouteAvailable: true, primaryImpactBps: 40, emergencyRouteAvailable: true, emergencySnapshotAgeMs: 0, token2022Compatible: true, canReduceNow: true });
     // The same asset is refused for entry by the eligibility gate; that verdict has no path into exitCompatibility.
@@ -59,7 +59,7 @@ describe('exit compatibility (D34; M4 exit gate: entry ineligibility never disab
   it('property: canReduceNow is exactly "primary route found (and token movable) or a fresh, verified, compatible emergency route"', () => {
     fc.assert(
       fc.property(fc.boolean(), fc.boolean(), fc.boolean(), fc.integer({ min: 0, max: 12 * 3_600_000 }), fc.boolean(), (routeFound, hasSnapshot, verified, ageMs, paused) => {
-        const compat = exitCompatibility({ chain: chain({ paused, tokenProgram: paused ? 'TOKEN_2022' : 'TOKEN' }), primarySellProbe: probe({ routeFound }), emergencySnapshot: hasSnapshot ? snapshot({ lastRefreshedAt: addMs(NOW, -ageMs) }) : null, emergencyPoolVerified: hasSnapshot ? verified : null, now: NOW, policy: DEFAULT_SAFETY_POLICY });
+        const compat = exitCompatibility({ chain: chain({ paused, tokenProgram: paused ? 'TOKEN_2022' : 'TOKEN' }), primarySellProbe: probe({ routeFound }), primaryQuoteUnavailable: false, previousUnknownRouteCycles: 0, emergencySnapshot: hasSnapshot ? snapshot({ lastRefreshedAt: addMs(NOW, -ageMs) }) : null, emergencyPoolVerified: hasSnapshot ? verified : null, now: NOW, policy: DEFAULT_SAFETY_POLICY });
         const primary = routeFound && !paused;
         const emergency = hasSnapshot && verified && ageMs <= DEFAULT_SAFETY_POLICY.maxEmergencySnapshotAgeMs && !paused;
         expect(compat.primaryRouteAvailable).toBe(primary);
@@ -136,3 +136,29 @@ describe('held-asset safety engine (§7.5 states)', () => {
     expect(r.state).toBe('NORMAL');
   });
 });
+describe('a quote that could not be obtained is not a route that does not exist (review R4-02, §21.2)', () => {
+  it('provider unreachable with an emergency route: DEGRADED PRIMARY_ROUTE_UNKNOWN, never NO_EXIT_PATH; refused by the provider: NO_PRIMARY_EXIT_ROUTE', () => {
+    const unknown = evaluateHeldAssetSafety(healthy({ primarySellProbe: null, primaryQuoteUnavailable: true }));
+    expect(unknown.state).toBe('DEGRADED');
+    expect(unknown.reasons).toContain('PRIMARY_ROUTE_UNKNOWN');
+    expect(unknown.reasons).not.toContain('NO_EXIT_PATH');
+    expect(unknown.exitCompatibility.canReduceNow).toBe(true);
+    const refused = evaluateHeldAssetSafety(healthy({ primarySellProbe: probe({ routeFound: false, impactBps: null }) }));
+    expect(refused.state).toBe('EXIT_RECOMMENDED');
+    expect(refused.reasons).toContain('NO_PRIMARY_EXIT_ROUTE');
+  });
+
+  it('provider unreachable and no emergency route: DEGRADED until the policy streak, then EXIT_RECOMMENDED (alert), never CRITICAL_EXIT; a refused route with no emergency route is CRITICAL_EXIT', () => {
+    const fresh = evaluateHeldAssetSafety(healthy({ primarySellProbe: null, primaryQuoteUnavailable: true, emergencySnapshot: null, previousUnknownRouteCycles: 0 }));
+    expect(fresh.state).toBe('DEGRADED');
+    expect(fresh.reasons).toEqual(expect.arrayContaining(['PRIMARY_ROUTE_UNKNOWN', 'EMERGENCY_ROUTE_MISSING']));
+    const streak = evaluateHeldAssetSafety(healthy({ primarySellProbe: null, primaryQuoteUnavailable: true, emergencySnapshot: null, previousUnknownRouteCycles: DEFAULT_SAFETY_POLICY.maxUnknownRouteCycles - 1 }));
+    expect(streak.state).toBe('EXIT_RECOMMENDED');
+    expect(streak.reasons).toContain('EXIT_PATH_UNVERIFIED');
+    expect(streak.reasons).not.toContain('NO_EXIT_PATH');
+    const refused = evaluateHeldAssetSafety(healthy({ primarySellProbe: probe({ routeFound: false, impactBps: null }), emergencySnapshot: null }));
+    expect(refused.state).toBe('CRITICAL_EXIT');
+    expect(refused.reasons).toContain('NO_EXIT_PATH');
+  });
+});
+

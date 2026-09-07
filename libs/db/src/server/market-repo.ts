@@ -18,6 +18,8 @@ const RESOLUTION_MS: Readonly<Record<CandleResolution, number>> = { '15s': 15_00
 export interface AssetRef {
   id: Uuid;
   mintAddress: string;
+  /** POSITION when an open position holds the asset (CRITICAL price feed); otherwise WATCH. */
+  priority?: 'POSITION' | 'WATCH';
 }
 
 /** Upserts discovered tokens into core.assets and returns their ids; existing rows keep first_observed_at and status. */
@@ -163,10 +165,11 @@ export async function upsertFeedHealth(sql: Sql, h: FeedHealth): Promise<void> {
 
 /** Assets the ingestion loop keeps continuous: newest discovered first, capped. */
 export async function listTrackedAssets(sql: Sql, limit: number): Promise<AssetRef[]> {
-  const rows = await sql<{ id: string; mint_address: string }[]>`
-    select id, mint_address from core.assets
-    where status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE')
-    order by first_observed_at desc
+  const rows = await sql<{ id: string; mint_address: string; held: boolean }[]>`
+    select a.id, a.mint_address, exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED') as held
+    from core.assets a
+    where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
+    order by held desc, a.first_observed_at desc
     limit ${limit}`;
-  return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address }));
+  return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address, priority: r.held ? 'POSITION' : 'WATCH' }));
 }

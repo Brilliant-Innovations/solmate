@@ -23,6 +23,7 @@ export const SafetyReason = z.enum([
   'SELL_IMPACT_ABOVE_MAX',
   'LIQUIDITY_COLLAPSE',
   'TRANSFER_FEE_RAISED',
+  'EXIT_PATH_UNVERIFIED',
   // DEGRADED: watch closely, refresh, do not add
   'EMERGENCY_ROUTE_MISSING',
   'EMERGENCY_ROUTE_STALE',
@@ -34,6 +35,7 @@ export const SafetyReason = z.enum([
   'CHAIN_READ_STALE',
   'CONCENTRATION_SHOCK',
   'SECURITY_PROVIDER_ALERT',
+  'PRIMARY_ROUTE_UNKNOWN',
 ]);
 export type SafetyReason = z.infer<typeof SafetyReason>;
 

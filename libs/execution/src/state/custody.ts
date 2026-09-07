@@ -20,7 +20,8 @@ export interface RegisteredCustody {
 export interface ObservedMovement {
   from: SolanaAddress;
   to: SolanaAddress;
-  mint: MintAddress;
+  /** Null for native SOL. */
+  mint: MintAddress | null;
   amount: Amount;
   /** The lifecycle (intent, protective order, emergency command) the movement is attributed to, if any. */
   lifecycleId: Uuid | null;
@@ -36,6 +37,7 @@ export function classifyMovement(registry: readonly RegisteredCustody[], m: Obse
   const to = registry.find((c) => c.address === m.to);
   if (!from || !to) return { kind: 'UNKNOWN', reason: 'UNREGISTERED_ENDPOINT' };
   if (!from.active || !to.active) return { kind: 'UNKNOWN', reason: 'INACTIVE_ACCOUNT' };
+  // A custody row bound to a mint (token account, vault) can only move that mint; SOL (mint null) only moves through mint-less rows (the wallet).
   if ((from.mint !== null && from.mint !== m.mint) || (to.mint !== null && to.mint !== m.mint)) return { kind: 'UNKNOWN', reason: 'MINT_MISMATCH' };
   if (m.movementType === null) return { kind: 'UNKNOWN', reason: 'UNTYPED_MOVEMENT' };
   if (!from.allowedMovementTypes.includes(m.movementType) || !to.allowedMovementTypes.includes(m.movementType)) {

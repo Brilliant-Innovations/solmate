@@ -15,6 +15,7 @@ export const EligibilityReason = z.enum([
   'UNKNOWN_TOKEN_PROGRAM',
   'SUPPLY_ZERO',
   'MINT_AUTHORITY_PRESENT',
+  'AUTHORITY_UNKNOWN',
   'FREEZE_AUTHORITY_PRESENT',
   'NON_TRANSFERABLE',
   'DEFAULT_ACCOUNT_FROZEN',
@@ -70,6 +71,10 @@ export const EligibilityPolicy = z.strictObject({
   /** Absolute tolerance between chain top-10 and analytics top-10 before D45 mismatch blocks entry. */
   concentrationMismatchTolerance: Fraction,
   minTokenAgeMs: Milliseconds,
+  /** §7.2: token age is a required gate; only an explicit policy override lets younger assets through as a graded soft finding. */
+  allowYoungAssets: z.boolean(),
+  /** Entry gate refuses records graded below this (soft findings accumulate into a refusal). */
+  minGrade: z.number().int().min(0).max(100),
   maxSecurityAgeMs: Milliseconds,
   /** An eligibility record older than this cannot authorise an entry (§7.4 "immediately before entry"). */
   maxEligibilityAgeMs: Milliseconds,
@@ -100,6 +105,8 @@ export const DEFAULT_ELIGIBILITY_POLICY: EligibilityPolicy = {
   maxCreatorPercentage: 10,
   concentrationMismatchTolerance: 0.15,
   minTokenAgeMs: 24 * 60 * 60_000,
+  allowYoungAssets: false,
+  minGrade: 60,
   maxSecurityAgeMs: 60 * 60_000,
   maxEligibilityAgeMs: 15 * 60_000,
   probeSizesUsd: [250, 1_000, 5_000],

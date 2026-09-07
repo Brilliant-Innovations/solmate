@@ -62,7 +62,7 @@ export interface ReconciliationCycleReport {
 }
 
 const CUSTODY_PURPOSE = { TRADING_WALLET: 'TRADING_WALLET', ASSOCIATED_TOKEN_ACCOUNT: 'ASSOCIATED_TOKEN_ACCOUNT', JUPITER_TRIGGER_VAULT: 'JUPITER_TRIGGER_VAULT', APPROVED_OTHER: 'OTHER' } as const;
-const MAX_SIGNATURE_PAGES = 5;
+const MAX_SIGNATURE_PAGES = 10;
 
 async function observeBalances(rpc: SolanaRpcClient, wallet: SolanaAddress): Promise<{ observed: CustodyBalanceObservation[]; slot: Slot }> {
   const sol = await rpc.getBalance(wallet);
@@ -160,7 +160,7 @@ export async function runReconciliationCycle(deps: ReconciliationDeps): Promise<
             for (const m of o.facts.movements) {
               const from = (m.kind === 'TOKEN' ? (m.fromTokenAccount ?? m.fromOwner) : m.fromOwner) ?? ('' as SolanaAddress);
               const to = (m.kind === 'TOKEN' ? (m.toTokenAccount ?? m.toOwner) : m.toOwner) ?? ('' as SolanaAddress);
-              const verdict = classifyMovement(registry, { from, to, mint: (m.mint ?? account.settlementMint) as MintAddress, amount: m.amount, lifecycleId: lifecycle?.lifecycleId ?? null, movementType: lifecycle?.movementType ?? null }, new Set(lifecycle ? [lifecycle.lifecycleId] : []));
+              const verdict = classifyMovement(registry, { from, to, mint: m.mint as MintAddress | null, amount: m.amount, lifecycleId: lifecycle?.lifecycleId ?? null, movementType: lifecycle?.movementType ?? null }, new Set(lifecycle ? [lifecycle.lifecycleId] : []));
               movements.push({ ...m, classification: verdict.kind, reason: verdict.kind === 'UNKNOWN' ? verdict.reason : null, lifecycleId: verdict.kind === 'EXPECTED' ? verdict.lifecycleId : null });
             }
           }

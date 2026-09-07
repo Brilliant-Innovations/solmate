@@ -78,7 +78,7 @@ const SECURITY_OK = () => ok({ success: true, data: { creatorAddress: AUTH, crea
 const OVERVIEW_OK = () => ok({ success: true, data: { address: MINT, price: 1, liquidity: 1e6, holder: 10_000, v24hUSD: 5e6, lastTradeUnixTime: 1_788_000_000 } });
 
 const deps = (repo: MemoryRepo, rpc: SolanaRpcClient, birdeye: BirdeyeClient, jupiter: JupiterQuoteClient | null) => ({
-  rpc, birdeye, jupiter, repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), policy: DEFAULT_ELIGIBILITY_POLICY, cluster: 'mainnet-beta' as const, config: { batchSize: 10, reevaluateAfterMs: 3_600_000 },
+  rpc, birdeye, jupiter, repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), policy: DEFAULT_ELIGIBILITY_POLICY, cluster: 'mainnet-beta' as const, config: { batchSize: 10, reevaluateAfterMs: 3_600_000, blockedReevaluateAfterMs: 86_400_000 },
 });
 
 describe('eligibility role (P2: chain truth first, analytics corroborates, routes proven, fail closed)', () => {

@@ -35,7 +35,7 @@ select is((select count(*)::int from audit.events where action_class = 'RUNTIME_
 
 -- 9: a second mismatch does not re-pause an already paused session (no duplicate audit row)
 select trading.record_reconciliation((select j || '{"id": "dddddddd-dddd-4ddd-8ddd-ddddddddddd5", "status": "MISMATCH", "pauseTriggered": true, "reasons": ["BALANCE_MISMATCH"], "evaluatedAt": "2026-09-07T18:02:00.000Z"}'::jsonb from rep));
-select is((select count(*)::int from audit.events where action_class = 'RUNTIME_PAUSE'), 1, 'already-paused session is not re-paused');
+select is((select count(*)::int from audit.events where action_class = 'RUNTIME_PAUSE' and entity ->> 'id' = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3'), 1, 'already-paused session is not re-paused');
 
 -- 10: history is immutable
 select throws_ok($$update trading.custody_movements set classification = 'EXPECTED'$$, 'P0001', null, 'movements are immutable');

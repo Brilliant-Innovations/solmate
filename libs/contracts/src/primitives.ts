@@ -43,7 +43,7 @@ export const Amount = z
   .string()
   .regex(/^(0|[1-9][0-9]*)$/, 'base-unit amount must be a non-negative integer decimal string')
   .max(20)
-  .refine((v) => BigInt(v) <= U64_MAX, 'base-unit amount exceeds u64')
+  .refine((v) => /^(0|[1-9][0-9]*)$/.test(v) && BigInt(v) <= U64_MAX, 'base-unit amount exceeds u64')
   .brand<'Amount'>();
 export type Amount = z.infer<typeof Amount>;
 

@@ -170,7 +170,16 @@ export function reconcileCustody(input: ReconcileInput): CustodyReconciliation {
   });
 
   const status = reasons.size === 0 ? 'CLEAN' : 'MISMATCH';
-  const newest = input.signatureBacklog ? null : input.newSignatures[input.newSignatures.length - 1];
+  // The cursor stops just before the earliest signature we could not parse, so unexplained
+  // transactions are re-submitted to the parser next cycle instead of being forgotten (D9).
+  const unparsed = new Set<string>(input.unparsedSignatures);
+  let newest: { signature: TxSignature; slot: Slot } | null = null;
+  if (!input.signatureBacklog) {
+    for (const s of input.newSignatures) {
+      if (unparsed.has(s.signature)) break;
+      newest = s;
+    }
+  }
   return {
     ...base,
     status,
@@ -179,7 +188,7 @@ export function reconcileCustody(input: ReconcileInput): CustodyReconciliation {
       lastSignature: newest?.signature ?? prev?.lastSignature ?? null,
       lastSlot: newest?.slot ?? prev?.lastSlot ?? null,
       // Re-baseline on every accounted cycle; carry the previous baseline through a backlog.
-      solLamports: input.signatureBacklog ? (prev?.solLamports ?? null) : observedSol === null ? (prev?.solLamports ?? null) : (observedSol.toString() as Amount),
+      solLamports: input.signatureBacklog || unparsed.size > 0 ? (prev?.solLamports ?? null) : observedSol === null ? (prev?.solLamports ?? null) : (observedSol.toString() as Amount),
     },
     pauseTriggered: status === 'MISMATCH',
   };

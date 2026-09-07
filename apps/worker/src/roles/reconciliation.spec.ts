@@ -21,6 +21,7 @@ interface ChainState {
   tokens: { pubkey: string; mint: string; amount: string }[];
   signatures: { signature: string; slot: number }[];
   fail?: boolean;
+  rpcCalls?: number;
 }
 
 function rpcFor(state: ChainState): SolanaRpcClient {
@@ -33,10 +34,12 @@ function rpcFor(state: ChainState): SolanaRpcClient {
       const program = (params[1] as { programId: string }).programId;
       result = { context: { slot: 500 }, value: program === TOKEN_PROGRAM_ID ? state.tokens.map((t) => ({ pubkey: t.pubkey, account: { owner: TOKEN_PROGRAM_ID, lamports: 2_039_280, data: { program: 'spl-token', parsed: { type: 'account', info: { mint: t.mint, owner: WALLET, tokenAmount: { amount: t.amount, decimals: 6, uiAmount: 0, uiAmountString: '0' }, state: 'initialized' } } } } })) : [] };
     } else if (method === 'getSignaturesForAddress') {
-      const opts = params[1] as { until?: string; before?: string };
+      const opts = params[1] as { until?: string; before?: string; limit?: number };
+      state.rpcCalls = (state.rpcCalls ?? 0) + 1;
       let sigs = [...state.signatures].sort((a, b) => b.slot - a.slot);
       if (opts.until) sigs = sigs.filter((s) => s.signature !== opts.until && s.slot > (state.signatures.find((x) => x.signature === opts.until)?.slot ?? 0));
-      result = sigs.map((s) => ({ ...s, blockTime: 1_788_000_000, err: null }));
+      if (opts.before) sigs = sigs.filter((s) => s.slot < (state.signatures.find((x) => x.signature === opts.before)?.slot ?? Infinity));
+      result = sigs.slice(0, opts.limit ?? 100).map((s) => ({ ...s, blockTime: 1_788_000_000, err: null }));
     } else result = null;
     return { status: 200, body: JSON.stringify({ jsonrpc: '2.0', id, result }) };
   };
@@ -157,5 +160,36 @@ describe('reconciliation role (D9, D26, §13.6)', () => {
     const repo = new MemoryRepo(custody(), []);
     await runReconciliationCycle(deps(repo, rpcFor(chain()), null));
     expect(repo.reports[0]!.evaluatedAt).toBe(NOW satisfies Instant);
+  });
+
+  it('more signatures than one page: pagination walks back with before until the cursor, every page distinct, and the cursor lands on the newest (review R4-01)', async () => {
+    const repo = new MemoryRepo(custody(), [{ mint: JUP, expected: '5000000' }]);
+    const many = Array.from({ length: 250 }, (_, i) => ({ signature: `${SIG.slice(0, -4)}${String(1000 + i).replace(/0/g, 'a')}`, slot: 600 + i }));
+    const state = chain({ signatures: many });
+    const items: Record<string, unknown> = {};
+    for (const m of many) items[m.signature] = { ...parsedTransferIn, signature: m.signature, parsed: { ...parsedTransferIn.parsed, slot: m.slot, feePayer: WALLET, tokenTransfers: [{ fromUserAccount: WALLET, toUserAccount: WALLET, fromTokenAccount: ATA_JUP, toTokenAccount: ATA_JUP, rawTokenAmount: '1', decimals: 6, mint: JUP }] } };
+    const r = await runReconciliationCycle(deps(repo, rpcFor(state), heliusFor(items)));
+    expect(state.rpcCalls).toBe(3); // three signature pages: 100, 100, 50
+    expect(r.errors).toEqual([]);
+    const rep = repo.reports[0]!;
+    expect(rep.reasons).not.toContain('SIGNATURE_BACKLOG');
+    expect(rep.movements).toHaveLength(250);
+    expect(new Set(rep.movements.map((m) => m.signature)).size).toBe(250);
+    expect(rep.cursor.lastSignature).toBe(many[249]!.signature);
+    expect(rep.cursor.lastSlot).toBe(849);
+  });
+
+  it('a signature Helius could not parse holds the cursor back and keeps the SOL baseline, so it is retried next cycle (review R4-08)', async () => {
+    const repo = new MemoryRepo(custody(), [{ mint: JUP, expected: '5000000' }]);
+    const bad = SIG.slice(0, -1) + 'B';
+    const state = chain({ signatures: [{ signature: SIG, slot: 501 }, { signature: bad, slot: 502 }, { signature: SIG.slice(0, -1) + 'C', slot: 503 }] });
+    const okItem = (sig: string, slot: number) => ({ ...parsedTransferIn, signature: sig, parsed: { ...parsedTransferIn.parsed, slot, feePayer: WALLET, tokenTransfers: [] } });
+    repo.cursor = { lastSignature: null, lastSlot: null, solLamports: '1000000000' as Amount };
+    const r = await runReconciliationCycle(deps(repo, rpcFor(state), heliusFor({ [SIG]: okItem(SIG, 501), [SIG.slice(0, -1) + 'C']: okItem(SIG.slice(0, -1) + 'C', 503) })));
+    expect(r.paused).toBe(1);
+    const rep = repo.reports[0]!;
+    expect(rep.reasons).toEqual(['MOVEMENT_UNPARSEABLE']);
+    expect(rep.unparsedSignatures).toEqual([bad]);
+    expect(rep.cursor).toEqual({ lastSignature: SIG, lastSlot: 501, solLamports: '1000000000' });
   });
 });
