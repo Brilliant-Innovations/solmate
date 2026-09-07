@@ -1,14 +1,19 @@
-import { DEFAULT_ELIGIBILITY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_SAFETY_POLICY, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress } from '@sol-agent-trader/contracts';
 import {
   createSql,
   heldBucketTimes,
   insertEmergencyRouteSnapshot,
   insertSnapshot,
+  latestEligibilityBaseline,
+  latestEmergencySnapshot,
   LeaseManager,
   listAssetsForEvaluation,
+  listOpenPositions,
   listTrackedAssets,
   loadCandles,
+  previousSafetyBaseline,
   recordEligibility,
+  recordPositionSafety,
   runWithLease,
   upsertDiscoveredAssets,
   upsertFeedHealth,
@@ -21,6 +26,7 @@ import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
 import { runEligibilityCycle } from './roles/eligibility.js';
+import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -36,6 +42,7 @@ import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './rol
  * same job twice):
  *   market-ingest  discovery, candles, snapshots, feed health (needs BIRDEYE_API_KEY)
  *   eligibility    chain-truth reads + analytics corroboration → §6.2 records (needs SOLANA_RPC_URL and BIRDEYE_API_KEY)
+ *   held-asset-safety  open positions: chain truth, sell probe, emergency-pool re-verification → §7.5 safety state (same needs)
  * All roles share one Birdeye client so the purchased compute-unit allowance is one budget.
  */
 const SERVICE = 'worker' as const;
@@ -68,7 +75,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -103,6 +110,10 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('eligibility')) {
     if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['eligibility'], reason: 'SOLANA_RPC_URL not set' });
     else loops.push(eligibilityLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  }
+  if (roles.has('held-asset-safety')) {
+    if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['held-asset-safety'], reason: 'SOLANA_RPC_URL not set' });
+    else loops.push(heldAssetSafetyLoop(env, logger, shared, env.SOLANA_RPC_URL));
   }
   await Promise.all(loops);
   await sql.end({ timeout: 5 });
@@ -187,6 +198,37 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: Shared, r
   logger.info('eligibility_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_ELIGIBILITY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, jupiterHost: env.JUPITER_API_KEY ? 'api.jup.ag' : 'lite-api.jup.ag', holder: shared.holder });
   await loopUnderLease('eligibility', intervalMs, logger, shared, async () => {
     await runEligibilityCycle(deps);
+  });
+}
+
+async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpcUrl: string): Promise<void> {
+  const intervalMs = env.HELD_ASSET_SAFETY_INTERVAL_MS;
+  const rpc = new SolanaRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin] });
+  const jupiter = new JupiterSwapClient({ clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
+  const { sql } = shared;
+  const deps = {
+    rpc,
+    birdeye: shared.birdeye,
+    jupiter,
+    repo: {
+      listOpenPositions: (limit: number) => listOpenPositions(sql, limit),
+      previousSafetyBaseline: (positionId: Parameters<typeof previousSafetyBaseline>[1]) => previousSafetyBaseline(sql, positionId),
+      latestEligibilityBaseline: (assetId: Parameters<typeof latestEligibilityBaseline>[1]) => latestEligibilityBaseline(sql, assetId),
+      latestEmergencySnapshot: (assetId: Parameters<typeof latestEmergencySnapshot>[1]) => latestEmergencySnapshot(sql, assetId),
+      recordPositionSafety: (evaluation: Parameters<typeof recordPositionSafety>[1]) => recordPositionSafety(sql, evaluation),
+    },
+    clock: systemClock,
+    logger,
+    policy: DEFAULT_SAFETY_POLICY,
+    cluster: env.SOLANA_CLUSTER,
+    settlementMint: DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress,
+    // Each position costs 40 Birdeye CU and one Jupiter quote per cycle; held assets are CRITICAL priority
+    // in the ledger so entry-side discovery runs out of allowance before safety does.
+    config: { batchSize: 50 },
+  };
+  logger.info('held_asset_safety_starting', { intervalMs, batchSize: deps.config.batchSize, policyVersion: DEFAULT_SAFETY_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, holder: shared.holder });
+  await loopUnderLease('held-asset-safety', intervalMs, logger, shared, async () => {
+    await runHeldAssetSafetyCycle(deps);
   });
 }
 

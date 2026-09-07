@@ -3500,6 +3500,77 @@ export type Database = {
           },
         ]
       }
+      position_safety_evaluations: {
+        Row: {
+          asset_id: string
+          baseline: Json
+          chain_slot: number
+          created_at: string
+          evaluated_at: string
+          exit_compatibility: Json
+          id: string
+          liquidity_usd: number | null
+          observed: Json
+          policy_version: string
+          position_id: string
+          position_quantity: number
+          previous_state:
+            | Database["enums"]["Enums"]["position_safety_state"]
+            | null
+          reasons: unknown[]
+          state: Database["enums"]["Enums"]["position_safety_state"]
+          triggers: string[]
+        }
+        Insert: {
+          asset_id: string
+          baseline: Json
+          chain_slot: number
+          created_at?: string
+          evaluated_at: string
+          exit_compatibility: Json
+          id?: string
+          liquidity_usd?: number | null
+          observed: Json
+          policy_version: string
+          position_id: string
+          position_quantity: number
+          previous_state?:
+            | Database["enums"]["Enums"]["position_safety_state"]
+            | null
+          reasons?: unknown[]
+          state: Database["enums"]["Enums"]["position_safety_state"]
+          triggers: string[]
+        }
+        Update: {
+          asset_id?: string
+          baseline?: Json
+          chain_slot?: number
+          created_at?: string
+          evaluated_at?: string
+          exit_compatibility?: Json
+          id?: string
+          liquidity_usd?: number | null
+          observed?: Json
+          policy_version?: string
+          position_id?: string
+          position_quantity?: number
+          previous_state?:
+            | Database["enums"]["Enums"]["position_safety_state"]
+            | null
+          reasons?: unknown[]
+          state?: Database["enums"]["Enums"]["position_safety_state"]
+          triggers?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "position_safety_evaluations_position_id_fkey"
+            columns: ["position_id"]
+            isOneToOne: false
+            referencedRelation: "positions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       position_shadow_journal: {
         Row: {
           account_id: string
@@ -3859,7 +3930,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      record_position_safety: { Args: { p_evaluation: Json }; Returns: string }
     }
     Enums: {
       [_ in never]: never

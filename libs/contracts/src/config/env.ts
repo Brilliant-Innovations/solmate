@@ -115,6 +115,8 @@ export const WorkerEnv = Common.extend({
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
   WORKER_ROLES: z.string().default(''),
   ELIGIBILITY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
+  /** Held-asset safety revalidation cadence (§7.5); short because a CRITICAL_EXIT must be seen quickly. */
+  HELD_ASSET_SAFETY_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
 });
 

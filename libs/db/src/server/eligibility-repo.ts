@@ -1,4 +1,4 @@
-import type { AssetEligibility, AssetStatus, EmergencyExitRouteSnapshot, Instant, Uuid } from '@sol-agent-trader/contracts';
+import type { AssetEligibility, AssetStatus, Bps, EmergencyExitRouteSnapshot, Instant, Uuid } from '@sol-agent-trader/contracts';
 import { asJson, type Sql } from './sql.js';
 
 /** Persists a discovered, chain-verified emergency exit route (§6.2, §14.6). Rows are append-only history. */
@@ -52,6 +52,20 @@ export async function recordEligibility(sql: Sql, record: AssetEligibility, stat
     const updated = await txSql<{ id: string }[]>`update core.assets set status = ${status} where id = ${record.assetId} and status <> 'RETIRED' returning id`;
     if (updated.length === 0) throw new Error(`asset ${record.assetId} not found or retired`);
   });
+}
+
+/** The facts the entry-time eligibility record saw, as a baseline for held-asset safety (§7.5). */
+export async function latestEligibilityBaseline(sql: Sql, assetId: Uuid): Promise<{ liquidityUsd: number | null; freezeAuthorityPresent: boolean; transferHook: boolean; permanentDelegate: boolean; transferFeeBps: Bps | null; top10: number | null } | null> {
+  const latest = await latestEligibility(sql, assetId);
+  if (!latest) return null;
+  return {
+    liquidityUsd: latest.liquidityUsd,
+    freezeAuthorityPresent: latest.freezeAuthority === 'PRESENT',
+    transferHook: latest.token2022?.transferHook ?? false,
+    permanentDelegate: latest.token2022?.permanentDelegate ?? false,
+    transferFeeBps: latest.token2022?.transferFeeBps ?? null,
+    top10: latest.concentration?.top10 ?? null,
+  };
 }
 
 export async function latestEligibility(sql: Sql, assetId: Uuid): Promise<AssetEligibility | null> {

@@ -183,9 +183,11 @@ invariants:
     statement: "Budget exhaustion cannot suppress deterministic mandatory exits."
     owner_modules:
       - libs/risk/src/mandatory-exit
+      - libs/risk/src/safety
       - libs/agents/src/budget
     tests:
       - libs/risk/src/mandatory-exit/mandatory-exit.spec.ts
+      - libs/risk/src/safety/held-asset-safety.spec.ts
     status: mapped
 
   - id: INV-22
