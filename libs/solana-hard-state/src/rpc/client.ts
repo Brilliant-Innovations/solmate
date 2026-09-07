@@ -31,7 +31,7 @@ export const fetchRpcTransport: RpcTransport = async (req) => {
 
 export type Commitment = 'confirmed' | 'finalized';
 
-const READ_ONLY_METHODS = ['getAccountInfo', 'getMultipleAccounts', 'getTokenSupply', 'getTokenLargestAccounts', 'getSlot', 'getBlockHeight', 'getBalance', 'getTokenAccountsByOwner', 'getSignaturesForAddress'] as const;
+export const READ_ONLY_METHODS = ['getAccountInfo', 'getMultipleAccounts', 'getTokenSupply', 'getTokenLargestAccounts', 'getSlot', 'getBlockHeight', 'getBalance', 'getTokenAccountsByOwner', 'getSignaturesForAddress'] as const;
 export type ReadOnlyMethod = (typeof READ_ONLY_METHODS)[number];
 
 const RpcEnvelope = z.object({

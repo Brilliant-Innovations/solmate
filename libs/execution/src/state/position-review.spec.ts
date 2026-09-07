@@ -79,4 +79,23 @@ describe('position review state (D39, INV-20)', () => {
     const cleared = reviewTransition(paused.review, { type: 'CYCLE_TERMINATED', at: T0, cycleId: 'c2', terminal: 'CLEARED', action: 'HOLD', unresolvedReason: null });
     expect(cleared.ok && cleared.review.reviewState).toBe('REVIEWED');
   });
+
+  it('BUDGET_PAUSED is behaviourally equivalent to PROTECTION_ONLY: no discretionary action, same exits, same way back (operator follow-up 2D)', () => {
+    const at = '2026-09-07T12:00:00.000Z' as Instant;
+    const start = initialPositionReview(at, null);
+    const budget = reviewTransition(start, { type: 'BUDGET_EXHAUSTED', at });
+    const protection = reviewTransition(start, { type: 'CYCLE_TERMINATED', at, cycleId: 'c1', terminal: 'UNRESOLVED', action: null, unresolvedReason: 'ADVERSARY_UNAVAILABLE' });
+    if (!budget.ok || !protection.ok) throw new Error('transitions must succeed');
+    expect(discretionaryActionsAllowed(budget.review)).toBe(discretionaryActionsAllowed(protection.review));
+    expect(discretionaryActionsAllowed(budget.review)).toBe(false);
+    // The only way out of either state is a newly CLEARED open-position action.
+    for (const r of [budget.review, protection.review]) {
+      const cleared = reviewTransition(r, { type: 'CYCLE_TERMINATED', at, cycleId: 'c2', terminal: 'CLEARED', action: 'HOLD', unresolvedReason: null });
+      expect(cleared.ok && cleared.review.reviewState).toBe('REVIEWED');
+      const worse = reviewTransition(r, { type: 'CYCLE_TERMINATED', at, cycleId: 'c3', terminal: 'EXPIRED', action: null, unresolvedReason: null });
+      expect(worse.ok && discretionaryActionsAllowed(worse.review)).toBe(false);
+      const tighten = reviewTransition(r, { type: 'TIGHTEN_UNREVIEWED_STOP', at, level: 1.5 });
+      expect(tighten.ok && tighten.review.unreviewedStop).toBe(1.5);
+    }
+  });
 });

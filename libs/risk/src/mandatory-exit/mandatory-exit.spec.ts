@@ -43,4 +43,17 @@ describe('mandatory exit classifier (D31; INV-15, INV-21)', () => {
     );
     expect(d).toEqual({ mandatory: true, reasons: ['HARD_STOP'], adversaryBlocking: false });
   });
+
+  it('property: the review state (REVIEWED, PROTECTION_ONLY, BUDGET_PAUSED) never changes a mandatory-exit decision (operator follow-up 2D, INV-15)', () => {
+    fc.assert(
+      fc.property(
+        fc.record({ hardStopReached: fc.boolean(), providerProtectiveFill: fc.boolean(), circuitBreakerRequiresReduction: fc.boolean(), safetyState: fc.constantFrom('NORMAL', 'DEGRADED', 'EXIT_RECOMMENDED', 'CRITICAL_EXIT' as const), operatorEmergencyClose: fc.boolean(), dbIndependentEmergencyClose: fc.boolean() }),
+        (triggers) => {
+          const decisions = (['REVIEWED', 'PROTECTION_ONLY', 'BUDGET_PAUSED'] as const).map((reviewState) => classifyMandatoryExit(triggers, { adversaryVerdict: null, adversaryAvailable: true, budgetExhausted: false, reviewState }));
+          expect(decisions[1]).toEqual(decisions[0]);
+          expect(decisions[2]).toEqual(decisions[0]);
+        },
+      ),
+    );
+  });
 });

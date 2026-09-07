@@ -1,6 +1,6 @@
 import { fixedClock, toInstant, type MintAddress } from '@sol-agent-trader/contracts';
 import { base58Decode } from '../base58.js';
-import { RpcError, SolanaRpcClient, type RpcTransport } from '../rpc/client.js';
+import { READ_ONLY_METHODS, RpcError, SolanaRpcClient, type RpcTransport } from '../rpc/client.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from './decode.js';
 import { MintNotFoundError, readMintChainState } from './read.js';
 
@@ -152,4 +152,36 @@ describe('readMintChainState (D45 chain truth)', () => {
     expect(s.concentration).toEqual({ source: 'CHAIN', chainSlot: 103, top1: 0.1, top5: 0.1, top10: 0.1, top20: 0.1, analyticsMismatch: false, programControlledFraction: 0.7, excludedAccounts: 2 });
     expect(s.largestAccounts).toHaveLength(3);
   });
+
+describe('capability boundary (GUARDRAILS Part 4: no signer, keypair, wallet or sendTransaction capability)', () => {
+  it('the closed method set holds only reads; no public method can express signing, sending, airdrops or key material', async () => {
+    // Anchored: getSignaturesForAddress is a read; a method that starts with send/sign/request/simulate is not.
+    const WRITE = /^(send|sign|request|simulate|airdrop)|keypair|wallet/i;
+    expect(READ_ONLY_METHODS.every((m) => m.startsWith('get') && !WRITE.test(m))).toBe(true);
+    const publicMethods = Object.getOwnPropertyNames(SolanaRpcClient.prototype).filter((n) => n !== 'constructor');
+    expect(publicMethods.filter((n) => WRITE.test(n))).toEqual([]);
+    // Every method the client exposes reaches the transport with an allowlisted JSON-RPC method only.
+    const seen: string[] = [];
+    const transport: RpcTransport = async (req) => {
+      const { id, method } = JSON.parse(req.body) as { id: number; method: string };
+      seen.push(method);
+      return { status: 200, body: JSON.stringify({ jsonrpc: '2.0', id, result: null }) };
+    };
+    const client = new SolanaRpcClient({ url: ALLOW[0]!, allowedOrigins: ALLOW, transport, requestsPerSecond: 1000, maxAttempts: 1 });
+    const calls: Promise<unknown>[] = [
+      client.getSlot(),
+      client.getAccountInfo(AUTH),
+      client.getTokenSupply(MINT),
+      client.getTokenLargestAccounts(MINT),
+      client.getBalance(AUTH),
+      client.getTokenAccountsByOwner(AUTH, TOKEN_PROGRAM_ID),
+      client.getSignaturesForAddress(AUTH),
+      client.getMultipleAccountsParsed([AUTH]),
+    ];
+    await Promise.allSettled(calls);
+    expect(seen.length).toBe(calls.length);
+    expect(seen.every((m) => (READ_ONLY_METHODS as readonly string[]).includes(m))).toBe(true);
+    expect(seen.some((m) => WRITE.test(m))).toBe(false);
+  });
+});
 });
