@@ -8,7 +8,9 @@ const url = databaseUrlFromEnv();
 describe.skipIf(!url)('reconciliation repository (D9, D26)', () => {
   let sql: Sql;
   const NOW = toInstant(Date.UTC(2026, 8, 7, 18, 0, 0));
-  const WALLET = '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM' as SolanaAddress;
+  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  // A fresh wallet per run: owned-address rows persist across runs on the same database.
+  const WALLET = Array.from({ length: 44 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('') as SolanaAddress;
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' as MintAddress;
   const SIG = '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW' as never;
 

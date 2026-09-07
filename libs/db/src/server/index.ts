@@ -11,3 +11,4 @@ export * from './eligibility-repo.js';
 export * from './safety-repo.js';
 export * from './reconciliation-repo.js';
 export * from './provider-spend-repo.js';
+export * from './wallet-events-repo.js';

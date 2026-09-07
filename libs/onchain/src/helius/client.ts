@@ -129,6 +129,22 @@ export class HeliusClient {
     return s.split(this.opts.apiKey).join('<redacted>');
   }
 
+  /**
+   * Parsed history of one address, oldest first after `afterSignature` (or the newest page when
+   * no cursor exists). Returns the provider's pagination token when more pages remain.
+   */
+  async transactionHistory(opts: { address: string; afterSignature?: string | null; limit?: number; paginationToken?: string | null }): Promise<{ items: ParseOutcome[]; paginationToken: string | null }> {
+    const body: Record<string, unknown> = { address: opts.address, limit: Math.min(MAX_SIGNATURES_PER_CALL, opts.limit ?? MAX_SIGNATURES_PER_CALL), commitment: this.commitment, sortOrder: opts.afterSignature ? 'asc' : 'desc' };
+    if (opts.afterSignature) body['afterSignature'] = opts.afterSignature;
+    if (opts.paginationToken) body['paginationToken'] = opts.paginationToken;
+    const json = await this.post('/v1/parsed-events/transaction-history', body);
+    const data = Array.isArray(json) ? json : (json as { data?: unknown })?.data;
+    if (!Array.isArray(data)) throw new HeliusError(200, 'unexpected history shape');
+    const items = data.map(parseHeliusTransaction);
+    const token = (json as { paginationToken?: unknown })?.paginationToken;
+    return { items: opts.afterSignature ? items : items.reverse(), paginationToken: typeof token === 'string' && token.length > 0 ? token : null };
+  }
+
   /** Parses the given signatures, in input order, chunked to the provider's limit. */
   async parseTransactions(signatures: readonly TxSignature[]): Promise<ParseOutcome[]> {
     const out: ParseOutcome[] = [];

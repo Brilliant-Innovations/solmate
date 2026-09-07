@@ -108,6 +108,7 @@ invariants:
     tests:
       - libs/signals/src/self-influence/guard.spec.ts
       - libs/onchain/src/owned-addresses/registry.spec.ts
+      - libs/onchain/src/wallet-events/derive.spec.ts
     status: mapped
 
   - id: INV-12

@@ -1268,6 +1268,103 @@ export type Database = {
         }
         Relationships: []
       }
+      wallet_cursors: {
+        Row: {
+          last_signature: string | null
+          last_slot: number | null
+          updated_at: string
+          wallet: string
+        }
+        Insert: {
+          last_signature?: string | null
+          last_slot?: number | null
+          updated_at?: string
+          wallet: string
+        }
+        Update: {
+          last_signature?: string | null
+          last_slot?: number | null
+          updated_at?: string
+          wallet?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallet_cursors_wallet_fkey"
+            columns: ["wallet"]
+            isOneToOne: true
+            referencedRelation: "wallets"
+            referencedColumns: ["address"]
+          },
+        ]
+      }
+      wallet_events: {
+        Row: {
+          amount: number
+          block_time: string | null
+          counterparty: string | null
+          created_at: string
+          decimals: number
+          first_seen_at: string
+          id: string
+          kind: string
+          mint: string | null
+          movement_index: number
+          payload_hash: string
+          quote_amount: number | null
+          quote_mint: string | null
+          signature: string
+          slot: number
+          source: string
+          wallet: string
+        }
+        Insert: {
+          amount: number
+          block_time?: string | null
+          counterparty?: string | null
+          created_at?: string
+          decimals: number
+          first_seen_at: string
+          id?: string
+          kind: string
+          mint?: string | null
+          movement_index: number
+          payload_hash: string
+          quote_amount?: number | null
+          quote_mint?: string | null
+          signature: string
+          slot: number
+          source: string
+          wallet: string
+        }
+        Update: {
+          amount?: number
+          block_time?: string | null
+          counterparty?: string | null
+          created_at?: string
+          decimals?: number
+          first_seen_at?: string
+          id?: string
+          kind?: string
+          mint?: string | null
+          movement_index?: number
+          payload_hash?: string
+          quote_amount?: number | null
+          quote_mint?: string | null
+          signature?: string
+          slot?: number
+          source?: string
+          wallet?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallet_events_wallet_fkey"
+            columns: ["wallet"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["address"]
+          },
+        ]
+      }
       wallets: {
         Row: {
           address: string
@@ -1309,7 +1406,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      ingest_wallet_events: {
+        Args: { p_cursor: Json; p_events: Json; p_wallet: unknown }
+        Returns: number
+      }
     }
     Enums: {
       [_ in never]: never

@@ -9,7 +9,10 @@ import {
   LeaseManager,
   ledgerExpectations,
   chargeProviderSpend,
+  ingestWalletEvents,
+  listTrackedWallets,
   loadProviderSpend,
+  walletCursor,
   lifecycleForSignature,
   listAssetsForEvaluation,
   listCustodyAccounts,
@@ -39,6 +42,7 @@ import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
 import { runEligibilityCycle } from './roles/eligibility.js';
 import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
+import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
 import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './roles/market-ingest.js';
 
 /**
@@ -56,6 +60,7 @@ import { initialIngestState, runMarketIngestCycle, type MarketRepo } from './rol
  *   eligibility    chain-truth reads + analytics corroboration → §6.2 records (needs SOLANA_RPC_URL and BIRDEYE_API_KEY)
  *   held-asset-safety  open positions: chain truth, sell probe, emergency-pool re-verification → §7.5 safety state (same needs)
  *   reconciliation  chain/custody truth per trading account, movements via Helius, unknown-movement pause (D9; needs SOLANA_RPC_URL; HELIUS_API_KEY to explain movements)
+ *   tracked-wallets  Helius parsed history for intelligence.wallets → append-only wallet events, owned wallets skipped (§6.7, D26; needs HELIUS_API_KEY)
  * All roles share one Birdeye client so the purchased compute-unit allowance is one budget.
  */
 const SERVICE = 'worker' as const;
@@ -88,7 +93,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -150,6 +155,10 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('reconciliation')) {
     if (!env.SOLANA_RPC_URL) logger.warn('roles_disabled', { roles: ['reconciliation'], reason: 'SOLANA_RPC_URL not set' });
     else loops.push(reconciliationLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  }
+  if (roles.has('tracked-wallets')) {
+    if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
+    else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
   }
   await Promise.all(loops);
   await writes;
@@ -295,6 +304,28 @@ async function reconciliationLoop(env: WorkerEnv, logger: Logger, shared: Shared
   logger.info('reconciliation_starting', { intervalMs, policyVersion: DEFAULT_RECONCILIATION_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, helius: helius !== null, holder: shared.holder });
   await loopUnderLease('reconciliation', intervalMs, logger, shared, async () => {
     await runReconciliationCycle(deps);
+  });
+}
+
+async function trackedWalletsLoop(env: WorkerEnv, logger: Logger, shared: Shared, heliusKey: string): Promise<void> {
+  const intervalMs = env.TRACKED_WALLETS_INTERVAL_MS;
+  const helius = new HeliusClient({ apiKey: heliusKey, clock: systemClock });
+  const { sql } = shared;
+  const deps = {
+    helius,
+    repo: {
+      listTrackedWallets: () => listTrackedWallets(sql),
+      listOwnedAddresses: () => listOwnedAddresses(sql),
+      walletCursor: (wallet: Parameters<typeof walletCursor>[1]) => walletCursor(sql, wallet),
+      ingestWalletEvents: (wallet: Parameters<typeof ingestWalletEvents>[1], events: Parameters<typeof ingestWalletEvents>[2], cursor: Parameters<typeof ingestWalletEvents>[3]) => ingestWalletEvents(sql, wallet, events, cursor),
+    },
+    clock: systemClock,
+    logger,
+    config: { pageSize: 100, maxPagesPerWallet: 3 },
+  };
+  logger.info('tracked_wallets_starting', { intervalMs, pageSize: deps.config.pageSize, holder: shared.holder });
+  await loopUnderLease('tracked-wallets', intervalMs, logger, shared, async () => {
+    await runTrackedWalletsCycle(deps);
   });
 }
 

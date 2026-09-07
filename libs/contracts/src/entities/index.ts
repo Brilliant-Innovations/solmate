@@ -13,3 +13,4 @@ export * from './step-up.js';
 export * from './audit.js';
 export * from './safety.js';
 export * from './onchain.js';
+export * from './wallet-events.js';
