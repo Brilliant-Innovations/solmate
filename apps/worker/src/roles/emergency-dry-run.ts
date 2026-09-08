@@ -30,7 +30,7 @@ export interface EmergencyDryRunDeps {
    * (signatures are not verified in simulation), so the swap itself is exercised rather than
    * stopping at the missing source account. Null → the trading wallet is used anyway.
    */
-  standInPayer?: (mint: MintAddress) => Promise<string | null>;
+  standInPayer?: (mint: MintAddress) => Promise<{ owner: string; tokenAccount: string } | null>;
   policy: EmergencyRoutePolicy;
   adapters?: readonly DirectPoolAdapter[];
   clock: Clock;
@@ -97,16 +97,18 @@ export async function runEmergencyDryRunCycle(deps: EmergencyDryRunDeps): Promis
     try {
       const amountIn = dryRunAmount(snapshot, t.decimals);
       let user = deps.tradingWallet;
+      let userSource: string | undefined;
       let payerKind: 'TRADING_WALLET' | 'STAND_IN_HOLDER' = 'TRADING_WALLET';
       if (!t.held && deps.standInPayer && deps.policy.supportedPrograms.includes(hop.program)) {
         const holder = await deps.standInPayer(t.mint).catch(() => null);
         if (holder) {
-          user = holder;
+          user = holder.owner;
+          userSource = holder.tokenAccount;
           payerKind = 'STAND_IN_HOLDER';
         }
       }
       const r: DryRunResult & { build: EmergencyBuild | null } = await runEmergencyDryRun({
-        hop, user, amountIn, slippageBps: deps.config.dryRunSlippageBps ?? deps.policy.dryRunSlippageBps, policy: deps.policy, reader: deps.reader, adapters: deps.adapters, now,
+        hop, user, userSource, amountIn, slippageBps: deps.config.dryRunSlippageBps ?? deps.policy.dryRunSlippageBps, policy: deps.policy, reader: deps.reader, adapters: deps.adapters, now,
       });
       report.ran++;
       report.outcomes[r.class] = (report.outcomes[r.class] ?? 0) + 1;

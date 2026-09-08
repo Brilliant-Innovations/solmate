@@ -181,7 +181,8 @@ import { runNotificationsCycle, type NotificationsDeps } from './roles/notificat
 import { runShadowSyncCycle, type ShadowSyncDeps, type ShadowSyncState } from './roles/shadow-sync.js';
 import { runJournalImportCycle, type JournalImportDeps } from './roles/journal-import.js';
 import { runEmergencyDryRunCycle, type EmergencyDryRunDeps } from './roles/emergency-dry-run.js';
-import { SimulationRpcClient } from '@sol-agent-trader/execution';
+import { isOnCurve, SimulationRpcClient } from '@sol-agent-trader/execution';
+import { base58Decode } from '@sol-agent-trader/solana-hard-state';
 import { DEFAULT_EMERGENCY_ROUTE_POLICY } from '@sol-agent-trader/contracts';
 import { dryRunTargets, latestEmergencySnapshots } from '@sol-agent-trader/db/server';
 import { FileShadowJournal } from './shadow/journal.js';
@@ -1637,11 +1638,13 @@ async function emergencyDryRunLoop(env: WorkerEnv, logger: Logger, shared: Share
       const addresses = largest.value.slice(0, 5).map((a) => a.address);
       if (addresses.length === 0) return null;
       const parsed = await rpc.getMultipleAccountsParsed(addresses);
-      for (const acc of parsed.value) {
+      for (const [i, acc] of parsed.value.entries()) {
         const info = (acc?.data as { parsed?: { info?: { owner?: string } } } | undefined)?.parsed?.info;
-        if (!info?.owner) continue;
+        const tokenAccount = addresses[i];
+        // program-owned authorities (pool vaults, PDAs) cannot pay fees or sign; only a real wallet with SOL stands in
+        if (!info?.owner || !tokenAccount || !isOnCurve(base58Decode(info.owner))) continue;
         const balance = await rpc.getBalance(info.owner);
-        if (balance.value >= 10_000_000) return info.owner;
+        if (balance.value >= 10_000_000) return { owner: info.owner, tokenAccount };
       }
       return null;
     },

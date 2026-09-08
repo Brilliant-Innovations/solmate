@@ -59,7 +59,7 @@ describe('emergency-dry-run role (§14.6, D33)', () => {
       },
       reader: reader(),
       tradingWallet: WALLET,
-      standInPayer: async (mint) => { standIns.push(mint); return 'GcaEn64W365GziEmvpLvAkjAW7wHjnPfjx71KVQNPmjE'; },
+      standInPayer: async (mint) => { standIns.push(mint); return { owner: 'GcaEn64W365GziEmvpLvAkjAW7wHjnPfjx71KVQNPmjE', tokenAccount: 'BaorCoZHp26WNmWZEJPKJYUQ98D4mRtx18v4euTukPT3' }; },
       policy: DEFAULT_EMERGENCY_ROUTE_POLICY,
       clock: fixedClock(NOW),
       logger,

@@ -106,6 +106,8 @@ export interface EmergencyBuildInput {
   user: string;
   /** The caller's clock; pools with an open time are judged against it (§18.2: no wall clock inside libraries). */
   now: Instant;
+  /** Source token account to debit; defaults to the user's ATA for the input mint. A stand-in holder's real account goes here. */
+  userSource?: string;
   amountIn: bigint;
   slippageBps: number;
   policy: Pick<EmergencyRoutePolicy, 'computeUnitLimit' | 'computeUnitPriceMicroLamports'>;
@@ -130,7 +132,7 @@ export async function buildEmergencyExit(input: EmergencyBuildInput): Promise<Em
   const quote = adapter.quote(state, input.hop.inputMint, input.amountIn);
   const inputProgram = input.hop.inputMint === state.mintA ? state.tokenProgramA : state.tokenProgramB;
   const outputProgram = input.hop.inputMint === state.mintA ? state.tokenProgramB : state.tokenProgramA;
-  const userSource = associatedTokenAddress(input.user, input.hop.inputMint, inputProgram);
+  const userSource = input.userSource ?? associatedTokenAddress(input.user, input.hop.inputMint, inputProgram);
   const userDestination = associatedTokenAddress(input.user, quote.outputMint, outputProgram);
   const expected = BigInt(quote.expectedOutputAmount);
   const minimumAmountOut = (expected * BigInt(10_000 - input.slippageBps)) / 10_000n;
