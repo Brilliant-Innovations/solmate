@@ -17,3 +17,4 @@ export * from './chain/observer.js';
 export * from './validate/bounds.js';
 export * from './chain/custody.js';
 export * from './emergency/plan.js';
+export * from './client/executor-client.js';

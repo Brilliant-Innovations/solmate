@@ -37,6 +37,8 @@ export const EXCLUSIVE_CREDENTIALS = {
   signerCredential: 'TURNKEY_API_PRIVATE_KEY',
   signerCredentialPublic: 'TURNKEY_API_PUBLIC_KEY',
   emergencyOperatorPrivateKey: 'EMERGENCY_OPERATOR_KEY_PKCS8',
+  /** Throwaway development signer key; execution-service only, never with live capability on mainnet (D47). */
+  softwareSignerKey: 'SOFTWARE_SIGNER_KEY_PKCS8',
 } as const;
 
 function forbiddenIssues(env: Record<string, unknown>, names: readonly string[], service: string): z.core.$ZodIssue[] {
@@ -86,6 +88,7 @@ export function parseWebEnv(env: Record<string, string | undefined>) {
       EXCLUSIVE_CREDENTIALS.signerCredential,
       EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      EXCLUSIVE_CREDENTIALS.softwareSignerKey,
       'SUPABASE_DB_URL',
       'DATABASE_URL',
     ],
@@ -104,6 +107,9 @@ export const WorkerEnv = Common.extend({
   PROJECTION_SIGNING_PUBLIC_KEY: Ed25519PublicKeyHex,
   EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
   SENTRY_DSN_WORKER: Url.optional(),
+  /** Executor internal API (§15.8); absent in paper-only profiles. */
+  EXECUTION_SERVICE_URL: Url.optional(),
+  INTERNAL_API_SECRET: z.string().regex(/^[0-9a-f]{64,}$/).optional(),
   // Market-data providers (M4). Absent key = that provider's roles stay disabled and report FAILED.
   BIRDEYE_API_KEY: NonEmpty.optional(),
   BIRDEYE_TIER: z.enum(['STANDARD', 'LITE', 'STARTER', 'PREMIUM', 'BUSINESS']).default('STANDARD'),
@@ -156,6 +162,7 @@ export function parseWorkerEnv(env: Record<string, string | undefined>) {
       EXCLUSIVE_CREDENTIALS.signerCredential,
       EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      EXCLUSIVE_CREDENTIALS.softwareSignerKey,
     ],
     'worker',
     env,
@@ -183,6 +190,7 @@ export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) 
       EXCLUSIVE_CREDENTIALS.signerCredential,
       EXCLUSIVE_CREDENTIALS.signerCredentialPublic,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      EXCLUSIVE_CREDENTIALS.softwareSignerKey,
       'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY',
       'BIRDEYE_API_KEY',
@@ -236,6 +244,16 @@ export const ExecutionServiceEnv = Common.extend({
   TURNKEY_WALLET_ADDRESS: SolanaAddress.optional(),
   EXECUTOR_JOURNAL_PATH: NonEmpty,
   SENTRY_DSN_EXECUTION_SERVICE: Url.optional(),
+  /** host:port for the worker-facing internal API (§15.8). Loopback or private network only. */
+  INTERNAL_API_LISTEN: z.string().regex(/^.*:d{1,5}$/).default('127.0.0.1:8791'),
+  /** Shared HMAC secrets (hex, ≥32 bytes each) accepted on the internal API; several allow rotation. Required to serve. */
+  INTERNAL_API_SECRETS: Csv(z.string().regex(/^[0-9a-f]{64,}$/)).optional(),
+  /** host:port for the out-of-band operator endpoint (D25 plane 1); a separate listener from the internal API. */
+  OUT_OF_BAND_LISTEN: z.string().regex(/^.*:d{1,5}$/).default('127.0.0.1:8792'),
+  /** Required when SIGNER_BACKEND=SOFTWARE_DEV; refused elsewhere. */
+  SOFTWARE_SIGNER_KEY_PKCS8: Pkcs8Hex.optional(),
+  JUPITER_API_KEY: NonEmpty.optional(),
+  JUPITER_REQUESTS_PER_SECOND: z.coerce.number().positive().max(100).default(1),
 });
 
 const ExecutionServiceEnvChecked = ExecutionServiceEnv.superRefine((v, ctx) => {
@@ -256,6 +274,7 @@ export function parseExecutionServiceEnv(env: Record<string, string | undefined>
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
+      EXCLUSIVE_CREDENTIALS.softwareSignerKey,
       'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY',
       'LUNARCRUSH_API_KEY',
