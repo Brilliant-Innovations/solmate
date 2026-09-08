@@ -84,7 +84,7 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     const reject = (reasons: string[], quote: Quote | null): DetailedExecution => ({
       result: this.result(intent.id, attemptId, request.executionPath, machine.state, quote, simulation, null, null, null, reasons),
       order,
-      attempt: this.toAttempt(attemptId, order, machine, times, requestId, router),
+      attempt: this.toAttempt(attemptId, order, machine, times, requestId, router, reasons),
       fill: null,
       decisionQuote: quote,
       outcome: null,
@@ -216,7 +216,7 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
         const dead = attemptTransition(machine, { type: 'CONCLUSIVELY_DEAD', at: this.opts.clock.now(), blockHeightExpired: proof.blockHeightExpired, signatureHistoryEmpty: proof.signatureHistoryEmpty, reason: exec.error ?? reason });
         if (dead.ok) machine = dead.attempt;
       }
-      return { result: this.result(intent.id, attemptId, request.executionPath, machine.state, built.quote, simulation, signedTxHash, signature, null, [reason]), order, attempt: this.toAttempt(attemptId, order, machine, times, requestId, router), fill: null, decisionQuote: built.quote, outcome: null };
+      return { result: this.result(intent.id, attemptId, request.executionPath, machine.state, built.quote, simulation, signedTxHash, signature, null, [reason]), order, attempt: this.toAttempt(attemptId, order, machine, times, requestId, router, [reason]), fill: null, decisionQuote: built.quote, outcome: null };
     }
 
     // 13. Observe: the provider reports confirmation; finality comes from our own chain read.
@@ -262,12 +262,14 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     return { intentId, attemptId, state, executionPath: path, quote, simulation, signedTxHash, txSignature, fillId, paper: null, rejectionReasons, completedAt: this.opts.clock.now() };
   }
 
-  private toAttempt(id: Uuid, order: Order, m: OrderAttemptRecord, t: { quoteExpiresAt: Instant | null; signedAt: Instant | null; submittedAt: Instant | null; confirmedAt: Instant | null; finalizedAt: Instant | null }, requestId: string | null, router: string | null): OrderAttempt {
+  private toAttempt(id: Uuid, order: Order, m: OrderAttemptRecord, t: { quoteExpiresAt: Instant | null; signedAt: Instant | null; submittedAt: Instant | null; confirmedAt: Instant | null; finalizedAt: Instant | null }, requestId: string | null, router: string | null, rejectionReasons: readonly string[] = []): OrderAttempt {
     return {
       id, orderId: order.id, intentId: order.intentId, authorizationHash: order.authorizationHash, attemptNumber: 1, state: m.state, jupiterRequestId: requestId, router, signedTxHash: m.signedTxHash, walletSignature: m.expectedTxSignature, expectedTxSignature: m.expectedTxSignature,
       blockhash: null, lastValidBlockHeight: m.lastValidBlockHeight, quoteExpiresAt: t.quoteExpiresAt, signedAt: t.signedAt, submittedAt: t.submittedAt,
       submissions: m.submissionPaths.map((path) => ({ at: t.submittedAt ?? order.createdAt, path, ok: true, providerResponseSignature: m.expectedTxSignature, error: null })),
-      confirmedAt: t.confirmedAt, confirmedSlot: m.confirmedSlot, finalizedAt: t.finalizedAt, finalizedSlot: m.finalizedSlot, reorgDetectedAt: m.reorgDetectedAt, notLandedReason: m.notLandedReason, reconciliationOutcome: null, createdAt: order.createdAt,
+      confirmedAt: t.confirmedAt, confirmedSlot: m.confirmedSlot, finalizedAt: t.finalizedAt, finalizedSlot: m.finalizedSlot, reorgDetectedAt: m.reorgDetectedAt, notLandedReason: m.notLandedReason,
+      // §14.5: a pre-submit refusal (CHASE_EXCEEDED, quote invalid, structure) is recorded on the row, not only in the response.
+      reconciliationOutcome: rejectionReasons.length ? `REJECTED:${rejectionReasons[0]}` : null, createdAt: order.createdAt,
     };
   }
 }

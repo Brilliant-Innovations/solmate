@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { addMs, toInstant, type Amount, type Bps, type DiscoveredToken, type Fill, type MintAddress, type Order, type OrderAttempt, type Sha256Hex, type Slot, type SolanaAddress, type TradeIntent, type TxSignature, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import { upsertDiscoveredAssets } from './market-repo.js';
 import { createSql, databaseUrlFromEnv, type Sql } from './sql.js';
-import { createIntent, ensurePaperAccount, ensureSleeve, finishAttempt, journalAttempt, recordRiskEvaluation } from './paper-repo.js';
+import { createIntent, ensurePaperAccount, ensureSleeve, finishAttempt, journalAttempt, openPosition, recordRiskEvaluation } from './paper-repo.js';
+import { listOpenPositionsForAccount } from './positions-repo.js';
 import { ensureStrategyVersion } from './strategies-repo.js';
 import { insertCandidate } from './candidates-repo.js';
 import { insertFeatureSnapshot } from './features-repo.js';
@@ -111,6 +112,18 @@ describe.skipIf(!url)('restart recovery and finality persistence (§21.3, §14.7
     expect(reorg).toEqual({ attemptId: a3.attempt.id, fillPromoted: false });
     expect((await sql<{ state: string; reorg_detected_at: string | null }[]>`select state, reorg_detected_at from trading.order_attempts where id = ${a3.attempt.id}`)[0]).toMatchObject({ state: 'REORG_PENDING' });
     expect(await state(inFlight.id)).toBe('EXECUTING');
+    // §21.3 "restart recovers open positions": an open position and its lot are untouched by recovery while stale intents settle
+    const positionId = randomUUID() as Uuid;
+    const lotId = randomUUID() as Uuid;
+    await openPosition(sql,
+      { id: positionId, accountId: account.id, assetId, mint, quantity: '1000' as Amount, averageEntryPrice: 1, costBasisBaseUnits: '1000' as Amount, realizedPnlBaseUnits: '0' as never, unrealizedPnlBaseUnits: null, stop: null, target: null, unreviewedStop: null, custodySplit: [], status: 'OPEN', reviewState: 'REVIEWED', reviewStateReason: null, reviewStateSince: NOW, lastReviewedCycleId: null, nextReassessmentAt: null, safetyState: 'NORMAL', lotIds: [], openedAt: NOW, closedAt: null },
+      { id: lotId, positionId, sleeveId: sleeve.id, strategyVersionId: versionId, assetId, mint, quantity: '1000' as Amount, costBasisBaseUnits: '1000' as Amount, entryIntentId: finalized.id, entryFillIds: [], exitFillIds: [], realizedPnlBaseUnits: '0' as never, protectionMode: 'MONITORED_EXIT', providerOrderId: null, reservedForProtection: '0' as Amount, status: 'OPEN', openedAt: NOW, closedAt: null });
+    expect(await recoveryFacts(sql, account.id)).toMatchObject({ openPositions: 1, openLots: 1 });
+    await settleIntentsFromAttempts(sql, account.id);
+    await expireStaleIntents(sql, account.id, NOW);
+    await failOrphanedExecuting(sql, account.id, NOW);
+    expect((await listOpenPositionsForAccount(sql, account.id, 10)).map((x) => [x.id, x.lots.length, x.quantity])).toEqual([[positionId, 1, '1000']]);
+    expect(await recoveryFacts(sql, account.id)).toMatchObject({ openPositions: 1, openLots: 1 });
     expect(await sleeveConflicts(sql, account.id)).toEqual([]);
   });
 });

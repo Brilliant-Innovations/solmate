@@ -81,6 +81,7 @@ describe('execution harness (§24.3): the pipeline over a fake Jupiter/Solana', 
     expect(r.outcome).toBe('EXECUTED');
     if (r.outcome !== 'EXECUTED') return;
     expect(r.execution.result.rejectionReasons[0]).toBe('CHASE_EXCEEDED');
+    expect(r.execution.attempt.reconciliationOutcome).toBe('REJECTED:CHASE_EXCEEDED'); // CHASE_REJECT recorded on the attempt row (M7)
     expect(r.execution.result.signedTxHash).toBeNull();
     expect(kinds(w)).toEqual(['ATTEMPT_PREPARED', 'EXPOSURE_LEDGER_UPDATED', 'EXPOSURE_LEDGER_UPDATED', 'ATTEMPT_RESULT']);
     expect(w.pipeline.openExposure()).toBe(0n);

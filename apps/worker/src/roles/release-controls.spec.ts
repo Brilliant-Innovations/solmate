@@ -1,4 +1,6 @@
-import { addMs, fixedClock, fixtures, generateSigningKeyPair, type CapitalAttestation, type Instant, type Release, type ReleaseAttestation, type Sha256Hex, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, fixedClock, fixtures, generateSigningKeyPair, S0_TINY_LIVE_VERSION_ID, type CapitalAttestation, type Instant, type Release, type ReleaseAttestation, type Sha256Hex, type Uuid } from '@sol-agent-trader/contracts';
+import { armingPreconditions } from '@sol-agent-trader/risk';
+import { releaseFor, s0TinyLiveVersion } from '@sol-agent-trader/strategies';
 import type { PendingControlRequest, StepUpEvidenceRow } from '@sol-agent-trader/db/server';
 import { createLogger } from '@sol-agent-trader/observability';
 import { runApprovalsCycle, type ApprovalsDeps, type ApprovalsRepo } from './approvals.js';
@@ -92,5 +94,39 @@ describe('release promotion and arming through control requests (§12.4, §15.9,
     expect(twoSleeves.attestations).toEqual([]);
     const noCeiling = fake({ release: release('ELIGIBLE_LIVE'), requests: [request('ARM_RELEASE', { releaseId: IDS.release, accountId: IDS.account })] });
     expect((await runApprovalsCycle(await deps(noCeiling.repo, { readinessPermits: async () => true, liveCapabilityEnabled: true }))).refused).toEqual({ MALFORMED_PAYLOAD: 1 });
+  });
+});
+
+describe('the tiny-live S0_SAFE variant binds to a LIVE_APPROVAL Release (ADR-0004; M7 exit gate)', () => {
+  it('declares a tier and intent expiry above the reaction floor, LIVE_APPROVAL only, and its Release can be promoted, armed and accepted by the §15.9 preconditions', async () => {
+    const v = s0TinyLiveVersion('abcdef1', T0);
+    expect(v.versionId).toBe(S0_TINY_LIVE_VERSION_ID);
+    expect(v).toMatchObject({ variant: 'tiny-live', speedTier: 'T1_MOMENTUM', humanReactionFloorMs: 30_000, liveIntentExpiryMs: 120_000 });
+    expect(v.liveIntentExpiryMs).toBeGreaterThan(v.humanReactionFloorMs);
+    expect(v.eligibleCapitalAuthorities).toContain('LIVE_APPROVAL');
+    expect(v.eligibleCapitalAuthorities).not.toContain('LIVE_AUTO');
+    const draft = await releaseFor(v, { contractSetDigest: 'ab'.repeat(32) as Sha256Hex }, T0);
+    expect(draft.status).toBe('DRAFT');
+    expect(draft.binding.strategyVersionId).toBe(v.versionId);
+    expect(draft.binding.skillVersionId).toBeNull(); // deterministic: no Trading Skill, so LIVE_AUTO can never bind
+    // DRAFT → PAPER_VALIDATED → ELIGIBLE_LIVE through an admin PROMOTE attestation
+    const promote = fake({ release: draft, requests: [request('PROMOTE_RELEASE', { releaseId: draft.id })] });
+    expect((await runApprovalsCycle(await deps(promote.repo))).promoted).toBe(1);
+    expect(promote.current()?.status).toBe('ELIGIBLE_LIVE');
+    // ELIGIBLE_LIVE → ARMED with readiness, live capability and a ceiling
+    const arm = fake({ release: promote.current(), requests: [request('ARM_RELEASE', { releaseId: draft.id, accountId: IDS.account, capitalCeilingUsd: 100 })] });
+    expect((await runApprovalsCycle(await deps(arm.repo, { readinessPermits: async () => true, liveCapabilityEnabled: true }))).armed).toBe(1);
+    const armed = arm.current()!;
+    const attestation = arm.attestations[0]!;
+    expect(armed.status).toBe('ARMED');
+    expect(attestation).toMatchObject({ purpose: 'ARM', releaseDigest: draft.digest });
+    expect(arm.capital[0]).toMatchObject({ releaseId: draft.id, ceilingUsd: 100 });
+    const now = addMs(T0, 2_000);
+    const base = { liveCapabilityEnabled: true, release: armed, attestation, readinessPermits: true, stepUpVerified: true, now };
+    expect(armingPreconditions({ ...base, requestedAuthority: 'LIVE_APPROVAL' })).toEqual({ ok: true });
+    expect(armingPreconditions({ ...base, requestedAuthority: 'PAPER', liveCapabilityEnabled: false, release: null, attestation: null, readinessPermits: false, stepUpVerified: false })).toEqual({ ok: true });
+    expect(armingPreconditions({ ...base, requestedAuthority: 'LIVE_APPROVAL', readinessPermits: false })).toEqual({ ok: false, missing: ['Live Readiness verdict'] });
+    expect(armingPreconditions({ ...base, requestedAuthority: 'LIVE_APPROVAL', release: draft })).toEqual({ ok: false, missing: ['ARMED Release'] });
+    expect(armingPreconditions({ ...base, requestedAuthority: 'LIVE_APPROVAL', attestation: { ...attestation, expiresAt: T0 } })).toEqual({ ok: false, missing: ['valid ARM attestation'] });
   });
 });
