@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { Candidate, Clock, FeatureSnapshot, Instant, ReasonCode, S0SafetyGatePolicy, StrategyVersion, Uuid } from '@sol-agent-trader/contracts';
+import { instantToMs, type Candidate, type Clock, type FeatureSnapshot, type Instant, type ReasonCode, type S0SafetyGatePolicy, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
-import { decideS0, type S0Decision } from '@sol-agent-trader/strategies';
+import { decideS0, expireS0, type S0Decision } from '@sol-agent-trader/strategies';
+import type { ActionCycle } from '@sol-agent-trader/contracts';
 
 /**
  * Worker role `s0` (blueprint §12.1, D30; execution plan M5a). For every DETECTED candidate not
@@ -14,6 +15,8 @@ import { decideS0, type S0Decision } from '@sol-agent-trader/strategies';
 export interface S0Repo {
   listAwaiting(strategyVersionId: StrategyVersion['versionId'], now: Instant, limit: number): Promise<{ candidate: Candidate; snapshot: FeatureSnapshot }[]>;
   persist(candidateId: Uuid, decisions: S0Decision[], status: 'QUALIFIED' | 'REJECTED', reason: ReasonCode | null): Promise<void>;
+  /** D32: EXPIRED cycles for a candidate that outlived the strategy's candidate-age contract. */
+  persistExpired(candidateId: Uuid, cycles: ActionCycle[]): Promise<void>;
 }
 
 export interface S0Deps {
@@ -29,17 +32,26 @@ export interface S0CycleReport {
   scanned: number;
   cleared: number;
   rejected: number;
+  expired: number;
   rejectionsByCode: Record<string, number>;
   errors: { candidateId: Uuid; error: string }[];
 }
 
 export async function runS0Cycle(deps: S0Deps): Promise<S0CycleReport> {
   const now = deps.clock.now();
-  const report: S0CycleReport = { scanned: 0, cleared: 0, rejected: 0, rejectionsByCode: {}, errors: [] };
+  const report: S0CycleReport = { scanned: 0, cleared: 0, rejected: 0, expired: 0, rejectionsByCode: {}, errors: [] };
   const awaiting = await deps.repo.listAwaiting(deps.strategies.SAFE.versionId, now, deps.config.batchSize);
   report.scanned = awaiting.length;
   for (const { candidate, snapshot } of awaiting) {
     try {
+      const age = instantToMs(now) - instantToMs(candidate.discoveredAt);
+      if (age > deps.strategies.SAFE.maxCandidateAgeMs) {
+        const cycles = [expireS0({ cycleId: randomUUID() as Uuid, candidate, strategy: deps.strategies.RAW, now }), expireS0({ cycleId: randomUUID() as Uuid, candidate, strategy: deps.strategies.SAFE, now })];
+        await deps.repo.persistExpired(candidate.id, cycles);
+        report.expired++;
+        deps.logger.info('s0_expired', { candidateId: candidate.id, assetId: candidate.assetId, ageMs: age, maxCandidateAgeMs: deps.strategies.SAFE.maxCandidateAgeMs, cycleIds: cycles.map((c) => c.id) });
+        continue;
+      }
       const ids = () => ({ cycleId: randomUUID() as Uuid, proposalId: randomUUID() as Uuid, reviewId: randomUUID() as Uuid });
       const raw = decideS0({ variant: 'RAW', ids: ids(), candidate, snapshot, strategy: deps.strategies.RAW, gatePolicy: deps.gatePolicy, now });
       const safe = decideS0({ variant: 'SAFE', ids: ids(), candidate, snapshot, strategy: deps.strategies.SAFE, gatePolicy: deps.gatePolicy, now });
@@ -56,7 +68,7 @@ export async function runS0Cycle(deps: S0Deps): Promise<S0CycleReport> {
       report.errors.push({ candidateId: candidate.id, error: err instanceof Error ? err.message : String(err) });
     }
   }
-  deps.logger.info('s0_cycle', { scanned: report.scanned, cleared: report.cleared, rejected: report.rejected, rejectionsByCode: report.rejectionsByCode, errors: report.errors.length, gate: deps.gatePolicy.version });
+  deps.logger.info('s0_cycle', { scanned: report.scanned, cleared: report.cleared, rejected: report.rejected, expired: report.expired, rejectionsByCode: report.rejectionsByCode, errors: report.errors.length, gate: deps.gatePolicy.version });
   for (const e of report.errors) deps.logger.warn('s0_candidate_failed', { candidateId: e.candidateId, error: e.error });
   return report;
 }

@@ -10,8 +10,8 @@ import { Bps, Milliseconds, VersionId } from '../primitives.js';
  */
 
 export const S0_STRATEGY_VERSION_IDS = {
-  RAW: 'S0_RAW@1.0.0' as VersionId,
-  SAFE: 'S0_SAFE@1.0.0' as VersionId,
+  RAW: 'S0_RAW@1.1.0' as VersionId,
+  SAFE: 'S0_SAFE@1.1.0' as VersionId,
 } as const;
 
 export const S0Variant = z.enum(['RAW', 'SAFE']);

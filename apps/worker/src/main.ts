@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_COHORT_TAXONOMY, DEFAULT_CORRELATION_CLUSTER_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_COHORT_TAXONOMY, DEFAULT_CORRELATION_CLUSTER_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, DEFAULT_MARKET_REGIME_POLICY, FEATURE_ENGINE_V2, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
   applyExit,
   coldStartFacts,
@@ -38,6 +38,7 @@ import {
   windDownFacts,
   listCandidatesAwaitingStrategy,
   persistS0Decisions,
+  persistS0Expiry,
   heldBucketTimes,
   insertEmergencyRouteSnapshot,
   insertSnapshot,
@@ -426,13 +427,16 @@ async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pro
       latestEligibility: (assetId: Parameters<typeof latestEligibility>[1]) => latestEligibility(sql, assetId),
       latestMarketSnapshotId: (assetId: Parameters<typeof latestMarketSnapshotId>[1], asOf: Parameters<typeof latestMarketSnapshotId>[2]) => latestMarketSnapshotId(sql, assetId, asOf),
       insertFeatureSnapshot: (snapshot: Parameters<typeof insertFeatureSnapshot>[1]) => insertFeatureSnapshot(sql, snapshot),
+      listActiveMemberships: async () => (await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version)).map((m) => ({ assetId: m.assetId, cohortName: m.cohortName })),
+      solReferenceReturn1h: (asOf: Parameters<typeof latestFeatureValueByMint>[4]) => latestFeatureValueByMint(sql, WSOL_MINT, 'ret_1h', 10 * 60_000, asOf),
     },
     clock: systemClock,
     logger,
-    spec: FEATURE_ENGINE_V1,
+    spec: FEATURE_ENGINE_V2,
+    regimePolicy: DEFAULT_MARKET_REGIME_POLICY,
     config: { batchSize: 200 },
   };
-  logger.info('features_starting', { intervalMs, engine: FEATURE_ENGINE_V1.version, holder: shared.holder });
+  logger.info('features_starting', { intervalMs, engine: FEATURE_ENGINE_V2.version, regime: DEFAULT_MARKET_REGIME_POLICY.version, holder: shared.holder });
   await loopUnderLease('features', intervalMs, logger, shared, async () => {
     await runFeaturesCycle(deps);
   });
@@ -480,7 +484,7 @@ async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
     },
     clock: systemClock,
     logger,
-    spec: FEATURE_ENGINE_V1,
+    spec: FEATURE_ENGINE_V2,
     trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY,
     eligibility: DEFAULT_ELIGIBILITY_POLICY,
     selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY,
@@ -506,6 +510,7 @@ async function s0Loop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<v
     repo: {
       listAwaiting: (versionId: Parameters<typeof listCandidatesAwaitingStrategy>[1], now: Parameters<typeof listCandidatesAwaitingStrategy>[2], limit: number) => listCandidatesAwaitingStrategy(sql, versionId, now, limit),
       persist: (candidateId: Parameters<typeof persistS0Decisions>[1], decisions: Parameters<typeof persistS0Decisions>[2], status: Parameters<typeof persistS0Decisions>[3], reason: Parameters<typeof persistS0Decisions>[4]) => persistS0Decisions(sql, candidateId, decisions, status, reason),
+      persistExpired: (candidateId: Parameters<typeof persistS0Expiry>[1], cycles: Parameters<typeof persistS0Expiry>[2]) => persistS0Expiry(sql, candidateId, cycles),
     },
     clock: systemClock,
     logger,
@@ -690,7 +695,7 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
         await persistRuntimeTransition(sql, t);
       },
       saveColdStartGates: (id: Uuid, gates: Parameters<typeof saveColdStartGates>[2]) => saveColdStartGates(sql, id, gates),
-      coldStartFacts: (now: Parameters<typeof coldStartFacts>[1]) => coldStartFacts(sql, now, { requiredFeatures: FEATURE_ENGINE_V1.requiredForScoring, featureWindowMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs, safetyMaxAgeMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs }),
+      coldStartFacts: (now: Parameters<typeof coldStartFacts>[1]) => coldStartFacts(sql, now, { requiredFeatures: FEATURE_ENGINE_V2.requiredForScoring, featureWindowMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs, safetyMaxAgeMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs }),
       windDownFacts: (accountId: Uuid) => windDownFacts(sql, accountId),
       listPendingControlRequests: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
       stepUpVerifiedFor: (id: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, id, now),

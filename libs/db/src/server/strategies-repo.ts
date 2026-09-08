@@ -117,3 +117,23 @@ export async function listCyclesForCandidate(sql: Sql, candidateId: Uuid): Promi
     review: r.r_verdict ? { verdict: r.r_verdict, objections: r.r_objections ?? [], deterministicGate: r.r_gate ?? false, blocking: r.r_blocking ?? false } : null,
   }));
 }
+
+/** EXPIRED cycles for a candidate whose age passed the strategy's contract (D32): recorded, and the candidate leaves DETECTED as stale. */
+export async function persistS0Expiry(sql: Sql, candidateId: Uuid, cycles: ActionCycle[]): Promise<void> {
+  await sql.begin(async (tx) => {
+    const t = tx as unknown as Sql;
+    for (const c of cycles) {
+      await t`
+        insert into agents.action_cycles (id, automation_run_id, trigger_id, candidate_id, position_id, strategy_version_id, skill_version_id, guideline_version_id, speed_tier, decision_budget_ms,
+          proposed_action, proposal_id, proposer_run_ids, adversary_run_ids, verdict, reason_codes, revision_round, state, unresolved_reason, cutoffs, cleared_cutoff_version, risk_evaluation_id, intent_id, started_at, terminal_at)
+        values (${c.id}, ${c.automationRunId}, ${c.triggerId}, ${c.candidateId}, ${c.positionId}, ${c.strategyVersionId}, ${c.skillVersionId}, ${c.guidelineVersionId}, ${c.speedTier}, ${c.decisionBudgetMs},
+          ${c.proposedAction}, ${c.proposalId}, ${c.proposerRunIds}, ${c.adversaryRunIds}, ${c.verdict}, ${c.reasonCodes}, ${c.revisionRound}, ${c.state}, ${c.unresolvedReason}, ${t.json(asJson(c.cutoffs))}, ${c.clearedCutoffVersion}, ${c.riskEvaluationId}, ${c.intentId}, ${c.startedAt}, ${c.terminalAt})`;
+    }
+    const versions = [...new Set(cycles.map((c) => c.strategyVersionId))];
+    const updated = await t<{ id: string }[]>`
+      update signals.candidates set status = 'REJECTED', deterministic_rejection_reason = 'CANDIDATE_STALE',
+        strategy_version_ids = (select array(select distinct unnest(strategy_version_ids || ${versions}::core.version_id[])))
+      where id = ${candidateId} and status = 'DETECTED' returning id`;
+    if (updated.length === 0) throw new Error(`candidate ${candidateId} is no longer DETECTED`);
+  });
+}

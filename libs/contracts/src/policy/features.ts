@@ -44,13 +44,17 @@ export const FeatureName = z.enum([
   'impact_bps_large',
   'route_found_share',
   'sell_route_confirmed',
+  // §8.4 relative strength (cross-asset, computed after the per-asset vectors of the same minute)
+  'rs_universe_1h',
+  'rs_cohort_1h',
 ]);
 export type FeatureName = z.infer<typeof FeatureName>;
 
 export const FeatureEngineSpec = z.strictObject({
   version: VersionId,
   /** Closed 1m candles each indicator needs before it emits a value (D63 warm-up). */
-  lookbackBuckets: z.record(FeatureName, z.number().int().nonnegative()),
+  /** Partial: a feature absent from a version's record is not produced by that version. */
+  lookbackBuckets: z.partialRecord(FeatureName, z.number().int().nonnegative()),
   /** Indicators that must be warm before any candidate may be scored. */
   requiredForScoring: z.array(FeatureName).min(1),
 });
@@ -94,4 +98,11 @@ export const FEATURE_ENGINE_V1: FeatureEngineSpec = {
     sell_route_confirmed: 0,
   },
   requiredForScoring: ['ret_5m', 'ret_15m', 'ret_1h', 'atr_14_pct', 'rsi_14', 'ema_9_over_21', 'rel_volume_60', 'breakout_20', 'liquidity_usd', 'impact_bps_small', 'sell_route_confirmed'],
+};
+
+/** v2 adds cross-asset relative strength (§8.4); the regime label rides on the snapshot, not the vector. Strategy versions bind to one engine version. */
+export const FEATURE_ENGINE_V2: FeatureEngineSpec = {
+  version: 'features-v2' as VersionId,
+  lookbackBuckets: { ...FEATURE_ENGINE_V1.lookbackBuckets, rs_universe_1h: 61, rs_cohort_1h: 61 },
+  requiredForScoring: FEATURE_ENGINE_V1.requiredForScoring,
 };

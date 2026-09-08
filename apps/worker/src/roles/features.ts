@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { addMs, instantToMs, type AssetEligibility, type Candle, type Clock, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, instantToMs, type AssetEligibility, type Candle, type Clock, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type MarketRegime, type MarketRegimePolicy, type Uuid } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
-import { computeFeatures, marketSessionsAt } from '@sol-agent-trader/signals';
+import { classifyRegime, computeFeatures, marketSessionsAt, relativeStrength, type UniverseAsset } from '@sol-agent-trader/signals';
 
 /**
  * Worker role `features` (blueprint §6.8, §8.1–8.3, D62, D63; execution plan M5a). For every
@@ -19,6 +19,10 @@ export interface FeaturesRepo {
   latestEligibility(assetId: Uuid): Promise<Pick<AssetEligibility, 'liquidityUsd' | 'priceImpactProbes' | 'settlementRouteConfirmed'> | null>;
   latestMarketSnapshotId(assetId: Uuid, asOf: Instant): Promise<Uuid | null>;
   insertFeatureSnapshot(snapshot: FeatureSnapshot): Promise<void>;
+  /** ACTIVE taxonomy memberships (§6.3) for cohort relative strength and rotation detection. */
+  listActiveMemberships(): Promise<{ assetId: Uuid; cohortName: string }[]>;
+  /** SOL reference 1h return at or shortly before asOf (§8.4); null when the reference series is cold. */
+  solReferenceReturn1h(asOf: Instant): Promise<number | null>;
 }
 
 export interface FeaturesDeps {
@@ -26,6 +30,7 @@ export interface FeaturesDeps {
   clock: Clock;
   logger: Logger;
   spec: FeatureEngineSpec;
+  regimePolicy: MarketRegimePolicy;
   config: { batchSize: number };
 }
 
@@ -35,6 +40,7 @@ export interface FeaturesCycleReport {
   skippedCurrent: number;
   warm: number;
   cold: number;
+  regime: MarketRegime | null;
   errors: { assetId: Uuid; error: string }[];
 }
 
@@ -46,7 +52,8 @@ export function featureAsOf(now: Instant): Instant {
 }
 
 export async function runFeaturesCycle(deps: FeaturesDeps): Promise<FeaturesCycleReport> {
-  const report: FeaturesCycleReport = { assets: 0, computed: 0, skippedCurrent: 0, warm: 0, cold: 0, errors: [] };
+  const report: FeaturesCycleReport = { assets: 0, computed: 0, skippedCurrent: 0, warm: 0, cold: 0, regime: null, errors: [] };
+  const pending: { snapshot: FeatureSnapshot; warm: boolean }[] = [];
   const now = deps.clock.now();
   const asOf = featureAsOf(now);
   const lookback = Math.max(...Object.values(deps.spec.lookbackBuckets)) + 2;
@@ -78,7 +85,7 @@ export async function runFeaturesCycle(deps: FeaturesDeps): Promise<FeaturesCycl
         selfInfluenceSuppressed: false,
         spec: deps.spec,
       });
-      await deps.repo.insertFeatureSnapshot(snapshot);
+      pending.push({ snapshot, warm: warmup.ready });
       report.computed++;
       if (warmup.ready) report.warm++;
       else report.cold++;
@@ -87,7 +94,26 @@ export async function runFeaturesCycle(deps: FeaturesDeps): Promise<FeaturesCycl
     }
   }
 
-  deps.logger.info('features_cycle', { asOf, assets: report.assets, computed: report.computed, skippedCurrent: report.skippedCurrent, warm: report.warm, cold: report.cold, errors: report.errors.length, engine: deps.spec.version });
+  // Cross-asset pass (§8.4, §8.5): regime and relative strength over this minute's warm vectors, then persist.
+  const num = (s: FeatureSnapshot, n: string): number | null => (typeof s.features[n] === 'number' ? (s.features[n] as number) : null);
+  const [memberships, solReturn1h] = await Promise.all([deps.repo.listActiveMemberships(), deps.repo.solReferenceReturn1h(asOf)]);
+  const cohortsOf = new Map<Uuid, string[]>();
+  for (const m of memberships) cohortsOf.set(m.assetId, [...(cohortsOf.get(m.assetId) ?? []), m.cohortName]);
+  const universe: UniverseAsset[] = pending.map(({ snapshot }) => ({ assetId: snapshot.assetId, ret1h: num(snapshot, 'ret_1h'), relVolume60: num(snapshot, 'rel_volume_60'), cohorts: cohortsOf.get(snapshot.assetId) ?? [] }));
+  const regime = classifyRegime({ sol: { ret1h: solReturn1h }, assets: universe, policy: deps.regimePolicy });
+  const rs = relativeStrength(universe);
+  report.regime = regime.regime;
+  for (const { snapshot } of pending) {
+    const r = rs.get(snapshot.assetId);
+    const labelled: FeatureSnapshot = { ...snapshot, regime: regime.regime, features: { ...snapshot.features, rs_universe_1h: r?.rsUniverse1h ?? null, rs_cohort_1h: r?.rsCohort1h ?? null } };
+    try {
+      await deps.repo.insertFeatureSnapshot(labelled);
+    } catch (err) {
+      report.errors.push({ assetId: snapshot.assetId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  deps.logger.info('features_cycle', { asOf, assets: report.assets, computed: report.computed, skippedCurrent: report.skippedCurrent, warm: report.warm, cold: report.cold, regime: regime.regime, regimeFacts: regime.facts, errors: report.errors.length, engine: deps.spec.version, regimePolicy: deps.regimePolicy.version });
   for (const e of report.errors) deps.logger.warn('features_asset_failed', { assetId: e.assetId, error: e.error });
   return report;
 }

@@ -32,8 +32,15 @@ function fraction(part: bigint, equity: bigint): number {
 
 /** Exposure fraction per cohort over the whole book. */
 export function cohortUsage(positions: readonly OpenExposure[], memberships: readonly ActiveMembership[], equity: Amount): Map<string, GroupUsage> {
+  // One membership per (asset, cohort): a duplicated row must not count exposure twice.
+  const seen = new Set<string>();
   const byAsset = new Map<Uuid, ActiveMembership[]>();
-  for (const m of memberships) byAsset.set(m.assetId, [...(byAsset.get(m.assetId) ?? []), m]);
+  for (const m of memberships) {
+    const key = m.assetId + "|" + m.cohortName;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    byAsset.set(m.assetId, [...(byAsset.get(m.assetId) ?? []), m]);
+  }
   const totals = new Map<string, bigint>();
   for (const p of positions) {
     for (const m of byAsset.get(p.assetId) ?? []) totals.set(m.cohortName, (totals.get(m.cohortName) ?? 0n) + amountToBigInt(p.costBasis));

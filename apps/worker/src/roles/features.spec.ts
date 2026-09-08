@@ -1,4 +1,4 @@
-import { addMs, FEATURE_ENGINE_V1, fixedClock, toInstant, type AssetEligibility, type Candle, type FeatureSnapshot, type Instant, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, DEFAULT_MARKET_REGIME_POLICY, FEATURE_ENGINE_V2, fixedClock, toInstant, type AssetEligibility, type Candle, type FeatureSnapshot, type Instant, type Uuid } from '@sol-agent-trader/contracts';
 import { createLogger } from '@sol-agent-trader/observability';
 import { featureAsOf, runFeaturesCycle, type FeaturesRepo } from './features.js';
 
@@ -37,8 +37,16 @@ class MemoryRepo implements FeaturesRepo {
   async insertFeatureSnapshot(s: FeatureSnapshot) {
     this.snapshots.push(s);
   }
+  memberships: { assetId: Uuid; cohortName: string }[] = [];
+  solReturn: number | null = null;
+  async listActiveMemberships() {
+    return this.memberships;
+  }
+  async solReferenceReturn1h() {
+    return this.solReturn;
+  }
 }
-const deps = (repo: MemoryRepo) => ({ repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V1, config: { batchSize: 100 } });
+const deps = (repo: MemoryRepo) => ({ repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V2, regimePolicy: DEFAULT_MARKET_REGIME_POLICY, config: { batchSize: 100 } });
 
 describe('features role (§6.8, D62, D63)', () => {
   it('computes one point-in-time vector per asset at the closed-minute boundary, links the market snapshot and labels sessions; warm and cold are counted', async () => {
@@ -48,7 +56,7 @@ describe('features role (§6.8, D62, D63)', () => {
     expect(r).toMatchObject({ assets: 2, computed: 2, warm: 1, cold: 1, skippedCurrent: 0, errors: [] });
     const a = repo.snapshots.find((s) => s.assetId === A)!;
     expect(a.asOf).toBe(ASOF);
-    expect(a.featureEngineVersion).toBe('features-v1');
+    expect(a.featureEngineVersion).toBe('features-v2');
     expect(a.marketSnapshotId).toBe('44444444-4444-4444-8444-444444444444');
     expect(a.marketSessions).toEqual(['EUROPE']); // 12:00 UTC is Europe only (US opens 13:00 UTC)
     expect(a.features['liquidity_usd']).toBe(1_000_000);

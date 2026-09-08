@@ -5,3 +5,4 @@ export * from './features/engine.js';
 export * from './features/sessions.js';
 export * from './triggers/momentum.js';
 export * from './candidates/detector.js';
+export * from './features/regime.js';

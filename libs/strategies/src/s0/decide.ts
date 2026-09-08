@@ -34,6 +34,17 @@ export interface S0Decision {
   gate: S0GateResult;
 }
 
+/**
+ * D32 / §12.3: a candidate older than the strategy's own candidate-age contract at decision time
+ * yields an EXPIRED cycle, never a late decision. No proposal and no review exist for it.
+ */
+export function expireS0(input: { cycleId: Uuid; candidate: Candidate; strategy: StrategyVersion; now: Instant }): ActionCycle {
+  const cycle = newActionCycle({ id: input.cycleId, triggerId: input.candidate.id, strategyVersionId: input.strategy.versionId, speedTier: input.strategy.speedTier, decisionBudgetMs: input.strategy.maxDecisionLatencyMs, startedAt: input.now, candidateId: input.candidate.id });
+  const r = transition(cycle, { type: 'EXPIRED', at: input.now });
+  if (!r.ok) throw new Error(`S0 cycle rejected EXPIRED: ${JSON.stringify(r.rejection)}`);
+  return r.cycle;
+}
+
 export function decideS0(input: S0DecisionInput): S0Decision {
   const { candidate, snapshot, strategy, now } = input;
   let cycle = newActionCycle({

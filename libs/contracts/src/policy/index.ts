@@ -10,3 +10,4 @@ export * from './s0.js';
 export * from './paper.js';
 export * from './session.js';
 export * from './cohorts.js';
+export * from './regime.js';

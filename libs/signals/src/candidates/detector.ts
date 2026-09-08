@@ -73,7 +73,7 @@ export function detectMomentumCandidate(input: DetectorInput): DetectorDecision 
     assetId: input.snapshot.assetId,
     discoveredAt: input.now,
     triggerFamily: family,
-    triggerDetails: { policyVersion: input.policy.version, featureEngineVersion: input.snapshot.featureEngineVersion, inputs: evaluation.inputs, passed: evaluation.passed, score: evaluation.score },
+    triggerDetails: { policyVersion: input.policy.version, featureEngineVersion: input.snapshot.featureEngineVersion, inputs: evaluation.inputs, passed: evaluation.passed, score: evaluation.score, regime: input.snapshot.regime, marketSessions: input.snapshot.marketSessions },
     scannerScore: evaluation.score,
     featureSnapshotId: input.snapshot.id,
     eligibilityEvaluationId: input.entryGate.eligibilityEvaluationId ?? input.snapshot.id,
