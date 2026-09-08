@@ -5,6 +5,7 @@ import type { IndependentChainReads } from '../projection/verify.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 8, 15, 0, 0));
 const FP = 'ab'.repeat(32) as Sha256Hex;
+const AUDIT_HASH = 'cd'.repeat(32) as Sha256Hex;
 const USDC = fixtures.MINTS.USDC as MintAddress;
 const TOKEN = fixtures.MINTS.RISK as MintAddress;
 let nonceSeq = 0;
@@ -12,7 +13,7 @@ const newNonce = () => String(++nonceSeq).padStart(32, '0') as Nonce;
 let idSeq = 100;
 const newId = () => `${String(++idSeq).padStart(8, '0')}-0000-4000-8000-000000000000` as Uuid;
 
-async function harness(over: { authority?: 'PAPER' | 'LIVE_APPROVAL' | 'LIVE_AUTO'; projection?: Partial<RiskStateProjection>; cycle?: Partial<ActionCycle>; chain?: IndependentChainReads | null; mint?: AuthorizeEntryInput['mint']; quote?: AuthorizeEntryInput['quote'] } = {}) {
+async function harness(over: { authority?: 'PAPER' | 'LIVE_APPROVAL' | 'LIVE_AUTO'; projection?: Partial<RiskStateProjection>; cycle?: Partial<ActionCycle>; audit?: Partial<AuthorizeEntryInput['audit']>; proposalThesis?: string; chain?: IndependentChainReads | null; mint?: AuthorizeEntryInput['mint']; quote?: AuthorizeEntryInput['quote'] } = {}) {
   const signing = await generateSigningKeyPair();
   const projector = await generateSigningKeyPair();
   const authority = over.authority ?? 'LIVE_APPROVAL';
@@ -31,11 +32,17 @@ async function harness(over: { authority?: 'PAPER' | 'LIVE_APPROVAL' | 'LIVE_AUT
   const cycle: ActionCycle = {
     id: fixtures.IDS.cycle as Uuid, automationRunId: null, triggerId: fixtures.IDS.trigger as Uuid, candidateId: fixtures.IDS.candidate as Uuid, positionId: null, strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, skillVersionId: null, guidelineVersionId: null,
     speedTier: 'T0_FAST', decisionBudgetMs: 30_000, proposedAction: 'ENTER', proposalId: fixtures.IDS.intent as Uuid, proposerRunIds: [], adversaryRunIds: [], verdict: 'CONFIRM', reasonCodes: [], revisionRound: 0, state: 'CLEARED', unresolvedReason: null,
-    cutoffs: [{ version: 1, at: NOW, consumedByRunIds: [] }], clearedCutoffVersion: 1, riskEvaluationId: null, intentId: null, startedAt: addMs(NOW, -10_000), terminalAt: addMs(NOW, -9_000), ...over.cycle,
+    cutoffs: [{ version: 1, at: NOW, consumedByRunIds: [] }], clearedCutoffVersion: 1, riskEvaluationId: null, intentId: null, clearedAudit: { sequence: 7 as Sequence, hash: AUDIT_HASH }, startedAt: addMs(NOW, -10_000), terminalAt: addMs(NOW, -9_000), ...over.cycle,
   };
   const proposal: Proposal = {
     id: fixtures.IDS.intent as Uuid, actionCycleId: cycle.id, candidateId: cycle.candidateId, positionId: null, strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, source: 'DETERMINISTIC', createdAt: cycle.startedAt, expiresAt: addMs(NOW, 300_000),
     proposal: { actionType: 'ENTER', direction: 'LONG', candidateId: cycle.candidateId, positionId: null, strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, skillVersionId: null, triggerId: cycle.triggerId, thesis: 't', supportingEvidenceIds: [], contradictingEvidenceIds: [], catalystNovelty: null, expectedHorizonMinutes: 240, confidence: 0.7, invalidation: 'i', requestedFractionToReduce: null, protectionIntent: null, urgency: 'normal', expiresAt: addMs(NOW, 300_000), reasoningSummary: 'r', evidenceCutoffVersion: 1 },
+  };
+  if (over.proposalThesis !== undefined) proposal.proposal.thesis = over.proposalThesis;
+  const audit: AuthorizeEntryInput['audit'] = {
+    event: { sequence: 7, hash: AUDIT_HASH, actionClass: 'ACTION_CYCLE_CLEARED', entityId: cycle.id, summary: { cycleId: cycle.id, proposalId: proposal.id, proposalHash: await canonicalHash({ ...proposal.proposal, thesis: 't' }), cutoffVersion: 1, verdict: 'CONFIRM', strategyVersionId: cycle.strategyVersionId, releaseDigest: release.digest, positionId: null, lotIds: [] } },
+    chain: { ok: true, checkpointSequence: 7 },
+    ...over.audit,
   };
   const ledger = new AuthorizationLedger();
   const input: AuthorizeEntryInput = {
@@ -45,6 +52,7 @@ async function harness(over: { authority?: 'PAPER' | 'LIVE_APPROVAL' | 'LIVE_AUT
     release, attestation, projection: await signPayload(projection, projector, NOW), chain,
     mint: over.mint === undefined ? { isInitialized: true, mintAuthority: 'NONE', freezeAuthority: 'NONE', readSlot: projection.chainSlot + 2 } : over.mint,
     sessionAllowsEntries: true,
+    audit,
     account: { id: fixtures.IDS.account as Uuid, cluster: 'mainnet-beta', capitalAuthority: authority, settlementDecimals: 6 },
     policy: DEFAULT_RISK_POLICY,
     keys: { signing, projection: [projector], trustedAttestationFingerprints: [FP] },
@@ -141,5 +149,50 @@ describe('risk-authorizer entry authorization (D21, D45, D52, §13.7, §15.5)', 
     expect(first.input.ledger.pendingExposure(NOW)).toBe('0');
     const three = await authorizeEntry(second.input);
     expect(three.kind).toBe('AUTHORIZED');
+  });
+});
+
+describe('clearance provenance (ADR-0009 P2): a database-only rewrite cannot fabricate proposer/adversary clearance', () => {
+  const run = async (over: Parameters<typeof harness>[0]) => authorizeEntry((await harness(over)).input);
+  const denied = async (over: Parameters<typeof harness>[0], code: string) => {
+    const r = await run(over);
+    expect(r.kind).toBe('DENIED');
+    if (r.kind === 'DENIED') expect(r.denial.reasonCodes).toEqual([code]);
+  };
+
+  it('a cycle whose CLEARED transition was never audited, or whose ledger row is missing or rehashed, is denied', async () => {
+    await denied({ cycle: { clearedAudit: null } }, 'AUDIT_CLEARANCE_MISSING');
+    await denied({ audit: { event: null } }, 'AUDIT_EVENT_MISSING');
+    await denied({ cycle: { clearedAudit: { sequence: 8 as Sequence, hash: AUDIT_HASH } } }, 'AUDIT_EVENT_MISSING');
+    await denied({ cycle: { clearedAudit: { sequence: 7 as Sequence, hash: 'ef'.repeat(32) as Sha256Hex } } }, 'AUDIT_EVENT_HASH_MISMATCH');
+  });
+
+  it('a ledger row for another cycle or action class, or a summary that disagrees with the rows the authorizer loaded, is tampering', async () => {
+    const { input } = await harness();
+    const ev = input.audit.event!;
+    await denied({ audit: { event: { ...ev, entityId: fixtures.IDS.message } } }, 'AUDIT_EVENT_MISMATCH');
+    await denied({ audit: { event: { ...ev, actionClass: 'CONTROL_REQUEST_RESOLVED' } } }, 'AUDIT_EVENT_MISMATCH');
+    await denied({ audit: { event: { ...ev, summary: null } } }, 'AUDIT_EVENT_MISMATCH');
+    // the proposal row was edited after clearance: its hash no longer matches what was cleared
+    const edited = await run({ proposalThesis: 'edited after clearance' });
+    expect(edited.kind).toBe('DENIED');
+    if (edited.kind === 'DENIED') expect(edited.denial).toMatchObject({ reasonCodes: ['AUDIT_CLEARANCE_TAMPERED'], detail: 'proposalHash' });
+    // the cycle row was edited: verdict and cutoff disagree with the ledger
+    const flipped = await run({ audit: { event: { ...ev, summary: { ...ev.summary!, verdict: 'CHALLENGE', cutoffVersion: 2 } } } });
+    if (flipped.kind === 'DENIED') expect(flipped.denial).toMatchObject({ reasonCodes: ['AUDIT_CLEARANCE_TAMPERED'], detail: 'cutoffVersion,verdict' });
+    else throw new Error('expected denial');
+    const otherRelease = await run({ audit: { event: { ...ev, summary: { ...ev.summary!, releaseDigest: 'ab'.repeat(32) as Sha256Hex } } } });
+    if (otherRelease.kind === 'DENIED') expect(otherRelease.denial.detail).toBe('releaseDigest');
+    else throw new Error('expected denial');
+  });
+
+  it('a projection whose ledger head predates the clearance, or a chain the external checkpoint does not vouch for, is denied', async () => {
+    await denied({ projection: { auditHead: { sequence: 6 as Sequence, hash: AUDIT_HASH } } }, 'AUDIT_HEAD_BEHIND_CLEARANCE');
+    await denied({ projection: { auditHead: null } }, 'AUDIT_HEAD_BEHIND_CLEARANCE');
+    await denied({ audit: { chain: { ok: false, reason: 'CHAIN_BROKEN', detail: 'first bad sequence 3' } } }, 'AUDIT_CHAIN_CHAIN_BROKEN');
+    await denied({ audit: { chain: { ok: false, reason: 'NO_EXTERNAL_CHECKPOINT' } } }, 'AUDIT_CHAIN_NO_EXTERNAL_CHECKPOINT');
+    await denied({ audit: { chain: { ok: false, reason: 'HASH_MISMATCH_AT_CHECKPOINT', detail: 'sequence 5' } } }, 'AUDIT_CHAIN_HASH_MISMATCH_AT_CHECKPOINT');
+    // the head at exactly the clearance is enough
+    expect((await run({ projection: { auditHead: { sequence: 7 as Sequence, hash: AUDIT_HASH } } })).kind).toBe('AUTHORIZED');
   });
 });

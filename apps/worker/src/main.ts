@@ -128,6 +128,10 @@ import {
   type Sql,
   insertChainHealth,
   lastHeadAdvance,
+  auditHead,
+  checkpointAuditChain,
+  FileCheckpointReplicator,
+  verifyAgainstExternalCheckpoint,
   recoveryFacts,
   expireStaleIntents,
   settleIntentsFromAttempts,
@@ -143,6 +147,8 @@ import type { PreviousHead } from '@sol-agent-trader/execution';
 import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
 import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
 import { runStartupRecovery } from './roles/recovery.js';
+import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
+import type { Sha256Hex, StrategyVersion, VersionId } from '@sol-agent-trader/contracts';
 import { executeExit } from './roles/position-monitor.js';
 import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
@@ -228,7 +234,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -351,6 +357,10 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
+  if (roles.has('audit-checkpoint')) {
+    if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
+    else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
+  }
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -635,6 +645,7 @@ async function s0Loop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<v
   const { sql } = shared;
   const activeFrom = systemClock.now();
   const strategies = { RAW: s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), SAFE: s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom) };
+  const digestFor = await releaseDigests([strategies.RAW, strategies.SAFE]);
   for (const v of [strategies.RAW, strategies.SAFE]) {
     const outcome = await ensureStrategyVersion(sql, v);
     logger.info('strategy_version', { versionId: v.versionId, outcome, gitSha: v.gitSha });
@@ -643,7 +654,7 @@ async function s0Loop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<v
   const deps = {
     repo: {
       listAwaiting: (versionId: Parameters<typeof listCandidatesAwaitingStrategy>[1], now: Parameters<typeof listCandidatesAwaitingStrategy>[2], limit: number, families: Parameters<typeof listCandidatesAwaitingStrategy>[4]) => listCandidatesAwaitingStrategy(sql, versionId, now, limit, families),
-      persist: (candidateId: Parameters<typeof persistS0Decisions>[1], decisions: Parameters<typeof persistS0Decisions>[2], status: Parameters<typeof persistS0Decisions>[3], reason: Parameters<typeof persistS0Decisions>[4]) => persistS0Decisions(sql, candidateId, decisions, status, reason),
+      persist: (candidateId: Parameters<typeof persistS0Decisions>[1], decisions: Parameters<typeof persistS0Decisions>[2], status: Parameters<typeof persistS0Decisions>[3], reason: Parameters<typeof persistS0Decisions>[4]) => persistS0Decisions(sql, candidateId, decisions, status, reason, digestFor),
       persistExpired: (candidateId: Parameters<typeof persistS0Expiry>[1], cycles: Parameters<typeof persistS0Expiry>[2]) => persistS0Expiry(sql, candidateId, cycles),
     },
     clock: systemClock,
@@ -787,6 +798,7 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
   const skill = tradingSkillVersion(env.GIT_SHA, activeFrom);
   logger.info('skill_version', { versionId: skill.versionId, outcome: await ensureSkillVersion(sql, skill), toolManifest: skill.toolManifestVersion, guidelines: skill.guidelineVersion });
   const models = { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL };
+  const digestFor = await releaseDigests(llmStrategyVersions(env.GIT_SHA, activeFrom, models));
   const providers = [proposer.model.identity().provider, adversary.model.identity().provider].filter((p, i, all) => all.indexOf(p) === i);
   const platformBudgets: SpendBudget[] = [
     { id: randomUUID() as Uuid, versionId: 'budget-model-v1' as SpendBudget['versionId'], scope: 'PLATFORM', scopeId: null, limits: { ...DEFAULT_SPEND_LIMITS.platform }, active: true, createdAt: activeFrom },
@@ -821,7 +833,7 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
       const active = await listActiveSpendBudgets(sql);
       for (const b of active.filter((x) => budgetIds.includes(x.id))) await chargeSpendUsage(sql, b.id, spendWindow(now, spendWindowUnit(b)), delta);
     },
-    persist: (outcome: Parameters<typeof persistDiscretionaryOutcome>[1], extra: Parameters<typeof persistDiscretionaryOutcome>[2]) => persistDiscretionaryOutcome(sql, outcome, extra),
+    persist: (outcome: Parameters<typeof persistDiscretionaryOutcome>[1], extra: Parameters<typeof persistDiscretionaryOutcome>[2]) => persistDiscretionaryOutcome(sql, outcome, { ...extra, releaseDigest: digestFor(outcome.cycle.strategyVersionId) }),
     sessionFacts: async () => {
       const g = await sessionEntryGate(sql, account.id);
       return g ? { activity: g.activity, authority: g.authority, paused: g.paused } : null;
@@ -862,6 +874,7 @@ async function positionMonitorDeps(env: WorkerEnv, logger: Logger, shared: Share
   const activeFrom = systemClock.now();
   const strategies: Record<string, ReturnType<typeof s0StrategyVersion>> = {};
   for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), ...llmStrategyVersions(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })]) strategies[v.versionId] = v;
+  const digestFor = await releaseDigests(Object.values(strategies));
   const adapter = new PaperExecutionAdapter({
     quotes: shared.jupiter,
     clock: systemClock,
@@ -879,7 +892,7 @@ async function positionMonitorDeps(env: WorkerEnv, logger: Logger, shared: Share
       highSince: (assetId: Uuid, since: Parameters<typeof highSince>[2], until: Parameters<typeof highSince>[3]) => highSince(sql, assetId, since, until),
       updateMark: (positionId: Uuid, pnl: Parameters<typeof updateMark>[2], next: Parameters<typeof updateMark>[3]) => updateMark(sql, positionId, pnl, next),
       tightenStop: (positionId: Uuid, level: number) => tightenStop(sql, positionId, level),
-      recordExitDecision: (c: Parameters<typeof recordExitDecision>[1], p: Parameters<typeof recordExitDecision>[2], r: Parameters<typeof recordExitDecision>[3], e: Parameters<typeof recordExitDecision>[4]) => recordExitDecision(sql, c, p, r, e),
+      recordExitDecision: (c: Parameters<typeof recordExitDecision>[1], p: Parameters<typeof recordExitDecision>[2], r: Parameters<typeof recordExitDecision>[3], e: Parameters<typeof recordExitDecision>[4]) => recordExitDecision(sql, c, p, r, e, digestFor(c.strategyVersionId)),
       recordRiskEvaluation: (e: Parameters<typeof recordRiskEvaluation>[1]) => recordRiskEvaluation(sql, e),
       createIntent: (i: Parameters<typeof createIntent>[1], lifecycle: 'AUTHORIZED') => createIntent(sql, i, lifecycle),
       setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
@@ -994,6 +1007,7 @@ async function stateProjectorLoop(env: WorkerEnv, logger: Logger, shared: Shared
       nextSequence: () => nextProjectionSequence(sql, account.id),
       insert: (envelope: Parameters<typeof insertProjection>[2]) => insertProjection(sql, account.id, envelope),
       capitalCeilingUsd: async () => (await latestCapitalAttestation(sql, account.id))?.ceilingUsd ?? null,
+      auditHead: () => auditHead(sql),
     },
     key,
     clock: systemClock,
@@ -1274,5 +1288,30 @@ async function manualActionsLoop(env: WorkerEnv, logger: Logger, shared: Shared)
   logger.info('manual_actions_starting', { intervalMs, accountId: account.id, holder: shared.holder });
   await loopUnderLease('manual-actions', intervalMs, logger, shared, async () => {
     await runManualActionsCycle(deps);
+  });
+}
+
+/** Release digests per strategy version (ADR-0009 P2): what a CLEARED transition is recorded against and what the authorizer expects. */
+async function releaseDigests(versions: readonly StrategyVersion[]): Promise<(strategyVersionId: VersionId) => Sha256Hex | null> {
+  const ctx = { contractSetDigest: (await getContractSetDigest()).digest, freshnessPolicyVersion: PROJECTION_FRESHNESS.version };
+  const map = new Map<VersionId, Sha256Hex>();
+  for (const v of versions) map.set(v.versionId, (await releaseFor(v, ctx, v.activeFrom)).digest);
+  return (id) => map.get(id) ?? null;
+}
+
+async function auditCheckpointLoop(env: WorkerEnv, logger: Logger, shared: Shared, path: string): Promise<void> {
+  const intervalMs = env.AUDIT_CHECKPOINT_INTERVAL_MS;
+  const { sql } = shared;
+  const replicator = new FileCheckpointReplicator(path);
+  const deps = {
+    repo: {
+      checkpoint: () => checkpointAuditChain(sql, [replicator]),
+      verify: () => verifyAgainstExternalCheckpoint(sql, replicator),
+    },
+    logger,
+  };
+  logger.info('audit_checkpoint_starting', { intervalMs, replica: replicator.label, holder: shared.holder });
+  await loopUnderLease('audit-checkpoint', intervalMs, logger, shared, async () => {
+    await runAuditCheckpointCycle(deps);
   });
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ClearedAuditRef } from './audit.js';
 import {
   ActionCycleState,
   AdversaryVerdict,
@@ -159,6 +160,8 @@ export const ActionCycle = z.object({
   clearedCutoffVersion: z.number().int().positive().nullable(),
   riskEvaluationId: Uuid.nullable(),
   intentId: Uuid.nullable(),
+  /** ADR-0009 P2: the ledger row that recorded the CLEARED transition; required by the risk-authorizer. */
+  clearedAudit: ClearedAuditRef.nullable().optional(),
   startedAt: Instant,
   terminalAt: Instant.nullable(),
 });

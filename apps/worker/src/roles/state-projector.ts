@@ -24,6 +24,8 @@ export interface StateProjectorRepo {
   insert(envelope: SignedRiskStateProjection): Promise<void>;
   /** D56: the attested ceiling for the account when live arming recorded one; null on a paper account. */
   capitalCeilingUsd(): Promise<number | null>;
+  /** Audit ledger head (ADR-0009 P2). */
+  auditHead(): Promise<{ sequence: Sequence; hash: Sha256Hex } | null>;
 }
 
 export interface StateProjectorDeps {
@@ -54,7 +56,7 @@ export interface StateProjectorReport {
 
 export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<StateProjectorReport> {
   const now = deps.clock.now();
-  const [book, sleeves, lots, recon, eligibility, feeds, cohorts, sequence, attestedCeiling] = await Promise.all([
+  const [book, sleeves, lots, recon, eligibility, feeds, cohorts, sequence, attestedCeiling, head] = await Promise.all([
     deps.repo.book(now),
     deps.repo.sleeves(),
     deps.repo.openLots(),
@@ -64,6 +66,7 @@ export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<
     deps.repo.cohorts(now),
     deps.repo.nextSequence(),
     deps.repo.capitalCeilingUsd(),
+    deps.repo.auditHead(),
   ]);
   const reconAgeMs = recon ? Math.max(0, instantToMs(now) - instantToMs(recon.evaluatedAt)) : null;
   const reconFresh = recon !== null && reconAgeMs !== null && reconAgeMs <= deps.config.reconciliationMaxAgeMs && recon.status !== 'UNAVAILABLE';
@@ -78,6 +81,7 @@ export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<
     asOf: now,
     chainSlot: (reconFresh && recon.chainSlot !== null ? recon.chainSlot : 0) as Slot,
     release: { id: deps.release.id, digest: deps.release.digest },
+    auditHead: head,
     policyVersion: deps.policy.version,
     sourceDigests,
     settlementMint: deps.account.settlementMint,

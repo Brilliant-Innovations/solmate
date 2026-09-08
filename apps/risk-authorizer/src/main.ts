@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_RISK_POLICY, getContractSetDigest, importSigningKeyPair, importVerificationKey, parseRiskAuthorizerEnv, systemClock, type Amount, type Bps, type Instant, type MintAddress, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { createSql, listOpenAuthorizations, loadAccount, loadActionCycle, loadCandidateAsset, loadCustodyAccounts, loadLatestAttestation, loadLatestProjection, loadProposal, loadReleaseForStrategy, recordAuthorization, recordDenial, sessionEntryGate, type Sql } from '@sol-agent-trader/db/server';
+import { ClearedTransitionSummary, DEFAULT_RISK_POLICY, getContractSetDigest, importSigningKeyPair, importVerificationKey, parseRiskAuthorizerEnv, systemClock, type Amount, type Bps, type Instant, type MintAddress, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { auditEventAt, auditHead, FileCheckpointReplicator, verifyAgainstExternalCheckpoint, createSql, listOpenAuthorizations, loadAccount, loadActionCycle, loadCandidateAsset, loadCustodyAccounts, loadLatestAttestation, loadLatestProjection, loadProposal, loadReleaseForStrategy, recordAuthorization, recordDenial, sessionEntryGate, type Sql } from '@sol-agent-trader/db/server';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
@@ -59,6 +59,22 @@ async function main(): Promise<void> {
   const sql: Sql = createSql({ url: env.SUPABASE_DB_URL, applicationName: SERVICE, max: 4 });
   const actorRef = env.SERVICE_INSTANCE_ID ?? `${SERVICE}-${process.pid}`;
 
+  // ADR-0009 P2: the ledger is verified against the external checkpoint replica; the verdict is cached per ledger head so a
+  // busy authorizer does not re-walk the chain for every request. No replica configured means no live clearance can verify.
+  const replicator = env.AUDIT_CHECKPOINT_PATH ? new FileCheckpointReplicator(env.AUDIT_CHECKPOINT_PATH) : null;
+  if (!replicator) logger.warn('audit_checkpoint_replica_missing', { effect: 'every entry authorization is denied AUDIT_CHAIN_NO_EXTERNAL_CHECKPOINT; set AUDIT_CHECKPOINT_PATH' });
+  let verifiedHead: { hash: string; result: { ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string } } | null = null;
+  const chainStanding = async (): Promise<{ ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string }> => {
+    if (!replicator) return { ok: false, reason: 'NO_EXTERNAL_CHECKPOINT', detail: 'AUDIT_CHECKPOINT_PATH not set' };
+    const head = await auditHead(sql);
+    if (!head) return { ok: false, reason: 'LEDGER_EMPTY' };
+    if (verifiedHead && verifiedHead.hash === head.hash) return verifiedHead.result;
+    const v = await verifyAgainstExternalCheckpoint(sql, replicator);
+    const result = v.ok ? { ok: true as const, checkpointSequence: v.checkpoint.sequence } : { ok: false as const, reason: v.reason, detail: v.detail };
+    verifiedHead = { hash: head.hash, result };
+    return result;
+  };
+
   const service = await AuthorizerService.create({
     sources: {
       cycle: (id) => loadActionCycle(sql, id),
@@ -78,6 +94,13 @@ async function main(): Promise<void> {
       openAuthorizations: () => listOpenAuthorizations(sql),
       persistAuthorization: (input) => recordAuthorization(sql, input),
       persistDenial: (denial) => recordDenial(sql, denial, actorRef),
+      auditEvidence: async (cycle) => {
+        const ref = cycle.clearedAudit ?? null;
+        const row = ref ? await auditEventAt(sql, ref.sequence) : null;
+        const summary = row?.afterSummary ? ClearedTransitionSummary.safeParse(row.afterSummary) : null;
+        const event = row ? { sequence: row.sequence, hash: row.hash, actionClass: row.actionClass, entityId: row.entity.id, summary: summary?.success ? summary.data : null } : null;
+        return { event, chain: await chainStanding() };
+      },
     },
     signing,
     projectionKeys,

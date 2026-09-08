@@ -1,4 +1,5 @@
-import type { ActionCycle, AdversarialReview, Candidate, FeatureSnapshot, Instant, Proposal, ReasonCode, StrategyVersion, TriggerFamily, Uuid, VersionId } from '@sol-agent-trader/contracts';
+import type { Sha256Hex, ActionCycle, AdversarialReview, Candidate, FeatureSnapshot, Instant, Proposal, ReasonCode, StrategyVersion, TriggerFamily, Uuid, VersionId } from '@sol-agent-trader/contracts';
+import { recordClearedTransition } from './audit.js';
 import { asJson, type Sql } from './sql.js';
 
 /**
@@ -79,7 +80,7 @@ export interface PersistedDecision {
  * `candidateStatus` with `rejectionReason` when REJECTED. The candidate must still be DETECTED:
  * a second runner racing on the same candidate finds zero rows updated and the transaction rolls back.
  */
-export async function persistS0Decisions(sql: Sql, candidateId: Uuid, decisions: PersistedDecision[], candidateStatus: 'QUALIFIED' | 'REJECTED', rejectionReason: ReasonCode | null): Promise<void> {
+export async function persistS0Decisions(sql: Sql, candidateId: Uuid, decisions: PersistedDecision[], candidateStatus: 'QUALIFIED' | 'REJECTED', rejectionReason: ReasonCode | null, releaseDigestFor: ((strategyVersionId: VersionId) => Sha256Hex | null) | null = null): Promise<void> {
   await sql.begin(async (tx) => {
     const t = tx as unknown as Sql;
     for (const { cycle: c, proposal: p, review: r } of decisions) {
@@ -94,6 +95,8 @@ export async function persistS0Decisions(sql: Sql, candidateId: Uuid, decisions:
       await t`
         insert into agents.adversarial_reviews (id, action_cycle_id, agent_run_id, deterministic_gate, verdict, objections, confidence, cutoff_version, latency_ms, blocking, created_at)
         values (${r.id}, ${r.actionCycleId}, ${r.agentRunId}, ${r.deterministicGate}, ${r.verdict}, ${t.json(asJson(r.objections))}, ${r.confidence}, ${r.cutoffVersion}, ${r.latencyMs}, ${r.blocking}, ${r.createdAt})`;
+      // ADR-0009 P2: the clearance itself is a hash-chained ledger row the cycle points at.
+      if (c.state === 'CLEARED') await recordClearedTransition(t, { cycle: c, proposal: p, releaseDigest: releaseDigestFor?.(c.strategyVersionId) ?? null });
     }
     const versions = [...new Set(decisions.map((d) => d.cycle.strategyVersionId))];
     const updated = await t<{ id: string }[]>`

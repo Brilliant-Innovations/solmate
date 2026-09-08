@@ -41,6 +41,7 @@ export async function loadActionCycle(sql: Sql, id: Uuid): Promise<ActionCycle |
     clearedCutoffVersion: (r['cleared_cutoff_version'] as number | null) ?? null,
     riskEvaluationId: (r['risk_evaluation_id'] as Uuid | null) ?? null,
     intentId: (r['intent_id'] as Uuid | null) ?? null,
+    clearedAudit: r['cleared_audit_sequence'] === null || r['cleared_audit_sequence'] === undefined ? null : { sequence: Number(r['cleared_audit_sequence']) as Sequence, hash: r['cleared_audit_hash'] as Sha256Hex },
     startedAt: iso(r['started_at']),
     terminalAt: isoOrNull(r['terminal_at']),
   };

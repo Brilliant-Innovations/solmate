@@ -1,4 +1,5 @@
-import type { ActionCycle, AdversarialReview, Amount, Fill, Instant, MintAddress, Position, PositionSafetyState, Proposal, RiskEvaluation, SignedAmount, Uuid, VersionId } from '@sol-agent-trader/contracts';
+import type { Sha256Hex, ActionCycle, AdversarialReview, Amount, Fill, Instant, MintAddress, Position, PositionSafetyState, Proposal, RiskEvaluation, SignedAmount, Uuid, VersionId } from '@sol-agent-trader/contracts';
+import { recordClearedTransition } from './audit.js';
 import { asJson, type Sql } from './sql.js';
 
 /**
@@ -75,7 +76,7 @@ export async function tightenStop(sql: Sql, positionId: Uuid, level: number): Pr
 }
 
 /** A deterministic exit decision as a position action cycle with its proposal, review and evaluation, linked and marked reviewed. */
-export async function recordExitDecision(sql: Sql, cycle: ActionCycle, proposal: Proposal, review: AdversarialReview, evaluation: RiskEvaluation): Promise<void> {
+export async function recordExitDecision(sql: Sql, cycle: ActionCycle, proposal: Proposal, review: AdversarialReview, evaluation: RiskEvaluation, releaseDigest: Sha256Hex | null = null): Promise<void> {
   await sql.begin(async (tx) => {
     const t = tx as unknown as Sql;
     await t`
@@ -95,6 +96,7 @@ export async function recordExitDecision(sql: Sql, cycle: ActionCycle, proposal:
         asset_eligibility_evaluation_id, computed_max_loss_base_units, computed_position_amount, max_slippage_bps, max_price_impact_bps, stop_policy, target_policy, daily_drawdown_fraction, circuit_breaker_tripped, stale_data_checks, created_at)
       values (${e.id}, ${e.proposalId}, ${e.actionCycleId}, ${e.policyVersion}, ${e.allowed}, ${e.reasonCodes}, ${e.settlementMint}, ${e.equityBaseUnits}, ${e.equityUsd}, ${e.exposureBaseUnits}, ${t.json(asJson(e.cohortExposure))}, ${t.json(asJson(e.clusterExposure))}, ${e.sleeveExposure},
         ${e.assetEligibilityEvaluationId}, ${e.computedMaxLossBaseUnits}, ${e.computedPositionAmount}, ${e.maxSlippageBps}, ${e.maxPriceImpactBps}, ${e.stopPolicy ? t.json(asJson(e.stopPolicy)) : null}, ${e.targetPolicy ? t.json(asJson(e.targetPolicy)) : null}, ${e.dailyDrawdownFraction}, ${e.circuitBreakerTripped}, ${t.json(asJson(e.staleDataChecks))}, ${e.createdAt})`;
+    if (cycle.state === 'CLEARED') await recordClearedTransition(t, { cycle, proposal, releaseDigest });
     await t`update agents.action_cycles set risk_evaluation_id = ${e.id} where id = ${cycle.id}`;
     await t`update trading.positions set last_reviewed_cycle_id = ${cycle.id}, review_state = 'REVIEWED', review_state_reason = null, review_state_since = ${cycle.terminalAt ?? cycle.startedAt} where id = ${cycle.positionId}`;
   });

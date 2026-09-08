@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { deriveAuthorizationHash, instantToMs, type ActionCycle, type AuthorizationDenial, type Bps, type CapitalAuthority, type Clock, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskEvaluation, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaAddress, type SolanaCluster, type TradeIntent, type Uuid, type VerificationKey, type VersionId } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
-import { authorizeEntry, type MintHardState } from '../authorize/authorize.js';
+import { authorizeEntry, type ClearanceAuditEvidence, type MintHardState } from '../authorize/authorize.js';
 import { AuthorizationLedger } from '../authorize/ledger.js';
 import type { IndependentChainReads } from '../projection/verify.js';
 
@@ -30,6 +30,8 @@ export interface AuthorizerSources {
   openAuthorizations(): Promise<{ nonce: Nonce; intentId: Uuid; actionCycleId: Uuid; sleeveId: Uuid | null; exposureEffect: TradeIntent['exposureEffect']; maxInputAmount: string; issuedAt: string; expiresAt: string }[]>;
   persistAuthorization(input: { evaluation: RiskEvaluation; intent: TradeIntent; envelope: SignedRiskAuthorizedIntent; authorizationHash: Sha256Hex }): Promise<void>;
   persistDenial(denial: AuthorizationDenial): Promise<void>;
+  /** The cycle's clearance row and the ledger's standing against the external checkpoint, read by the authorizer itself (ADR-0009 P2). */
+  auditEvidence(cycle: ActionCycle): Promise<ClearanceAuditEvidence>;
 }
 
 export interface AuthorizerServiceDeps {
@@ -92,6 +94,7 @@ export class AuthorizerService {
     if (!release) return deny(['RELEASE_NOT_FOUND']);
     const [attestation, projection, custody] = await Promise.all([sources.attestation(release.id), sources.projection(account.id), sources.custodyAccounts(account.id)]);
     if (!projection) return deny(['PROJECTION_NOT_FOUND']);
+    const audit = await sources.auditEvidence(cycle);
 
     // Independent chain reads are the authorizer's own; a read failure denies rather than falls back to the projection (D45, INV-07).
     let chain: IndependentChainReads | null = null;
@@ -110,7 +113,7 @@ export class AuthorizerService {
     const out = await authorizeEntry({
       now, cycle, proposal,
       asset: { id: candidate.asset.id, mint: candidate.asset.mint, decimals: candidate.asset.decimals, tokenProgram: candidate.asset.tokenProgram, settlementRouteConfirmed: candidate.asset.settlementRouteConfirmed },
-      quote, release, attestation, projection: projection.envelope, chain, mint, sessionAllowsEntries,
+      quote, release, attestation, projection: projection.envelope, chain, mint, sessionAllowsEntries, audit,
       account: { id: account.id, cluster: account.cluster, capitalAuthority, settlementDecimals: account.settlementDecimals },
       policy: this.deps.policy,
       keys: { signing: this.deps.signing, projection: this.deps.projectionKeys, trustedAttestationFingerprints: this.deps.trustedAttestationFingerprints },

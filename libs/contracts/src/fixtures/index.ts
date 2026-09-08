@@ -95,6 +95,7 @@ export const riskStateProjection = (): Of<typeof RiskStateProjection> =>
     releaseId: IDS.release,
     releaseDigest: HASH_A,
     policyVersion: 'risk@1.0.0',
+    auditHead: { sequence: 9, hash: HASH_A },
     sourceDigests: [{ source: 'custody', digest: HASH_B }],
     settlementMint: MINTS.USDC,
     custody: [{ custodyAccountId: IDS.custody, mint: MINTS.USDC, amount: '5000000000' }],

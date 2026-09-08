@@ -25,6 +25,7 @@ function fakeRepo(over: Partial<StateProjectorRepo> = {}) {
     async nextSequence() { return seq++ as Sequence; },
     async insert(envelope) { inserted.push(envelope); },
     async capitalCeilingUsd() { return null; },
+    async auditHead() { return { sequence: 3 as never, hash: 'ab'.repeat(32) as never }; },
     ...over,
   };
   return { repo, inserted };

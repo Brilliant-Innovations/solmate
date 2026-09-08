@@ -9,7 +9,7 @@ const uuid = (n: number) => `${n.toString(16).padStart(8, '0')}-0000-4000-8000-0
 function facts(patch: Partial<ProjectionFacts> = {}): ProjectionFacts {
   return {
     sequence: 1 as Sequence, asOf: T0, chainSlot: 100 as never, release: { id: uuid(7), digest: 'ab'.repeat(32) as Sha256Hex }, policyVersion: 'risk-v1' as VersionId, sourceDigests: [{ source: 'b', digest: 'cd'.repeat(32) as Sha256Hex }, { source: 'a', digest: 'ef'.repeat(32) as Sha256Hex }],
-    settlementMint: fixtures.MINTS.USDC as MintAddress, custody: [], settlementAvailableBaseUnits: '9000000000' as Amount, gasReserveLamports: '1000000000' as Amount, pendingExposureBaseUnits: '0' as Amount, sleeves: [], openLots: [], equityBaseUnits: '10000000000' as Amount, exposureUsd: null,
+    auditHead: null, settlementMint: fixtures.MINTS.USDC as MintAddress, custody: [], settlementAvailableBaseUnits: '9000000000' as Amount, gasReserveLamports: '1000000000' as Amount, pendingExposureBaseUnits: '0' as Amount, sleeves: [], openLots: [], equityBaseUnits: '10000000000' as Amount, exposureUsd: null,
     dayStartEquity: null, rollingHighEquity: null, consecutiveLosses: 0, circuitBreakerTripped: false, memberships: [], clusterSet: null, policy: DEFAULT_RISK_POLICY, eligibility: [], freshness: [], capital: { ceilingUsd: 10_000, recognizedUsd: 10_000 }, ...patch,
   };
 }

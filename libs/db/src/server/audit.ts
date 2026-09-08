@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ActorKind, Instant, JsonRecord, Sha256Hex, Sequence } from '@sol-agent-trader/contracts';
+import { canonicalHash, type ActionCycle, type ActorKind, type ClearedTransitionSummary, type Instant, type JsonRecord, type Proposal, type Sha256Hex, type Sequence, type Uuid } from '@sol-agent-trader/contracts';
 import { asJson, type Sql } from './sql.js';
 
 /**
@@ -151,4 +151,58 @@ export async function verifyAgainstExternalCheckpoint(sql: Sql, replicator: Chec
   if (!row) return { ok: false, reason: 'CHECKPOINT_BEYOND_LEDGER', detail: `sequence ${external.sequence} missing` };
   if (row.hash !== external.hash) return { ok: false, reason: 'HASH_MISMATCH_AT_CHECKPOINT', detail: `sequence ${external.sequence}` };
   return { ok: true, checkpoint: external };
+}
+
+// ADR-0009 P2 — clearance provenance -------------------------------------------------------------
+
+export interface ClearedTransitionInput {
+  cycle: ActionCycle;
+  proposal: Proposal;
+  /** Digest of the Release the strategy runs under; null when the caller cannot name it (tests). The authorizer requires it. */
+  releaseDigest: Sha256Hex | null;
+  lotIds?: readonly Uuid[];
+}
+
+/**
+ * Records a CLEARED transition as a hash-chained audit event (proposal hash, cutoff, verdict, Release
+ * digest, lot) and points the cycle row at it. Call inside the transaction that writes the cycle so
+ * a clearance can never exist without its ledger row.
+ */
+export async function recordClearedTransition(t: Sql, input: ClearedTransitionInput): Promise<AuditEventRow> {
+  const { cycle, proposal } = input;
+  if (cycle.state !== 'CLEARED' || cycle.clearedCutoffVersion === null || cycle.verdict === null) throw new Error(`cycle ${cycle.id} is not CLEARED`);
+  if (proposal.id !== cycle.proposalId) throw new Error(`proposal ${proposal.id} is not the cycle's proposal`);
+  const summary: ClearedTransitionSummary = {
+    cycleId: cycle.id,
+    proposalId: proposal.id,
+    proposalHash: await canonicalHash(proposal.proposal),
+    cutoffVersion: cycle.clearedCutoffVersion,
+    verdict: cycle.verdict,
+    strategyVersionId: cycle.strategyVersionId,
+    releaseDigest: input.releaseDigest,
+    positionId: cycle.positionId,
+    lotIds: [...(input.lotIds ?? [])],
+  };
+  const row = await writeAuditEvent(t, { actor: 'WORKER', actorRef: 'action-cycle', actionClass: 'ACTION_CYCLE_CLEARED', entity: { type: 'action_cycle', id: cycle.id }, afterSummary: summary as unknown as JsonRecord, liveImpacting: true });
+  await t`update agents.action_cycles set cleared_audit_sequence = ${row.sequence}, cleared_audit_hash = ${row.hash} where id = ${cycle.id}`;
+  return row;
+}
+
+export interface AuditEventDetail extends AuditEventRow {
+  actionClass: string;
+  entity: { type: string; id: string };
+  afterSummary: JsonRecord | null;
+}
+
+export async function auditEventAt(sql: Sql, sequence: number): Promise<AuditEventDetail | null> {
+  const [r] = await sql<(RawRow & { action_class: string; entity: { type: string; id: string }; after_summary: JsonRecord | null })[]>`
+    select id, sequence, at, hash, previous_hash, action_class, entity, after_summary from audit.events where sequence = ${sequence}`;
+  if (!r) return null;
+  return { ...toRow(r), actionClass: r.action_class, entity: r.entity, afterSummary: r.after_summary };
+}
+
+/** The ledger head the state projector carries so the authorizer can tell a clearance the projection already covers from one appended later. */
+export async function auditHead(sql: Sql): Promise<{ sequence: Sequence; hash: Sha256Hex } | null> {
+  const [r] = await sql<{ sequence: string | number; hash: string }[]>`select sequence, hash from audit.events order by sequence desc limit 1`;
+  return r ? { sequence: Number(r.sequence) as Sequence, hash: r.hash as Sha256Hex } : null;
 }

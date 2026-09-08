@@ -18,6 +18,8 @@ export interface ProjectionFacts {
   release: { id: Uuid; digest: Sha256Hex };
   policyVersion: VersionId;
   sourceDigests: { source: string; digest: Sha256Hex }[];
+  /** Audit ledger head at projection time (ADR-0009 P2). */
+  auditHead: { sequence: Sequence; hash: Sha256Hex } | null;
   settlementMint: MintAddress;
   custody: { custodyAccountId: Uuid; mint: MintAddress; amount: Amount }[];
   settlementAvailableBaseUnits: Amount;
@@ -68,6 +70,7 @@ export function buildRiskStateProjection(f: ProjectionFacts): RiskStateProjectio
     releaseId: f.release.id,
     releaseDigest: f.release.digest,
     policyVersion: f.policyVersion,
+    auditHead: f.auditHead,
     sourceDigests: [...f.sourceDigests].sort((a, b) => (a.source < b.source ? -1 : 1)),
     settlementMint: f.settlementMint,
     custody: [...f.custody].sort((a, b) => (`${a.custodyAccountId}|${a.mint}` < `${b.custodyAccountId}|${b.mint}` ? -1 : 1)),

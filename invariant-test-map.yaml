@@ -163,9 +163,14 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/risk-authorizer/src/projection
+      - apps/risk-authorizer/src/authorize
+      - libs/db/src/server/audit.ts
     tests:
       - apps/risk-authorizer/src/projection/verify.spec.ts
       - apps/risk-authorizer/src/authorize/authorize.spec.ts
+      - apps/risk-authorizer/src/service/authorizer.spec.ts
+      - libs/db/src/server/audit-clearance.integration.spec.ts
+      - apps/worker/src/roles/audit-checkpoint.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped

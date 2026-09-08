@@ -62,6 +62,8 @@ export const RiskStateProjection = z.strictObject({
   releaseId: Uuid,
   releaseDigest: Sha256Hex,
   policyVersion: VersionId,
+  /** Audit ledger head when projected (ADR-0009 P2): a clearance the authorizer accepts must be at or before it. */
+  auditHead: z.strictObject({ sequence: Sequence, hash: Sha256Hex }).nullable(),
   sourceDigests: z.array(z.strictObject({ source: z.string(), digest: Sha256Hex })),
   settlementMint: MintAddress,
   custody: z.array(CustodyBalance),

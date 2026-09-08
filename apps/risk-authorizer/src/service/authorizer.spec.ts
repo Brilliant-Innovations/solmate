@@ -17,6 +17,7 @@ import { AuthorizerService, type AuthorizerSources } from './authorizer.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 8, 15, 0, 0));
 const FP = 'ab'.repeat(32) as Sha256Hex;
+const AUDIT_HASH = 'cd'.repeat(32) as Sha256Hex;
 const USDC = fixtures.MINTS.USDC as MintAddress;
 const TOKEN = fixtures.MINTS.RISK as MintAddress;
 const WALLET = fixtures.WALLET as never;
@@ -34,7 +35,7 @@ interface Stub {
   cycle: ActionCycle;
 }
 
-async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; open?: Awaited<ReturnType<AuthorizerSources['openAuthorizations']>> } = {}): Promise<Stub> {
+async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; paused?: boolean; audited?: boolean; open?: Awaited<ReturnType<AuthorizerSources['openAuthorizations']>> } = {}): Promise<Stub> {
   const signing = await generateSigningKeyPair();
   const projector = await generateSigningKeyPair();
   const binding: Release['binding'] = { strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, skillVersionId: 'skill@1' as VersionId, guidelineVersionId: 'guide@1' as VersionId, automationSetVersionId: 'auto@1' as VersionId, proposerModelPolicyVersion: null, adversaryModelPolicyVersion: 'adv@1' as VersionId, riskPolicyVersion: DEFAULT_RISK_POLICY.version, cohortPolicyVersion: 'cohorts@1' as VersionId, freshnessPolicyVersion: 'fresh@1' as VersionId, executorPolicyRef: 'exec@1' as VersionId, contractSetDigest: 'cd'.repeat(32) as Sha256Hex };
@@ -44,7 +45,7 @@ async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; open?
   const cycle: ActionCycle = {
     id: fixtures.IDS.cycle as Uuid, automationRunId: null, triggerId: fixtures.IDS.trigger as Uuid, candidateId: fixtures.IDS.candidate as Uuid, positionId: null, strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, skillVersionId: null, guidelineVersionId: null,
     speedTier: 'T0_FAST', decisionBudgetMs: 30_000, proposedAction: 'ENTER', proposalId: fixtures.IDS.intent as Uuid, proposerRunIds: [], adversaryRunIds: [], verdict: 'CONFIRM', reasonCodes: [], revisionRound: 0, state: 'CLEARED', unresolvedReason: null,
-    cutoffs: [{ version: 1, at: NOW, consumedByRunIds: [] }], clearedCutoffVersion: 1, riskEvaluationId: null, intentId: null, startedAt: addMs(NOW, -10_000), terminalAt: addMs(NOW, -9_000),
+    cutoffs: [{ version: 1, at: NOW, consumedByRunIds: [] }], clearedCutoffVersion: 1, riskEvaluationId: null, intentId: null, clearedAudit: over.audited === false ? null : { sequence: 7 as never, hash: AUDIT_HASH }, startedAt: addMs(NOW, -10_000), terminalAt: addMs(NOW, -9_000),
   };
   const proposal: Proposal = {
     id: fixtures.IDS.intent as Uuid, actionCycleId: cycle.id, candidateId: cycle.candidateId, positionId: null, strategyVersionId: 'S0_SAFE@1.0.0' as VersionId, source: 'DETERMINISTIC', createdAt: cycle.startedAt, expiresAt: addMs(NOW, 300_000),
@@ -58,7 +59,7 @@ async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; open?
     proposal: async (id) => (id === proposal.id ? proposal : null),
     candidateAsset: async () => ({ asset: { id: fixtures.IDS.asset as Uuid, mint: TOKEN, decimals: 9, tokenProgram: 'TOKEN', settlementRouteConfirmed: true }, eligibility: { id: fixtures.IDS.evaluation as Uuid, liquidityUsd: 800_000 }, features: { atr_14_pct: 0.02, price_usd: 1, liquidity_usd: 800_000 }, featuresAsOf: addMs(NOW, -60_000) }),
     account: async (id) => ({ id, cluster: 'mainnet-beta', tradingWallet: WALLET, settlementMint: USDC, settlementDecimals: 6, mode: over.mode ?? 'LIVE' }),
-    sessionGate: async () => ({ activity: 'ACTIVE', paused: false, authority: 'LIVE_APPROVAL' }),
+    sessionGate: async () => ({ activity: 'ACTIVE', paused: over.paused ?? false, authority: 'LIVE_APPROVAL' }),
     custodyAccounts: async () => [{ id: fixtures.IDS.custody as Uuid, address: WALLET, mint: USDC }],
     release: async () => release,
     attestation: async () => attestation,
@@ -72,6 +73,7 @@ async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; open?
     openAuthorizations: async () => over.open ?? [],
     persistAuthorization: async (input) => { persisted.push(input); },
     persistDenial: async (d) => { denials.push(d); },
+    auditEvidence: async (c) => ({ event: { sequence: 7, hash: AUDIT_HASH, actionClass: 'ACTION_CYCLE_CLEARED', entityId: c.id, summary: { cycleId: c.id, proposalId: proposal.id, proposalHash: await canonicalHash(proposal.proposal), cutoffVersion: 1, verdict: 'CONFIRM', strategyVersionId: c.strategyVersionId, releaseDigest: release.digest, positionId: null, lotIds: [] } }, chain: { ok: true, checkpointSequence: 7 } }),
   };
   return { sources, signing, projector, persisted, denials, cycle };
 }
@@ -157,3 +159,22 @@ describe('risk-authorizer service and API', () => {
 });
 
 export type { Sequence };
+
+describe('ADR-0009 P3 and P2 at the service boundary', () => {
+  it('a sticky PAUSED session read at authorization time denies the entry even though every row is valid', async () => {
+    const s = await stub({ paused: true });
+    const svc = await service(s);
+    const r = await svc.authorize({ actionCycleId: s.cycle.id, accountId: fixtures.IDS.account as Uuid });
+    expect(r.kind).toBe('DENIED');
+    if (r.kind === 'DENIED') expect(r.denial.reasonCodes).toContain('SESSION_NOT_ACTIVE');
+    expect(s.persisted).toEqual([]);
+  });
+
+  it('a cycle row without its audited clearance is denied before any chain read or sizing', async () => {
+    const s = await stub({ audited: false });
+    const svc = await service(s);
+    const r = await svc.authorize({ actionCycleId: s.cycle.id, accountId: fixtures.IDS.account as Uuid });
+    expect(r.kind).toBe('DENIED');
+    if (r.kind === 'DENIED') expect(r.denial.reasonCodes).toEqual(['AUDIT_CLEARANCE_MISSING']);
+  });
+});

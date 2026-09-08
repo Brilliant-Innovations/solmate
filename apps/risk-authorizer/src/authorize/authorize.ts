@@ -1,4 +1,4 @@
-import { addMs, canonicalHash, compareAmounts, instantToMs, signPayload, subAmounts, type ActionCycle, type Amount, type AuthorizationDenial, type Bps, type CapitalAuthority, type Instant, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskAuthorizedIntent, type RiskEvaluation, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaCluster, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { addMs, canonicalHash, compareAmounts, instantToMs, signPayload, subAmounts, type ActionCycle, type ClearedTransitionSummary, type Amount, type AuthorizationDenial, type Bps, type CapitalAuthority, type Instant, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskAuthorizedIntent, type RiskEvaluation, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaCluster, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
 import { capitalAttestationVerdict, evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
 import { verifyProjection, type IndependentChainReads } from '../projection/verify.js';
 import { verifyRelease } from '../release/verify.js';
@@ -20,6 +20,12 @@ export interface MintHardState {
   readSlot: number;
 }
 
+/** What the authorizer read itself about a cycle's clearance (ADR-0009 P2): the ledger row and the chain's standing against the external checkpoint. */
+export interface ClearanceAuditEvidence {
+  event: { sequence: number; hash: string; actionClass: string; entityId: string; summary: ClearedTransitionSummary | null } | null;
+  chain: { ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string };
+}
+
 export interface AuthorizeEntryInput {
   now: Instant;
   cycle: ActionCycle;
@@ -34,6 +40,7 @@ export interface AuthorizeEntryInput {
   mint: MintHardState | null;
   /** The authorizer's own read of the runtime session gate (D60), never the worker's claim. */
   sessionAllowsEntries: boolean;
+  audit: ClearanceAuditEvidence;
   account: { id: Uuid; cluster: SolanaCluster; capitalAuthority: CapitalAuthority; settlementDecimals: number };
   policy: RiskPolicy;
   keys: { signing: SigningKeyPair; projection: readonly VerificationKey[]; trustedAttestationFingerprints: readonly Sha256Hex[] };
@@ -77,6 +84,30 @@ export async function authorizeEntry(input: AuthorizeEntryInput): Promise<Author
   if (instantToMs(proposal.expiresAt) <= instantToMs(now)) return deny(['PROPOSAL_EXPIRED']);
   const existing = input.ledger.nonceForCycle(cycle.id);
   if (existing !== null) return deny(['CYCLE_ALREADY_AUTHORIZED'], `nonce ${existing}`);
+
+  // 3b. Clearance provenance (ADR-0009 P2): the CLEARED transition is a hash-chained audit event the
+  // projection's ledger head already covers and the external checkpoint anchors. A database-only
+  // rewrite of the cycle, the proposal or the ledger row fails one of these before any sizing happens.
+  const ref = cycle.clearedAudit ?? null;
+  if (!ref) return deny(['AUDIT_CLEARANCE_MISSING']);
+  const ev = input.audit.event;
+  if (!ev || ev.sequence !== ref.sequence) return deny(['AUDIT_EVENT_MISSING'], `sequence ${ref.sequence}`);
+  if (ev.hash !== ref.hash) return deny(['AUDIT_EVENT_HASH_MISMATCH'], `sequence ${ref.sequence}`);
+  if (ev.actionClass !== 'ACTION_CYCLE_CLEARED' || ev.entityId !== cycle.id || !ev.summary) return deny(['AUDIT_EVENT_MISMATCH'], `${ev.actionClass} on ${ev.entityId}`);
+  const proposalHash = await canonicalHash(proposal.proposal);
+  const s = ev.summary;
+  const tampered: string[] = [];
+  if (s.cycleId !== cycle.id) tampered.push('cycleId');
+  if (s.proposalId !== proposal.id) tampered.push('proposalId');
+  if (s.proposalHash !== proposalHash) tampered.push('proposalHash');
+  if (s.cutoffVersion !== cycle.clearedCutoffVersion) tampered.push('cutoffVersion');
+  if (s.verdict !== cycle.verdict) tampered.push('verdict');
+  if (s.strategyVersionId !== cycle.strategyVersionId) tampered.push('strategyVersionId');
+  if (s.releaseDigest !== input.release.digest) tampered.push('releaseDigest');
+  if (tampered.length) return deny(['AUDIT_CLEARANCE_TAMPERED'], tampered.join(','));
+  if (!p.auditHead || p.auditHead.sequence < ref.sequence) return deny(['AUDIT_HEAD_BEHIND_CLEARANCE'], `projection head ${p.auditHead?.sequence ?? 'none'}, clearance ${ref.sequence}`);
+  if (!input.audit.chain.ok) return deny([`AUDIT_CHAIN_${input.audit.chain.reason}`], input.audit.chain.detail ?? null);
+
 
   // 4. Eligibility from the signed projection, for exactly this asset (INV-03).
   const eligibility = p.eligibilitySummary.find((e) => e.assetId === input.asset.id) ?? null;

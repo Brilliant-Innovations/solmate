@@ -14,6 +14,8 @@ export type Database = {
           adversary_run_ids: string[]
           automation_run_id: string | null
           candidate_id: string | null
+          cleared_audit_hash: string | null
+          cleared_audit_sequence: number | null
           cleared_cutoff_version: number | null
           cutoffs: Json
           decision_budget_ms: number
@@ -46,6 +48,8 @@ export type Database = {
           adversary_run_ids?: string[]
           automation_run_id?: string | null
           candidate_id?: string | null
+          cleared_audit_hash?: string | null
+          cleared_audit_sequence?: number | null
           cleared_cutoff_version?: number | null
           cutoffs: Json
           decision_budget_ms: number
@@ -78,6 +82,8 @@ export type Database = {
           adversary_run_ids?: string[]
           automation_run_id?: string | null
           candidate_id?: string | null
+          cleared_audit_hash?: string | null
+          cleared_audit_sequence?: number | null
           cleared_cutoff_version?: number | null
           cutoffs?: Json
           decision_budget_ms?: number

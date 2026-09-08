@@ -1,5 +1,6 @@
-import { addMs, toInstant, instantToMs, type ActionCycle, type AdversarialReview, type AgentRun, type Instant, type PositionReviewState, type Proposal, type QueueMessageEnvelope, type SkillVersion, type SpendBudget, type SpendUsage, type ToolInvocation, type ToolRefusal, type UnresolvedReason, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
+import { type Sha256Hex, addMs, toInstant, instantToMs, type ActionCycle, type AdversarialReview, type AgentRun, type Instant, type PositionReviewState, type Proposal, type QueueMessageEnvelope, type SkillVersion, type SpendBudget, type SpendUsage, type ToolInvocation, type ToolRefusal, type UnresolvedReason, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import { PgmqClient } from './queue-client.js';
+import { recordClearedTransition } from './audit.js';
 import { asJson, type Sql } from './sql.js';
 
 /**
@@ -53,7 +54,7 @@ export interface PositionReviewWrite {
  * position-review machine in the worker (the repo owns no machine); `outbox` is enqueued inside the
  * same transaction so a crash between commit and enqueue cannot lose a cleared action.
  */
-export async function persistDiscretionaryOutcome(sql: Sql, o: DiscretionaryOutcome, extra: { positionReview?: PositionReviewWrite; outbox?: QueueMessageEnvelope } = {}): Promise<void> {
+export async function persistDiscretionaryOutcome(sql: Sql, o: DiscretionaryOutcome, extra: { positionReview?: PositionReviewWrite; outbox?: QueueMessageEnvelope; releaseDigest?: Sha256Hex | null } = {}): Promise<void> {
   if (!['CLEARED', 'REJECTED', 'EXPIRED', 'UNRESOLVED'].includes(o.cycle.state)) throw new Error(`cycle ${o.cycle.id} is not terminal (${o.cycle.state})`);
   await sql.begin(async (tx) => {
     const t = tx as unknown as Sql;
@@ -87,6 +88,11 @@ export async function persistDiscretionaryOutcome(sql: Sql, o: DiscretionaryOutc
       await t`
         insert into agents.tool_refusals (id, agent_run_id, action_cycle_id, requested_tool, reason, detail, request_hash, cutoff_version, created_at)
         values (${r.id}, ${r.agentRunId}, ${r.actionCycleId}, ${r.requestedTool}, ${r.reason}, ${r.detail}, ${r.requestHash}, ${r.cutoffVersion}, ${r.createdAt})`;
+    }
+    // ADR-0009 P2: a cleared discretionary cycle is recorded in the hash-chained ledger inside the same transaction.
+    if (c.state === 'CLEARED') {
+      const cleared = o.proposals.find((x) => x.id === c.proposalId);
+      if (cleared) await recordClearedTransition(t, { cycle: c, proposal: cleared, releaseDigest: extra.releaseDigest ?? null, lotIds: [] });
     }
     if (extra.positionReview) {
       const pr = extra.positionReview;

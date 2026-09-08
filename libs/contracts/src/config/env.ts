@@ -166,6 +166,9 @@ export const WorkerEnv = Common.extend({
   AGENTS_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
   /** Signed RiskStateProjection cadence (§6.14A, D52); the authorizer refuses a projection older than its own max age. */
   STATE_PROJECTOR_INTERVAL_MS: z.coerce.number().int().min(10_000).max(600_000).default(60_000),
+  /** Where the worker replicates audit-ledger checkpoints outside Postgres (§20.25); the authorizer reads the same file. */
+  AUDIT_CHECKPOINT_PATH: NonEmpty.optional(),
+  AUDIT_CHECKPOINT_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
   /** Drain cadence for cleared discretionary position actions (trading-actions queue). */
   TRADING_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   // Intelligence providers (M6, §3.4–3.5). Absent key = that source is skipped; both absent = the intel-ingest role is disabled.
@@ -219,6 +222,8 @@ export const RiskAuthorizerEnv = Common.extend({
   RISK_AUTHORIZATION_PUBLIC_KEY: Ed25519PublicKeyHex,
   PROJECTION_VERIFICATION_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
   RELEASE_ATTESTATION_TRUST_FINGERPRINTS: Csv(Sha256Hex),
+  /** External audit-checkpoint replica (JSON lines) the authorizer verifies the ledger against before accepting a clearance (ADR-0009 P2). */
+  AUDIT_CHECKPOINT_PATH: NonEmpty.optional(),
   SOLANA_RPC_ALLOWLIST: Csv(Url),
   SENTRY_DSN_RISK_AUTHORIZER: Url.optional(),
   /** host:port for the worker-facing authorize API (§15.8). Loopback or private network only. */
