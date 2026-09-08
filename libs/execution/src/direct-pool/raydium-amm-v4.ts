@@ -2,7 +2,7 @@ import type { Amount, Bps, DirectPoolHop, MintAddress } from '@sol-agent-trader/
 import { decodeTokenAccount } from '../simulate/token-account.js';
 import { TOKEN_PROGRAM } from '../validate/programs.js';
 import { ByteReader, concat, createProgramAddress, pk, u64le, utf8 } from './bytes.js';
-import { constantProductOut, impactBps, PoolDecodeError, type DecodeContext, type DecodedPoolState, type DirectPoolAdapter, type DirectPoolInstruction, type PoolQuote, type RawAccount, type SwapBuildInput } from './types.js';
+import { constantProductOut, impactBps, PoolDecodeError, type DecodedPoolState, type DirectPoolAdapter, type DirectPoolInstruction, type PoolQuote, type RawAccount, type SwapBuildInput } from './types.js';
 
 /**
  * Raydium AMM v4 (constant product with an OpenBook market, program 675kPX9M…). Layouts verified
@@ -55,7 +55,7 @@ export class RaydiumAmmV4Adapter implements DirectPoolAdapter {
     return [marketId, baseVault, quoteVault];
   }
 
-  decode(hop: DirectPoolHop, accounts: readonly (RawAccount | null)[], _context: DecodeContext): DecodedPoolState {
+  decode(hop: DirectPoolHop, accounts: readonly (RawAccount | null)[]): DecodedPoolState {
     const [pool, market, baseVaultAcc, quoteVaultAcc] = accounts;
     if (!pool || pool.owner !== this.programId) throw new PoolDecodeError(this.program, `pool ${hop.poolAddress} missing or not owned by ${this.programId}`);
     if (pool.data.length !== 752) throw new PoolDecodeError(this.program, `pool data is ${pool.data.length} bytes, expected 752`);

@@ -6,6 +6,10 @@ import { TOKEN_PROGRAM } from '../validate/programs.js';
 import { anchorDiscriminator, associatedTokenAddress, createProgramAddress, findProgramAddress, isOnCurve, utf8 } from './bytes.js';
 import { buildEmergencyExit, classifyDryRun, compileLegacyMessage, runEmergencyDryRun } from './dry-run.js';
 import { MAINNET_POOL_FIXTURES } from './fixtures/mainnet-pools.js';
+import { MAINNET_DLMM_FIXTURE } from './fixtures/mainnet-dlmm.js';
+import { binArrayIndex, deriveBinArray, deriveEventAuthority, MeteoraDlmmAdapter, nextBinArrayWithLiquidity } from './meteora-dlmm.js';
+import { MAINNET_TOKEN2022_MINT } from './fixtures/mainnet-token2022-mint.js';
+import { activeTransferFee, decodeMintExtensions, transferFeeAmount } from './token2022.js';
 import { RaydiumAmmV4Adapter } from './raydium-amm-v4.js';
 import { RaydiumCpmmAdapter } from './raydium-cpmm.js';
 import { constantProductOut, impactBps, type RawAccount } from './types.js';
@@ -90,7 +94,7 @@ describe('Raydium AMM v4 adapter (layout captured from mainnet 2026-09-08)', () 
   const accounts = MAINNET_POOL_FIXTURES.ammv4.accounts.map(raw);
   it('decodes the pool and its OpenBook market, derives the vault signer and authority, and builds the 18-account swapBaseIn', () => {
     expect(adapter.dependentAccounts(ammHop, accounts[0]!)).toEqual(['7hF2eZaLQWwztFq3ojdyY1FYWJQG9QisrScc5QACoGaK', 'BCaWrDNcFnTJ9xiKan82V7wuXcnWjEhL4ZGev4kzT8mK', 'AqbNjgq7YcyysT846feSezJa72nGspxq1h2ZEzJLpVXs']);
-    const state = adapter.decode(ammHop, accounts, CTX);
+    const state = adapter.decode(ammHop, accounts);
     expect(state).toMatchObject({ program: 'RAYDIUM_AMM_V4', mintA: ammHop.inputMint, mintB: SOL, feeBps: 25, tradeable: true });
     const d = state.detail as { authority: string; market: { bids: string; asks: string; eventQueue: string; vaultSigner: string } };
     expect(d.authority).toBe('5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1');
@@ -166,7 +170,7 @@ describe('unsigned emergency build + simulation dry-run (§14.6, D33)', () => {
     const ok = await runEmergencyDryRun({ hop: cpmmHop, user: WALLET, amountIn: 1_000_000n, slippageBps: 300, policy, reader, now: NOW });
     expect(ok).toMatchObject({ class: 'OK', ok: true, slot: 9, tradeable: true });
     expect(reader.simulated).toHaveLength(1);
-    const unsupported = await runEmergencyDryRun({ hop: { ...cpmmHop, program: 'METEORA_DLMM' }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW });
+    const unsupported = await runEmergencyDryRun({ hop: { ...cpmmHop, program: 'ORCA_WHIRLPOOL' }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW });
     expect(unsupported).toMatchObject({ class: 'UNSUPPORTED_PROGRAM', ok: false, build: null });
     const missing = await runEmergencyDryRun({ hop: { ...cpmmHop, poolAddress: 'Missing1111111111111111111111111111111111111' as SolanaAddress }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW });
     expect(missing).toMatchObject({ class: 'DECODE_FAILED', ok: false });
@@ -175,5 +179,88 @@ describe('unsigned emergency build + simulation dry-run (§14.6, D33)', () => {
     });
     const rpc = await runEmergencyDryRun({ hop: cpmmHop, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader: failing, now: NOW });
     expect(rpc).toMatchObject({ class: 'RPC_ERROR', ok: false, error: 'rpc down' });
+  });
+});
+
+describe('Meteora DLMM adapter (layout captured from mainnet 2026-09-08, BANK/USDC bin step 100, 2% base fee)', () => {
+  const adapter = new MeteoraDlmmAdapter();
+  const F = MAINNET_DLMM_FIXTURE;
+  const USDC = F.tokenY as MintAddress;
+  const hop: DirectPoolHop = { program: 'METEORA_DLMM', programId: adapter.programId as SolanaAddress, poolAddress: F.pool as SolanaAddress, inputMint: F.tokenX as MintAddress, outputMint: USDC };
+  const byAddress = new Map<string, RawAccount>(F.accounts.filter((a): a is NonNullable<typeof a> => a !== null).map((a) => [a.address, raw(a)!]));
+  const ctx = { nowMs: Date.parse(F.capturedAt) };
+  it('bin-array index and PDA helpers match the program (negative ids floor, i64 LE seed, __event_authority)', () => {
+    expect(binArrayIndex(-132)).toBe(-2);
+    expect(binArrayIndex(-140)).toBe(-2);
+    expect(binArrayIndex(-141)).toBe(-3);
+    expect(binArrayIndex(69)).toBe(0);
+    expect(binArrayIndex(70)).toBe(1);
+    expect(deriveBinArray(F.pool, -2)).toBe('J2tGA3QNyTwu9uhoMrdQBwysmcSbCaxdByvYAHLmMfUn');
+    expect(deriveEventAuthority()).toMatch(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/);
+    // bitmap bit i+512 marks array i; walking down from 3 finds 1, walking up from -1 finds 1
+    const bitmap = (1n << BigInt(1 + 512)) | (1n << BigInt(-5 + 512));
+    expect(nextBinArrayWithLiquidity(bitmap, 3, true)).toBe(1);
+    expect(nextBinArrayWithLiquidity(bitmap, 0, true)).toBe(-5);
+    expect(nextBinArrayWithLiquidity(bitmap, -1, false)).toBe(1);
+    expect(nextBinArrayWithLiquidity(bitmap, 2, false)).toBeNull();
+  });
+  it('decodes the pair, walks the bins for a quote in both directions and builds swap2 with the crossed bin arrays as remaining accounts', () => {
+    const pool = byAddress.get(F.pool)!;
+    const dependent = adapter.dependentAccounts(hop, pool);
+    // reserves, bitmap-extension slot, then the arrays with liquidity going down from the active array (-2)
+    expect(dependent.slice(0, 3)).toEqual(['2cUVAYX1YeTDPXPjxkyQbDqQEGJtr88AhTfqXn3FywKe', 'DoPExZQ53JStdZdpLjYf7nUmuDsrwePm6YdVmQaQSJdP', dependent[2]]);
+    expect(dependent.slice(3, 5)).toEqual([F.tokenX, F.tokenY]);
+    expect(dependent.length).toBeGreaterThanOrEqual(6);
+    expect(dependent[5]).toBe(deriveBinArray(F.pool, -2));
+    const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
+    const state = adapter.decode(hop, accounts, ctx);
+    expect(state).toMatchObject({ program: 'METEORA_DLMM', mintA: F.tokenX, mintB: USDC, tokenProgramA: TOKEN_PROGRAM, tokenProgramB: TOKEN_PROGRAM, feeBps: 200, tradeable: true }); // base_factor 20000 × bin_step 100 × 10 = 2%
+    const d = state.detail as { activeId: number; binStep: number; oracle: string; bitmapExtension: string | null; binArrays: { index: number }[] };
+    expect(d.binStep).toBe(100);
+    expect(d.oracle).toBe('97oMGv1FAaan8VzaFefsaof2LPHHXeuyot2RwbWBmngR');
+    expect(d.bitmapExtension).toBeNull();
+    expect(d.binArrays[0]!.index).toBe(-2);
+    // selling 1 BANK (9 decimals? the fixture mint has 6) at ~0.27 USDC: output in the right order of magnitude and below the fee-free spot
+    const q = adapter.quote(state, hop.inputMint, 1_000_000n);
+    const spot = Math.pow(1.01, d.activeId);
+    expect(Number(q.expectedOutputAmount)).toBeGreaterThan(spot * 1_000_000 * 0.9);
+    expect(Number(q.expectedOutputAmount)).toBeLessThan(spot * 1_000_000);
+    expect(BigInt(q.feeAmount)).toBeGreaterThan(0n);
+    // buying BANK with USDC walks upward into the X-only bins
+    const up = adapter.dependentAccounts({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, pool);
+    expect(up[5]).toBe(deriveBinArray(F.pool, -2));
+    const upState = adapter.decode({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, [pool, ...up.map((a) => byAddress.get(a) ?? null)], ctx);
+    const q2 = adapter.quote(upState, USDC, 10_000_000n);
+    expect(Number(q2.expectedOutputAmount)).toBeGreaterThan((10_000_000 / spot) * 0.9);
+    // a size beyond the loaded bins is refused rather than guessed
+    expect(() => adapter.quote(state, hop.inputMint, 10n ** 18n)).toThrow(/insufficient liquidity/);
+    const ix = adapter.swapInstruction({ state, user: WALLET, inputMint: hop.inputMint, userSource: 'src', userDestination: 'dst', amountIn: 5n, minimumAmountOut: 1n });
+    expect(ix.accounts).toHaveLength(16 + d.binArrays.length);
+    expect(ix.accounts[0]).toEqual({ pubkey: F.pool, isSigner: false, isWritable: true });
+    expect(ix.accounts[1]!.pubkey).toBe(adapter.programId); // no bitmap extension: optional account left as the program id
+    expect(ix.accounts[10]).toEqual({ pubkey: WALLET, isSigner: true, isWritable: false });
+    expect(ix.accounts[13]!.pubkey).toBe('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+    expect(ix.accounts[15]!.pubkey).toBe(adapter.programId);
+    expect(ix.accounts[16]!.pubkey).toBe(deriveBinArray(F.pool, -2));
+    expect(Buffer.from(ix.data).toString('hex')).toBe('414b3f4ceb5b5b88' + '0500000000000000' + '0100000000000000' + '00000000');
+  });
+});
+
+describe('Token-2022 mint extensions (transfer fee, captured from mainnet 2026-09-08)', () => {
+  it('decodes the TLV transfer-fee config, picks the schedule in force and withholds the fee as the program does; classic mints carry nothing', () => {
+    const mint = raw(MAINNET_TOKEN2022_MINT)!;
+    const ext = decodeMintExtensions(mint);
+    expect(ext.transferHook).toBe(false);
+    expect(ext.transferFee?.newer).toEqual({ epoch: 1029n, maximumFee: 1_000_000_000_000_000n, basisPoints: 300 });
+    expect(ext.transferFee?.older.basisPoints).toBe(300);
+    const fee = activeTransferFee(ext, 1031n);
+    expect(fee?.basisPoints).toBe(300);
+    expect(transferFeeAmount(fee, 1_000_000_000n)).toBe(30_000_000n);
+    expect(transferFeeAmount(fee, 1n)).toBe(1n); // rounds up
+    expect(transferFeeAmount({ epoch: 0n, maximumFee: 5n, basisPoints: 300 }, 1_000_000n)).toBe(5n); // capped
+    expect(transferFeeAmount(null, 1_000_000n)).toBe(0n);
+    expect(activeTransferFee(ext, null)?.basisPoints).toBe(300);
+    expect(decodeMintExtensions(null).transferFee).toBeNull();
+    expect(decodeMintExtensions(raw(MAINNET_POOL_FIXTURES.cpmm.accounts[2])!).extensionTypes).toEqual([]); // a classic token account, not a Token-2022 mint
   });
 });

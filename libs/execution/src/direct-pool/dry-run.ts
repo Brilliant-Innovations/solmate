@@ -6,6 +6,7 @@ import { COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM } from '../validate/programs.js'
 import { associatedTokenAddress, ASSOCIATED_TOKEN_PROGRAM_ID, concat, u32le, u64le } from './bytes.js';
 import { RaydiumAmmV4Adapter } from './raydium-amm-v4.js';
 import { RaydiumCpmmAdapter } from './raydium-cpmm.js';
+import { MeteoraDlmmAdapter } from './meteora-dlmm.js';
 import { PoolDecodeError, type AccountMeta, type DecodedPoolState, type DirectPoolAdapter, type DirectPoolInstruction, type PoolQuote, type RawAccount } from './types.js';
 
 /**
@@ -17,7 +18,7 @@ import { PoolDecodeError, type AccountMeta, type DecodedPoolState, type DirectPo
  * which is classified OK_UNFUNDED. Nothing here signs or submits.
  */
 
-export const DEFAULT_DIRECT_POOL_ADAPTERS: readonly DirectPoolAdapter[] = [new RaydiumCpmmAdapter(), new RaydiumAmmV4Adapter()];
+export const DEFAULT_DIRECT_POOL_ADAPTERS: readonly DirectPoolAdapter[] = [new RaydiumCpmmAdapter(), new RaydiumAmmV4Adapter(), new MeteoraDlmmAdapter()];
 
 export function adapterFor(hop: DirectPoolHop, adapters: readonly DirectPoolAdapter[] = DEFAULT_DIRECT_POOL_ADAPTERS): DirectPoolAdapter | null {
   return adapters.find((a) => a.program === hop.program && a.programId === hop.programId) ?? null;

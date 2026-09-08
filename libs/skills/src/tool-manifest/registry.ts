@@ -64,6 +64,15 @@ export interface ToolRegistryOptions {
   newId: () => Uuid;
 }
 
+function describeToolName(name: unknown): string {
+  if (typeof name === 'string') return name;
+  try {
+    return JSON.stringify(name) ?? typeof name;
+  } catch {
+    return typeof name;
+  }
+}
+
 export class ToolRegistry {
   readonly manifest: ToolManifest;
   private readonly handlers: ToolHandlers;
@@ -110,7 +119,8 @@ export class ToolRegistry {
 
   async invoke(run: RunContext, call: ToolCall): Promise<ToolResult> {
     const ledger = this.ledger(run);
-    const requestedTool = typeof call.name === 'string' ? call.name.slice(0, 64) : String(call.name).slice(0, 64);
+    // An untrusted name may be any value, including an object whose toString/valueOf cannot be coerced; the refusal path must never throw on it (INV-16).
+    const requestedTool = describeToolName(call.name).slice(0, 64);
     const requestText = safeCanonical({ name: call.name, arguments: call.arguments });
     const requestHash = await sha256Hex(requestText);
     const refuse = async (reason: ToolRefusalReason, detail: string): Promise<ToolResult> => {

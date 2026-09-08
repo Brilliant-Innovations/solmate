@@ -54,7 +54,7 @@ describe('emergency-dry-run role (§14.6, D33)', () => {
     const deps: EmergencyDryRunDeps = {
       repo: {
         async targets() { return targets; },
-        async latestSnapshots(ids) { const m = new Map<Uuid, EmergencyExitRouteSnapshot>(); if (ids.includes(A1)) m.set(A1, snap(A1, 'RAYDIUM_CPMM')); if (ids.includes(A2)) m.set(A2, snap(A2, 'METEORA_DLMM')); if (ids.includes(A4)) m.set(A4, snap(A4, 'RAYDIUM_CPMM')); return m; },
+        async latestSnapshots(ids) { const m = new Map<Uuid, EmergencyExitRouteSnapshot>(); if (ids.includes(A1)) m.set(A1, snap(A1, 'RAYDIUM_CPMM')); if (ids.includes(A2)) m.set(A2, snap(A2, 'ORCA_WHIRLPOOL')); if (ids.includes(A4)) m.set(A4, snap(A4, 'RAYDIUM_CPMM')); return m; },
         async insertSnapshot(s) { inserted.push(s); },
       },
       reader: reader(),

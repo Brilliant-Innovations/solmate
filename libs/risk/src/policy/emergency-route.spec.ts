@@ -25,8 +25,8 @@ describe('emergency-route readiness gate (§14.6, D33)', () => {
     expect(emergencyRouteReadiness(snapshot({ lastDryRun: null }), NOW, policy)).toMatchObject({ readiness: 'STALE', reason: 'no dry-run recorded' });
     expect(emergencyRouteReadiness(snapshot({ lastDryRun: { at: ago(policy.maxDryRunAgeMs + 1), ok: true, simulatedOutputAmount: null, error: null } }), NOW, policy).readiness).toBe('STALE');
     expect(emergencyRouteReadiness(snapshot({ lastDryRun: { at: ago(1000), ok: false, simulatedOutputAmount: null, error: 'pool not tradeable: STATUS_4' } }), NOW, policy)).toMatchObject({ readiness: 'FAILED', reason: 'pool not tradeable: STATUS_4' });
-    const dlmm = snapshot({ hops: [{ ...snapshot().hops[0]!, program: 'METEORA_DLMM' }] });
-    expect(emergencyRouteReadiness(dlmm, NOW, policy).readiness).toBe('UNSUPPORTED');
+    const whirlpool = snapshot({ hops: [{ ...snapshot().hops[0]!, program: 'ORCA_WHIRLPOOL' }] });
+    expect(emergencyRouteReadiness(whirlpool, NOW, policy).readiness).toBe('UNSUPPORTED');
   });
   it('gates LIVE_AUTO only: PAPER and LIVE_APPROVAL entries are unaffected', () => {
     const stale = emergencyRouteReadiness(snapshot({ lastDryRun: null }), NOW, policy);

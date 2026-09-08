@@ -1644,7 +1644,8 @@ async function emergencyDryRunLoop(env: WorkerEnv, logger: Logger, shared: Share
         // program-owned authorities (pool vaults, PDAs) cannot pay fees or sign; only a real wallet with SOL stands in
         if (!info?.owner || !tokenAccount || !isOnCurve(base58Decode(info.owner))) continue;
         const balance = await rpc.getBalance(info.owner);
-        if (balance.value >= 10_000_000) return { owner: info.owner, tokenAccount };
+        // enough SOL to pay fees and, in simulation, the rent of a fresh settlement ATA (0.05 SOL)
+        if (balance.value >= 50_000_000) return { owner: info.owner, tokenAccount };
       }
       return null;
     },
