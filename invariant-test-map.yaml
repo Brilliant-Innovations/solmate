@@ -287,9 +287,13 @@ invariants:
       - PAPER
     owner_modules:
       - libs/replay/src/point-in-time
-    tests: []
-    evidence: []
-    status: unmapped
+      - libs/db/src/server/intelligence-repo.ts
+    tests:
+      - libs/replay/src/point-in-time/visibility.spec.ts
+      - libs/db/src/server/intelligence-repo.integration.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-14
     statement: "No discretionary autonomous live intent exists without a cleared adversarial action cycle."

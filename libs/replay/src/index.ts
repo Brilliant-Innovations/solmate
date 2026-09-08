@@ -1,1 +1,1 @@
-export * from './lib/replay.js';
+export * from './point-in-time/visibility.js';

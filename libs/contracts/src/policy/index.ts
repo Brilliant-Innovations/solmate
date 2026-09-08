@@ -11,3 +11,4 @@ export * from './paper.js';
 export * from './session.js';
 export * from './cohorts.js';
 export * from './regime.js';
+export * from './intelligence.js';
