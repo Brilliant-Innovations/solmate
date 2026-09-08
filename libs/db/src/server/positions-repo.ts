@@ -141,3 +141,26 @@ export async function applyExit(sql: Sql, x: ExitApplication): Promise<void> {
     await t`update trading.intents set lifecycle_state = 'COMPLETED' where id = ${x.intentId}`;
   });
 }
+
+/** Open positions with lots, stops and decimals for the PositionRiskShadow (§15.10A). Throws when the database is unavailable, by design. */
+export async function shadowPositions(sql: Sql, accountId: Uuid): Promise<{ positionId: Uuid; assetId: Uuid; mint: MintAddress; quantity: Amount; decimals: number; stop: { model: 'ATR' | 'STRUCTURE_LOW' | 'PERCENTAGE' | 'STRATEGY_INVALIDATION'; level: number | null } | null; unreviewedStop: number | null; lots: { lotId: Uuid; quantity: Amount; protectionMode: 'MONITORED_EXIT' | 'JUPITER_TRIGGER'; providerOrderId: string | null }[] }[]> {
+  const rows = await sql<Record<string, unknown>[]>`
+    select p.id, p.asset_id, p.mint, a.decimals, p.quantity::text as quantity, p.stop, p.unreviewed_stop,
+      coalesce((select jsonb_agg(jsonb_build_object('lotId', l.id, 'quantity', l.quantity::text, 'protectionMode', l.protection_mode, 'providerOrderId', l.provider_order_id) order by l.id)
+        from trading.position_lots l where l.position_id = p.id and l.status = 'OPEN'), '[]'::jsonb) as lots
+    from trading.positions p join core.assets a on a.id = p.asset_id
+    where p.account_id = ${accountId} and p.status <> 'CLOSED' order by p.id`;
+  return rows.map((r) => {
+    const stop = r['stop'] as { model?: string; level?: number | null } | null;
+    return {
+      positionId: r['id'] as Uuid,
+      assetId: r['asset_id'] as Uuid,
+      mint: r['mint'] as MintAddress,
+      quantity: r['quantity'] as Amount,
+      decimals: Number(r['decimals']),
+      stop: stop && stop.model ? { model: stop.model as 'ATR' | 'STRUCTURE_LOW' | 'PERCENTAGE' | 'STRATEGY_INVALIDATION', level: typeof stop.level === 'number' ? stop.level : null } : null,
+      unreviewedStop: r['unreviewed_stop'] === null || r['unreviewed_stop'] === undefined ? null : Number(r['unreviewed_stop']),
+      lots: r['lots'] as { lotId: Uuid; quantity: Amount; protectionMode: 'MONITORED_EXIT' | 'JUPITER_TRIGGER'; providerOrderId: string | null }[],
+    };
+  });
+}

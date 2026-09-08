@@ -130,6 +130,7 @@ import {
   lastHeadAdvance,
   auditHead,
   checkpointAuditChain,
+  shadowPositions,
   activeEntryPauses,
   clearEntryPauses,
   windDownLots,
@@ -173,6 +174,9 @@ import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
 import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
+import { runShadowSyncCycle, type ShadowSyncDeps, type ShadowSyncState } from './roles/shadow-sync.js';
+import { FileShadowJournal } from './shadow/journal.js';
+import { impliedPrice } from '@sol-agent-trader/execution';
 import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from './notifications/channels.js';
 import { DEFAULT_NOTIFICATION_POLICY, DEFAULT_WATCHDOG_POLICY } from '@sol-agent-trader/contracts';
 import { verdictPermits } from '@sol-agent-trader/risk';
@@ -263,7 +267,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -388,6 +392,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
+  if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
   if (roles.has('audit-checkpoint')) {
     if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
     else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
@@ -1520,4 +1525,46 @@ async function notificationsLoop(env: WorkerEnv, logger: Logger, shared: Shared)
   await loopUnderLease('notifications', intervalMs, logger, shared, async () => {
     await runNotificationsCycle(deps);
   });
+}
+
+/**
+ * §15.10A: runs without a database lease on purpose. The shadow role must keep working while Postgres is
+ * down, and the journal it writes is host-local, so one instance per host is the natural scope.
+ */
+async function shadowSyncLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.SHADOW_SYNC_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('shadow_sync_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  if (!env.SHADOW_JOURNAL_PATH) {
+    logger.warn('roles_disabled', { roles: ['shadow-sync'], reason: 'SHADOW_JOURNAL_PATH not set' });
+    return;
+  }
+  const { deps: monitor, account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, env.POSITION_MONITOR_INTERVAL_MS);
+  const { sql } = shared;
+  const executor = env.EXECUTION_SERVICE_URL && env.INTERNAL_API_SECRET ? new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 15_000 }) : null;
+  const deps: ShadowSyncDeps = {
+    repo: { positions: () => shadowPositions(sql, account.id) },
+    journal: new FileShadowJournal(env.SHADOW_JOURNAL_PATH),
+    executor,
+    price: async (mint, quantity, decimals, now) => {
+      const q = await monitor.exitQuote(mint, monitor.account.settlementMint, quantity, monitor.policy.maxSlippageBps, now);
+      return q ? impliedPrice(q.expectedOutputAmount, monitor.account.settlementDecimals, quantity, decimals) : null;
+    },
+    settlementMints: [monitor.account.settlementMint],
+    clock: systemClock,
+    logger,
+    config: { dbDownAfterFailures: 2 },
+  };
+  const state: ShadowSyncState = { consecutiveDbFailures: 0 };
+  logger.info('shadow_sync_starting', { intervalMs, accountId: account.id, journal: env.SHADOW_JOURNAL_PATH, executor: executor !== null, holder: shared.holder });
+  while (!shared.stopping()) {
+    try {
+      await runShadowSyncCycle(deps, state);
+    } catch (err) {
+      logger.error('shadow_sync_cycle_failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }

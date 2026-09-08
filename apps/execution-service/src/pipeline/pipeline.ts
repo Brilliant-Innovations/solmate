@@ -1,4 +1,4 @@
-import { amountToBigInt, instantToMs, mulDiv, type Amount, type Slot, type TxSignature, type Bps, type Clock, type EmergencyCommand, type EmergencyIssuer, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SignedEmergencyCommand, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { amountToBigInt, instantToMs, mulDiv, type Amount, type PositionRiskShadow, type Slot, type TxSignature, type Bps, type Clock, type EmergencyCommand, type EmergencyIssuer, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SignedEmergencyCommand, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
 import { LiveExecutionAdapter, attemptTransition, newOrderAttempt, planEmergencyClose, proveDead, proveDeadAcrossViews, quorumVerdict, readSignature, type OrderAttemptRecord, type QuorumObserver, type ChainObserver, type CustodyReader, type DetailedExecution, type EmergencyCloseAction, type EmergencyClosePolicy, type EmergencyPlanRejection, type ExecutionBounds, type LiveAdapterOptions } from '@sol-agent-trader/execution';
 import { verifyEmergencyCommand, type EmergencyCommandRejection } from '../emergency/command.js';
 import { verifyAuthority, type AuthorityRejection } from '../authority/verify.js';
@@ -568,6 +568,17 @@ export class ExecutorPipeline {
     } catch {
       // best effort after the journal holds the truth (§15.10); the row is reconciled later
     }
+  }
+
+  /**
+   * §15.10A: the worker's sequenced position shadow, journaled here so DB-down protection can rest on a
+   * durable local copy. Sequences never regress; a stale or replayed shadow is refused, never merged.
+   */
+  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: true; sequence: number } | { ok: false; reason: 'SHADOW_REGRESSION'; lastSynced: number }> {
+    const last = this.lastShadowSequence();
+    if (last !== null && shadow.sequence <= last) return { ok: false, reason: 'SHADOW_REGRESSION', lastSynced: last };
+    await this.deps.journal.append('SHADOW_SYNCED', `shadow:${shadow.sequence}`, { sequence: shadow.sequence, asOf: shadow.asOf, positions: shadow.positions.length, shadow: shadow as unknown as JsonRecord });
+    return { ok: true, sequence: shadow.sequence };
   }
 
   /** Total open non-settlement exposure the ledger holds (for the harness and health surfaces). */

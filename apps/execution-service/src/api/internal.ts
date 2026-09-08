@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
-import { ExecutionRequest, NonceWindow, ProtectionMode, verifyServiceRequest, type Clock, type SignedApprovalGrant, type SignerHealth, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
+import { Amount, EmergencyCommandType, ExecutionRequest, MintAddress, NonceWindow, PositionRiskShadow, ProtectionMode, Uuid, verifyServiceRequest, type Clock, type SignedApprovalGrant, type SignerHealth, type TradeIntent } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
 import { BodyTooLarge, json, readBody, serve, type Handler } from './http.js';
 import type { ExecutorPipeline } from '../pipeline/pipeline.js';
@@ -31,8 +31,10 @@ export interface InternalApiDeps {
 
 const ExecuteBody = z.object({ request: ExecutionRequest, protectionMode: ProtectionMode });
 const ClearPauseBody = z.object({ reviewedBy: z.string().min(1).max(200) });
+/** The position monitor's authenticated emergency path (§15.10A): risk reduction only, bound to the shadow sequence it acted on. */
+const MonitorBody = z.object({ commandId: Uuid, type: EmergencyCommandType, mint: MintAddress.nullable(), maxAmount: Amount.nullable(), reason: z.string().min(1).max(1024), shadowSequence: z.number().int().nonnegative().nullable() });
 
-export const INTERNAL_ROUTES = ['GET /v1/health', 'POST /v1/execute', 'POST /v1/recover', 'POST /v1/pause/clear'] as const;
+export const INTERNAL_ROUTES = ['GET /v1/health', 'POST /v1/execute', 'POST /v1/recover', 'POST /v1/pause/clear', 'POST /v1/shadow', 'POST /v1/emergency/monitor'] as const;
 
 export function internalApiHandler(deps: InternalApiDeps): Handler {
   const nonces = new NonceWindow(2 * (deps.maxSkewMs ?? 60_000));
@@ -107,6 +109,28 @@ export function internalApiHandler(deps: InternalApiDeps): Handler {
         await deps.pipeline.clearLocalPause(parsed.reviewedBy);
         deps.logger.warn('internal_api_local_pause_cleared', { reviewedBy: parsed.reviewedBy });
         return json(res, 200, { localPause: deps.pipeline.localPause });
+      }
+      case 'POST /v1/shadow': {
+        let shadow: z.infer<typeof PositionRiskShadow>;
+        try {
+          shadow = PositionRiskShadow.parse(JSON.parse(body));
+        } catch (err) {
+          return json(res, 400, { error: 'MALFORMED_REQUEST', detail: err instanceof Error ? err.message.slice(0, 300) : String(err) });
+        }
+        const synced = await deps.pipeline.syncShadow(shadow);
+        deps.logger.info('internal_api_shadow', { sequence: shadow.sequence, positions: shadow.positions.length, ok: synced.ok });
+        return json(res, synced.ok ? 200 : 409, synced);
+      }
+      case 'POST /v1/emergency/monitor': {
+        let monitor: z.infer<typeof MonitorBody>;
+        try {
+          monitor = MonitorBody.parse(JSON.parse(body));
+        } catch (err) {
+          return json(res, 400, { error: 'MALFORMED_REQUEST', detail: err instanceof Error ? err.message.slice(0, 300) : String(err) });
+        }
+        const outcome = await deps.pipeline.emergency({ monitor });
+        deps.logger.warn('internal_api_monitor_emergency', { commandId: monitor.commandId, type: monitor.type, mint: monitor.mint, shadowSequence: monitor.shadowSequence, outcome: outcome.outcome, reasons: outcome.outcome === 'REJECTED' ? outcome.reasons : [] });
+        return json(res, outcome.outcome === 'REJECTED' ? 403 : 200, outcome);
       }
       default:
         return json(res, 404, { error: 'NO_SUCH_ROUTE', routes: INTERNAL_ROUTES });

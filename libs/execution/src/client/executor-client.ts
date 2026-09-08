@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { signServiceRequest, type Clock, type ExecutionRequest, type ProtectionMode } from '@sol-agent-trader/contracts';
+import { signServiceRequest, type Amount, type Clock, type EmergencyCommand, type ExecutionRequest, type MintAddress, type PositionRiskShadow, type ProtectionMode, type Uuid } from '@sol-agent-trader/contracts';
 
 /**
  * Worker-side client for the executor's internal API (blueprint §15.2, §15.8). Every request is
@@ -58,5 +58,25 @@ export class ExecutorClient {
 
   clearLocalPause(reviewedBy: string): Promise<Record<string, unknown>> {
     return this.call('POST', '/v1/pause/clear', { reviewedBy });
+  }
+
+  /** §15.10A: push the sequenced position shadow; a regression comes back as a refusal, not an exception. */
+  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: boolean; sequence?: number; reason?: string; lastSynced?: number }> {
+    try {
+      return await this.call('POST', '/v1/shadow', shadow);
+    } catch (err) {
+      if (err instanceof ExecutorHttpError && err.status === 409) return err.body as { ok: boolean; reason?: string; lastSynced?: number };
+      throw err;
+    }
+  }
+
+  /** The position monitor's DB-down risk reduction (§15.10A): a rejection comes back as the outcome, not an exception. */
+  async emergencyMonitor(cmd: { commandId: Uuid; type: EmergencyCommand['type']; mint: MintAddress | null; maxAmount: Amount | null; reason: string; shadowSequence: number | null }): Promise<{ outcome: string; reasons?: string[]; detail?: string[] }> {
+    try {
+      return await this.call('POST', '/v1/emergency/monitor', cmd);
+    } catch (err) {
+      if (err instanceof ExecutorHttpError && err.status === 403) return err.body as { outcome: string; reasons?: string[]; detail?: string[] };
+      throw err;
+    }
   }
 }

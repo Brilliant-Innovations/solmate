@@ -141,5 +141,28 @@ describe('executor internal API and out-of-band endpoint', () => {
       await s.stop();
     }
   });
-});
 
+  it('the shadow route journals a sequenced shadow, refuses a regression, and the monitor emergency path honours the shadow sequence (§15.10A)', async () => {
+    const w = await createWorld(dir, { authorizer, emergencyOperator: operator });
+    const s = await servers(w);
+    try {
+      const client = new ExecutorClient({ baseUrl: s.internalUrl, secretHex: SECRET, clock: w.clock });
+      const shadow = (sequence: number) => ({ sequence, asOf: AT, settlementMints: [TOKEN], positions: [] });
+      expect(await client.syncShadow(shadow(1) as never)).toEqual({ ok: true, sequence: 1 });
+      expect(await client.syncShadow(shadow(3) as never)).toEqual({ ok: true, sequence: 3 });
+      expect(await client.syncShadow(shadow(2) as never)).toEqual({ ok: false, reason: 'SHADOW_REGRESSION', lastSynced: 3 });
+      expect(w.pipeline.journal.all().filter((e) => e.kind === 'SHADOW_SYNCED').map((e) => e.payload['sequence'])).toEqual([1, 3]);
+      // a monitor command from an older shadow is refused; one at the synced sequence acts (a pause here: nothing to sell)
+      const stale = await client.emergencyMonitor({ commandId: newId(), type: 'PAUSE_NEW_ENTRIES', mint: null, maxAmount: null, reason: 'db down, stop hit', shadowSequence: 2 });
+      expect(stale).toMatchObject({ outcome: 'REJECTED', reasons: ['SHADOW_STALE'] });
+      const fresh = await client.emergencyMonitor({ commandId: newId(), type: 'PAUSE_NEW_ENTRIES', mint: null, maxAmount: null, reason: 'db down, stop hit', shadowSequence: 3 });
+      expect(fresh).toMatchObject({ outcome: 'PAUSED' });
+      expect(w.pipeline.localPause.active).toBe(true);
+      // unauthenticated callers get nothing
+      const raw = await fetch(`${s.internalUrl}/v1/shadow`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(shadow(4)) });
+      expect(raw.status).toBe(401);
+    } finally {
+      await s.stop();
+    }
+  });
+});
