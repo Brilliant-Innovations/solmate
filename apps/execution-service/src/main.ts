@@ -76,6 +76,7 @@ async function main(): Promise<void> {
 
   const authorizerKeys: VerificationKey[] = await Promise.all(env.RISK_AUTHORIZER_PUBLIC_KEYS.map((k) => importVerificationKey(k)));
   const emergencyOperatorKeys: VerificationKey[] = await Promise.all(env.EMERGENCY_OPERATOR_PUBLIC_KEYS.map((k) => importVerificationKey(k)));
+  const approverKeys: VerificationKey[] = await Promise.all((env.APPROVAL_PUBLIC_KEYS ?? []).map((k) => importVerificationKey(k)));
   const unpinned = guardrails.acceptedRiskAuthorizerKeyIds.filter((id) => !authorizerKeys.some((k) => k.keyId === id));
   if (unpinned.length) logger.warn('accepted_authorizer_key_without_public_key', { keyIds: unpinned });
 
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
   };
 
   const pipeline = new ExecutorPipeline({
-    journal, guardrails, authorizerKeys, approverKeys: [], emergencyOperatorKeys, signer, chain, custody, clock, newId: () => randomUUID() as Uuid,
+    journal, guardrails, authorizerKeys, approverKeys, emergencyOperatorKeys, signer, chain, custody, clock, newId: () => randomUUID() as Uuid,
     modeFacts,
     emergency: EMERGENCY_CLOSE_POLICY,
     adapter: {

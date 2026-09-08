@@ -84,6 +84,11 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  insertApproval,
+  listAuthorizedIntentsAwaitingExecution,
+  listLiveAccounts,
+  loadApprovalGrant,
+  loadAuthorizationForIntent,
   ensureRelease,
   heldAssetEligibility,
   insertProjection,
@@ -124,8 +129,11 @@ import { executeClearedExit, type PositionMonitorDeps } from './roles/position-m
 import { runTradingActionsCycle } from './roles/trading-actions.js';
 import { runIntelIngestCycle } from './roles/intel-ingest.js';
 import { runStateProjectorCycle } from './roles/state-projector.js';
+import { runLiveEntryCycle } from './roles/live-entry.js';
+import { runApprovalsCycle } from './roles/approvals.js';
+import { AuthorizerClient, ExecutorClient } from '@sol-agent-trader/execution';
 import { releaseFor } from '@sol-agent-trader/strategies';
-import { importSigningKeyPair, DEFAULT_FRESHNESS_REQUIREMENTS as PROJECTION_FRESHNESS } from '@sol-agent-trader/contracts';
+import { importSigningKeyPair, importVerificationKey, DEFAULT_FRESHNESS_REQUIREMENTS as PROJECTION_FRESHNESS } from '@sol-agent-trader/contracts';
 import { CryptoPanicClient, LunarCrushClient } from '@sol-agent-trader/intelligence';
 import { DEFAULT_CATALYST_TRIGGER_POLICY, DEFAULT_HYBRID_TRIGGER_POLICY, DEFAULT_NORMALIZATION_POLICY, DEFAULT_SMART_MONEY_TRIGGER_POLICY } from '@sol-agent-trader/contracts';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
@@ -197,7 +205,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -286,6 +294,8 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('trading-actions')) loops.push(tradingActionsLoop(env, logger, shared));
   if (roles.has('intel-ingest')) loops.push(intelIngestLoop(env, logger, shared));
   if (roles.has('state-projector')) loops.push(stateProjectorLoop(env, logger, shared));
+  if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
+  if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -961,6 +971,78 @@ async function stateProjectorLoop(env: WorkerEnv, logger: Logger, shared: Shared
   logger.info('state_projector_starting', { intervalMs, accountId: account.id, keyId: key.keyId, release: release.digest.slice(0, 12), holder: shared.holder });
   await loopUnderLease('state-projector', intervalMs, logger, shared, async () => {
     await runStateProjectorCycle(deps);
+  });
+}
+
+async function liveEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.LIVE_ENTRY_INTERVAL_MS;
+  if (!env.RISK_AUTHORIZER_URL || !env.EXECUTION_SERVICE_URL || !env.INTERNAL_API_SECRET) {
+    logger.warn('roles_disabled', { roles: ['live-entry'], reason: 'RISK_AUTHORIZER_URL, EXECUTION_SERVICE_URL and INTERNAL_API_SECRET are required' });
+    return;
+  }
+  const { sql } = shared;
+  const accounts = await listLiveAccounts(sql);
+  if (accounts.length === 0) {
+    logger.warn('roles_disabled', { roles: ['live-entry'], reason: 'no LIVE trading account is registered' });
+    return;
+  }
+  const account = accounts[0]!;
+  const authorizer = new AuthorizerClient({ baseUrl: env.RISK_AUTHORIZER_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock });
+  const executor = new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock });
+  const safe = s0StrategyVersion('SAFE', env.GIT_SHA, systemClock.now());
+  const deps = {
+    repo: {
+      listAwaitingAuthorization: (ids: Parameters<typeof listCyclesAwaitingEntry>[1], limit: number) => listCyclesAwaitingEntry(sql, ids, limit),
+      listAuthorizedAwaitingExecution: (accountId: Uuid, now: Parameters<typeof listAuthorizedIntentsAwaitingExecution>[2], limit: number) => listAuthorizedIntentsAwaitingExecution(sql, accountId, now, limit),
+      approvalFor: (intentId: Uuid) => loadApprovalGrant(sql, intentId),
+      setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
+      sessionGate: (accountId: Uuid) => sessionEntryGate(sql, accountId),
+    },
+    authorizer,
+    executor,
+    clock: systemClock,
+    logger,
+    account: { id: account.id },
+    strategyVersionIds: [safe.versionId],
+    config: { batchSize: 10, protectionMode: 'MONITORED_EXIT' as const },
+  };
+  logger.info('live_entry_starting', { intervalMs, accountId: account.id, strategies: deps.strategyVersionIds, authorizer: env.RISK_AUTHORIZER_URL, executor: env.EXECUTION_SERVICE_URL, holder: shared.holder });
+  await loopUnderLease('live-entry', intervalMs, logger, shared, async () => {
+    await runLiveEntryCycle(deps);
+  });
+}
+
+async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.APPROVALS_INTERVAL_MS;
+  if (!env.APPROVAL_SIGNING_KEY_PKCS8 || !env.APPROVAL_SIGNING_PUBLIC_KEY || !env.RISK_AUTHORIZER_PUBLIC_KEYS?.length) {
+    logger.warn('roles_disabled', { roles: ['approvals'], reason: 'APPROVAL_SIGNING_KEY_PKCS8, APPROVAL_SIGNING_PUBLIC_KEY and RISK_AUTHORIZER_PUBLIC_KEYS are required' });
+    return;
+  }
+  const { sql } = shared;
+  const signing = await importSigningKeyPair(env.APPROVAL_SIGNING_KEY_PKCS8, env.APPROVAL_SIGNING_PUBLIC_KEY);
+  const authorizerKeys = await Promise.all(env.RISK_AUTHORIZER_PUBLIC_KEYS.map((k) => importVerificationKey(k)));
+  const deps = {
+    repo: {
+      listPending: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
+      stepUpVerified: (requestId: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, requestId, now),
+      loadAuthorization: (intentId: Uuid) => loadAuthorizationForIntent(sql, intentId),
+      insertApproval: (envelope: Parameters<typeof insertApproval>[1]) => insertApproval(sql, envelope),
+      setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
+      resolve: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
+      approverRole: async (userId: Uuid) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r && (r.role === 'operator' || r.role === 'admin') ? r.role : null;
+      },
+    },
+    authorizerKeys,
+    signing,
+    clock: systemClock,
+    logger,
+    config: { batchSize: 20, maxValidityMs: env.APPROVAL_MAX_VALIDITY_MS },
+  };
+  logger.info('approvals_starting', { intervalMs, keyId: signing.keyId, authorizerKeys: authorizerKeys.map((k) => k.keyId), maxValidityMs: env.APPROVAL_MAX_VALIDITY_MS, holder: shared.holder });
+  await loopUnderLease('approvals', intervalMs, logger, shared, async () => {
+    await runApprovalsCycle(deps);
   });
 }
 

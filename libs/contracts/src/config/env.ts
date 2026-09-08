@@ -39,6 +39,8 @@ export const EXCLUSIVE_CREDENTIALS = {
   emergencyOperatorPrivateKey: 'EMERGENCY_OPERATOR_KEY_PKCS8',
   /** Throwaway development signer key; execution-service only, never with live capability on mainnet (D47). */
   softwareSignerKey: 'SOFTWARE_SIGNER_KEY_PKCS8',
+  /** LIVE_APPROVAL grant signing key: worker approvals role only; the executor pins the public key (§15.6). */
+  approvalSigningKey: 'APPROVAL_SIGNING_KEY_PKCS8',
 } as const;
 
 function forbiddenIssues(env: Record<string, unknown>, names: readonly string[], service: string): z.core.$ZodIssue[] {
@@ -82,6 +84,7 @@ export function parseWebEnv(env: Record<string, string | undefined>) {
   return parseService(
     WebEnv,
     [
+      EXCLUSIVE_CREDENTIALS.approvalSigningKey,
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
@@ -110,6 +113,16 @@ export const WorkerEnv = Common.extend({
   /** Executor internal API (§15.8); absent in paper-only profiles. */
   EXECUTION_SERVICE_URL: Url.optional(),
   INTERNAL_API_SECRET: z.string().regex(/^[0-9a-f]{64,}$/).optional(),
+  /** Risk-authorizer internal API (§15.5) and its verification keys, for the live-entry and approvals roles (M7). */
+  RISK_AUTHORIZER_URL: Url.optional(),
+  RISK_AUTHORIZER_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex).optional(),
+  /** LIVE_APPROVAL grant signing key (worker-exclusive, §15.6); absent = the approvals role is disabled. */
+  APPROVAL_SIGNING_KEY_PKCS8: Pkcs8Hex.optional(),
+  APPROVAL_SIGNING_PUBLIC_KEY: Ed25519PublicKeyHex.optional(),
+  LIVE_ENTRY_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
+  APPROVALS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(10_000),
+  /** A grant never outlives the intent; this caps it further (§15.6). */
+  APPROVAL_MAX_VALIDITY_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(120_000),
   // Market-data providers (M4). Absent key = that provider's roles stay disabled and report FAILED.
   BIRDEYE_API_KEY: NonEmpty.optional(),
   BIRDEYE_TIER: z.enum(['STANDARD', 'LITE', 'STARTER', 'PREMIUM', 'BUSINESS']).default('STANDARD'),
@@ -213,6 +226,7 @@ export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) 
   return parseService(
     RiskAuthorizerEnv,
     [
+      EXCLUSIVE_CREDENTIALS.approvalSigningKey,
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.signerCredential,
@@ -262,6 +276,8 @@ export const ExecutionServiceEnv = Common.extend({
     }
   }),
   RISK_AUTHORIZER_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
+  /** LIVE_APPROVAL grant verification keys (§15.6); empty = no approval can ever verify, so LIVE_APPROVAL cannot execute. */
+  APPROVAL_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex).optional(),
   EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
   SOLANA_RPC_PRIMARY: Url,
   SOLANA_RPC_SIMULATION: Url,
@@ -298,6 +314,7 @@ export function parseExecutionServiceEnv(env: Record<string, string | undefined>
   return parseService(
     ExecutionServiceEnvChecked,
     [
+      EXCLUSIVE_CREDENTIALS.approvalSigningKey,
       EXCLUSIVE_CREDENTIALS.serviceRole,
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
