@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { AssetEligibility, Candidate, Clock, EligibilityPolicy, FeatureEngineSpec, FeatureSnapshot, Instant, MomentumTriggerPolicy, SelfInfluencePolicy, TriggerFamily, Uuid } from '@sol-agent-trader/contracts';
+import type { AssetEligibility, Candidate, Clock, EarlyAccelerationTriggerPolicy, EligibilityPolicy, FeatureEngineSpec, FeatureSnapshot, Instant, MomentumTriggerPolicy, SelfInfluencePolicy, TriggerFamily, Uuid } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
 import { entryAllowed } from '@sol-agent-trader/risk';
-import { detectMomentumCandidate, suppressionWindow, type OwnFill } from '@sol-agent-trader/signals';
+import { detectEarlyAccelerationCandidate, detectMomentumCandidate, isWarm, suppressionWindow, type DetectorDecision, type OwnFill } from '@sol-agent-trader/signals';
 
 /**
  * Worker role `candidates` (blueprint §6.9, §9.1, §9.7, §8.6, D63; execution plan M5a). Every
@@ -33,6 +33,7 @@ export interface CandidatesDeps {
   logger: Logger;
   spec: FeatureEngineSpec;
   trigger: MomentumTriggerPolicy;
+  earlyAcceleration: EarlyAccelerationTriggerPolicy;
   eligibility: EligibilityPolicy;
   selfInfluence: SelfInfluencePolicy;
   config: { batchSize: number };
@@ -43,13 +44,14 @@ export interface CandidatesCycleReport {
   detected: number;
   rejected: number;
   skipped: Record<'FEATURES_COLD' | 'NO_TRIGGER' | 'DEDUPED' | 'COOLDOWN', number>;
+  byFamily: Record<'MOMENTUM_CONTINUATION' | 'EARLY_ACCELERATION', { detected: number; rejected: number }>;
   expired: number;
   errors: { assetId: Uuid; error: string }[];
 }
 
 export async function runCandidatesCycle(deps: CandidatesDeps): Promise<CandidatesCycleReport> {
   const now = deps.clock.now();
-  const report: CandidatesCycleReport = { scanned: 0, detected: 0, rejected: 0, skipped: { FEATURES_COLD: 0, NO_TRIGGER: 0, DEDUPED: 0, COOLDOWN: 0 }, expired: 0, errors: [] };
+  const report: CandidatesCycleReport = { scanned: 0, detected: 0, rejected: 0, skipped: { FEATURES_COLD: 0, NO_TRIGGER: 0, DEDUPED: 0, COOLDOWN: 0 }, byFamily: { MOMENTUM_CONTINUATION: { detected: 0, rejected: 0 }, EARLY_ACCELERATION: { detected: 0, rejected: 0 } }, expired: 0, errors: [] };
   report.expired = await deps.repo.expireCandidates(now);
   const owned = new Set((await deps.repo.listOwnedAddresses()).map((o) => o.address));
   const solReturn = await deps.repo.solReturn1h(now);
@@ -58,46 +60,62 @@ export async function runCandidatesCycle(deps: CandidatesDeps): Promise<Candidat
 
   for (const { snapshot, eligibilityEvaluationId } of inputs) {
     try {
-      const family: TriggerFamily = 'MOMENTUM_CONTINUATION';
-      const [record, open, lastTerminalAt, fills] = await Promise.all([
+      // Warm-up is an asset-level fact (D63): counted once, whatever the number of families.
+      if (!isWarm(snapshot, deps.spec).warm) {
+        report.skipped.FEATURES_COLD++;
+        continue;
+      }
+      const families: ('MOMENTUM_CONTINUATION' | 'EARLY_ACCELERATION')[] = ['MOMENTUM_CONTINUATION', 'EARLY_ACCELERATION'];
+      const [record, openMomentum, openEarly, lastMomentum, lastEarly, fills] = await Promise.all([
         deps.repo.latestEligibility(snapshot.assetId),
-        deps.repo.listOpenCandidates(snapshot.assetId, family),
-        deps.repo.lastTerminalCandidateAt(snapshot.assetId, family),
+        deps.repo.listOpenCandidates(snapshot.assetId, 'MOMENTUM_CONTINUATION'),
+        deps.repo.listOpenCandidates(snapshot.assetId, 'EARLY_ACCELERATION'),
+        deps.repo.lastTerminalCandidateAt(snapshot.assetId, 'MOMENTUM_CONTINUATION'),
+        deps.repo.lastTerminalCandidateAt(snapshot.assetId, 'EARLY_ACCELERATION'),
         deps.repo.recentOwnFills(snapshot.assetId, new Date(Date.parse(now) - deps.selfInfluence.maxWindowMs).toISOString() as Instant),
       ]);
+      // §9.7: related triggers aggregate — any open candidate on the asset, whatever its family, dedupes the others.
+      const open = [...openMomentum, ...openEarly];
+      const lastTerminal: Record<TriggerFamily, Instant | null> = { MOMENTUM_CONTINUATION: lastMomentum, EARLY_ACCELERATION: lastEarly } as Record<TriggerFamily, Instant | null>;
       const gate = entryAllowed(record, now, deps.eligibility);
       const own1h = snapshot.features['ret_1h'];
       const solRelative = typeof own1h === 'number' && solReturn !== null ? own1h - solReturn : null;
-      const decision = detectMomentumCandidate({
+      const context = {
         newId: () => randomUUID() as Uuid,
         now,
         snapshot,
         spec: deps.spec,
-        policy: deps.trigger,
         solRelativeReturn1h: solRelative,
         entryGate: { allowed: gate.allowed, reason: gate.allowed ? null : gate.reason, eligibilityEvaluationId },
-        selfInfluence: { isOwned: (a) => owned.has(a), ownSignatures: new Set(fills.map((f) => f.signature)), windows: fills.map((f) => suppressionWindow(deps.selfInfluence, f)), now },
-        openCandidates: open,
-        lastTerminalAt,
-      });
-      if (decision.kind === 'SKIP') {
-        report.skipped[decision.reason]++;
-        continue;
-      }
-      await deps.repo.insertCandidate(decision.candidate);
-      if (decision.kind === 'CANDIDATE') {
-        report.detected++;
-        deps.logger.info('candidate_detected', { candidateId: decision.candidate.id, assetId: snapshot.assetId, score: decision.candidate.scannerScore, passed: decision.evaluation.passed, expiresAt: decision.candidate.expiresAt });
-      } else {
-        report.rejected++;
-        deps.logger.info('candidate_rejected', { candidateId: decision.candidate.id, assetId: snapshot.assetId, score: decision.candidate.scannerScore, reason: decision.reason });
+        selfInfluence: { isOwned: (a: string) => owned.has(a), ownSignatures: new Set(fills.map((f) => f.signature)), windows: fills.map((f) => suppressionWindow(deps.selfInfluence, f)), now },
+      };
+      let raisedThisCycle: Pick<Candidate, 'dedupeKey' | 'discoveredAt'>[] = [];
+      for (const family of families) {
+        const decision: DetectorDecision = family === 'MOMENTUM_CONTINUATION'
+          ? detectMomentumCandidate({ ...context, policy: deps.trigger, openCandidates: [...open, ...raisedThisCycle], lastTerminalAt: lastTerminal[family] })
+          : detectEarlyAccelerationCandidate({ ...context, policy: deps.earlyAcceleration, openCandidates: [...open, ...raisedThisCycle], lastTerminalAt: lastTerminal[family] });
+        if (decision.kind === 'SKIP') {
+          report.skipped[decision.reason]++;
+          continue;
+        }
+        await deps.repo.insertCandidate(decision.candidate);
+        if (decision.kind === 'CANDIDATE') {
+          report.detected++;
+          report.byFamily[family].detected++;
+          raisedThisCycle = [...raisedThisCycle, { dedupeKey: decision.candidate.dedupeKey, discoveredAt: decision.candidate.discoveredAt }];
+          deps.logger.info('candidate_detected', { candidateId: decision.candidate.id, assetId: snapshot.assetId, family, score: decision.candidate.scannerScore, passed: decision.evaluation.passed, expiresAt: decision.candidate.expiresAt });
+        } else {
+          report.rejected++;
+          report.byFamily[family].rejected++;
+          deps.logger.info('candidate_rejected', { candidateId: decision.candidate.id, assetId: snapshot.assetId, family, score: decision.candidate.scannerScore, reason: decision.reason });
+        }
       }
     } catch (err) {
       report.errors.push({ assetId: snapshot.assetId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  deps.logger.info('candidates_cycle', { scanned: report.scanned, detected: report.detected, rejected: report.rejected, ...report.skipped, expired: report.expired, errors: report.errors.length, trigger: deps.trigger.version });
+  deps.logger.info('candidates_cycle', { scanned: report.scanned, detected: report.detected, rejected: report.rejected, ...report.skipped, byFamily: report.byFamily, expired: report.expired, errors: report.errors.length, triggers: [deps.trigger.version, deps.earlyAcceleration.version] });
   for (const e of report.errors) deps.logger.warn('candidates_asset_failed', { assetId: e.assetId, error: e.error });
   return report;
 }

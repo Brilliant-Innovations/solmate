@@ -59,3 +59,59 @@ export const DEFAULT_MOMENTUM_TRIGGER_POLICY: MomentumTriggerPolicy = {
   cooldownMs: 30 * 60_000,
   candidateTtlMs: 10 * 60_000,
 };
+
+/** The lifecycle fields every deterministic trigger family shares (§9.7 dedupe/cooldown, §6.9 TTL). */
+export type CandidateLifecyclePolicy = Pick<MomentumTriggerPolicy, 'dedupeWindowMs' | 'cooldownMs' | 'candidateTtlMs' | 'minScannerScore'>;
+
+/**
+ * Early-acceleration trigger (§9.2): rising slope and flow before an obvious breakout. Versioned
+ * and deterministic like the momentum policy; the pre-breakout conditions keep it from firing on
+ * the same setups the continuation family already takes.
+ */
+export const EarlyAccelerationTriggerPolicy = z.strictObject({
+  version: VersionId,
+  /** 5-minute return acceleration (latest 5m return minus the one five minutes earlier) at or above this. */
+  minReturnAccel5m: z.number().min(0),
+  /** Volume over the last 15 bars against the prior 15, as a growth fraction, at or above this. */
+  minVolumeAccel15: z.number().min(0),
+  /** Trade-count growth over the same windows; optional evidence when the provider gives no counts. */
+  minTradeCountAccel15: z.number().min(0),
+  /** Fast EMA over slow EMA at or above this (slightly negative = still turning). */
+  minEma9Over21: z.number(),
+  /** Share of up-closes centred on zero at or above this. */
+  minTrendPersistence20: z.number().min(-1).max(1),
+  /** breakout_20 at or below this (0 = no breakout yet; the continuation family owns 1). */
+  maxBreakout20: z.number().int().min(-1).max(1),
+  /** Bollinger location at or below this: not already at the upper band. */
+  maxBbLocation20: z.number().min(0).max(1.5),
+  maxExtensionAtrMultiple: z.number().positive(),
+  maxRsi14: z.number().min(0).max(100),
+  minLiquidityUsd: UsdValue,
+  maxImpactBpsSmall: Bps,
+  minSolRelativeReturn1h: z.number(),
+  minScannerScore: z.number().min(0).max(100),
+  dedupeWindowMs: Milliseconds,
+  cooldownMs: Milliseconds,
+  candidateTtlMs: Milliseconds,
+});
+export type EarlyAccelerationTriggerPolicy = z.infer<typeof EarlyAccelerationTriggerPolicy>;
+
+export const DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY: EarlyAccelerationTriggerPolicy = {
+  version: 'early-accel-v1' as VersionId,
+  minReturnAccel5m: 0.01,
+  minVolumeAccel15: 0.5,
+  minTradeCountAccel15: 0.3,
+  minEma9Over21: -0.005,
+  minTrendPersistence20: 0.2,
+  maxBreakout20: 0,
+  maxBbLocation20: 0.9,
+  maxExtensionAtrMultiple: 2,
+  maxRsi14: 75,
+  minLiquidityUsd: 250_000,
+  maxImpactBpsSmall: 100 as Bps,
+  minSolRelativeReturn1h: 0,
+  minScannerScore: 50,
+  dedupeWindowMs: 15 * 60_000,
+  cooldownMs: 30 * 60_000,
+  candidateTtlMs: 10 * 60_000,
+};

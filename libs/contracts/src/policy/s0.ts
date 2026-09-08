@@ -10,9 +10,12 @@ import { Bps, Milliseconds, VersionId } from '../primitives.js';
  */
 
 export const S0_STRATEGY_VERSION_IDS = {
-  RAW: 'S0_RAW@1.1.0' as VersionId,
-  SAFE: 'S0_SAFE@1.1.0' as VersionId,
+  RAW: 'S0_RAW@1.2.0' as VersionId,
+  SAFE: 'S0_SAFE@1.2.0' as VersionId,
 } as const;
+
+/** The deterministic trigger families S0 paper-trades (plan M5b "S0 paper continues across the full trigger set"). */
+export const S0_TRIGGER_FAMILIES = ['MOMENTUM_CONTINUATION', 'EARLY_ACCELERATION'] as const;
 
 export const S0Variant = z.enum(['RAW', 'SAFE']);
 export type S0Variant = z.infer<typeof S0Variant>;

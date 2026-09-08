@@ -1,4 +1,4 @@
-import { addMs, DEFAULT_ELIGIBILITY_POLICY, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, fixedClock, toInstant, type AssetEligibility, type Candidate, type FeatureSnapshot, type Instant, type TriggerFamily, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_ELIGIBILITY_POLICY, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V1, fixedClock, toInstant, type AssetEligibility, type Candidate, type FeatureSnapshot, type Instant, type TriggerFamily, type Uuid } from '@sol-agent-trader/contracts';
 import { createLogger } from '@sol-agent-trader/observability';
 import type { OwnFill } from '@sol-agent-trader/signals';
 import { runCandidatesCycle, type CandidatesRepo } from './candidates.js';
@@ -58,13 +58,14 @@ class MemoryRepo implements CandidatesRepo {
     return this.sol;
   }
 }
-const deps = (repo: MemoryRepo, now = NOW) => ({ repo, clock: fixedClock(now), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V1, trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY, eligibility: DEFAULT_ELIGIBILITY_POLICY, selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY, config: { batchSize: 100 } });
+const deps = (repo: MemoryRepo, now = NOW) => ({ repo, clock: fixedClock(now), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V1, trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY, earlyAcceleration: DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, eligibility: DEFAULT_ELIGIBILITY_POLICY, selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY, config: { batchSize: 100 } });
 
 describe('candidates role (§6.9, §9.1, §9.7, INV-03, INV-11)', () => {
   it('detects on a warm eligible asset, skips a cold one, and never raises the same move twice inside the dedupe window', async () => {
     const repo = new MemoryRepo([{ snapshot: snapshot(A, warm()), eligibilityEvaluationId: ELIG }, { snapshot: snapshot(B, warm({ rsi_14: null })), eligibilityEvaluationId: ELIG }], { [A]: eligible(A), [B]: eligible(B) });
     const r = await runCandidatesCycle(deps(repo));
-    expect(r).toMatchObject({ scanned: 2, detected: 1, rejected: 0, skipped: { FEATURES_COLD: 1, NO_TRIGGER: 0, DEDUPED: 0, COOLDOWN: 0 }, errors: [] });
+    // the early-acceleration family sees the same warm asset and declines it (already broken out): one NO_TRIGGER
+    expect(r).toMatchObject({ scanned: 2, detected: 1, rejected: 0, skipped: { FEATURES_COLD: 1, NO_TRIGGER: 1, DEDUPED: 0, COOLDOWN: 0 }, byFamily: { MOMENTUM_CONTINUATION: { detected: 1, rejected: 0 }, EARLY_ACCELERATION: { detected: 0, rejected: 0 } }, errors: [] });
     expect(repo.candidates[0]).toMatchObject({ assetId: A, status: 'DETECTED', eligibilityEvaluationId: ELIG, featureSnapshotId: snapshot(A, {}).id });
     const r2 = await runCandidatesCycle(deps(repo, addMs(NOW, 60_000)));
     expect(r2.skipped.DEDUPED).toBe(1);
@@ -100,6 +101,6 @@ describe('candidates role (§6.9, §9.1, §9.7, INV-03, INV-11)', () => {
     const repo = new MemoryRepo([{ snapshot: snapshot(A, warm({ ret_1h: 0.01 })), eligibilityEvaluationId: ELIG }], { [A]: eligible(A) });
     repo.sol = 0.05;
     const r = await runCandidatesCycle(deps(repo));
-    expect(r.skipped.NO_TRIGGER).toBe(1);
+    expect(r.skipped.NO_TRIGGER).toBe(2); // neither family fires on an asset that lags SOL
   });
 });

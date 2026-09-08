@@ -6,3 +6,4 @@ export * from './features/sessions.js';
 export * from './triggers/momentum.js';
 export * from './candidates/detector.js';
 export * from './features/regime.js';
+export * from './triggers/early-acceleration.js';

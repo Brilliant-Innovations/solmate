@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { instantToMs, type Candidate, type Clock, type FeatureSnapshot, type Instant, type ReasonCode, type S0SafetyGatePolicy, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
+import { instantToMs, S0_TRIGGER_FAMILIES, type Candidate, type Clock, type FeatureSnapshot, type Instant, type ReasonCode, type S0SafetyGatePolicy, type StrategyVersion, type TriggerFamily, type Uuid } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
 import { decideS0, expireS0, type S0Decision } from '@sol-agent-trader/strategies';
 import type { ActionCycle } from '@sol-agent-trader/contracts';
@@ -13,7 +13,7 @@ import type { ActionCycle } from '@sol-agent-trader/contracts';
  */
 
 export interface S0Repo {
-  listAwaiting(strategyVersionId: StrategyVersion['versionId'], now: Instant, limit: number): Promise<{ candidate: Candidate; snapshot: FeatureSnapshot }[]>;
+  listAwaiting(strategyVersionId: StrategyVersion['versionId'], now: Instant, limit: number, families: readonly TriggerFamily[]): Promise<{ candidate: Candidate; snapshot: FeatureSnapshot }[]>;
   persist(candidateId: Uuid, decisions: S0Decision[], status: 'QUALIFIED' | 'REJECTED', reason: ReasonCode | null): Promise<void>;
   /** D32: EXPIRED cycles for a candidate that outlived the strategy's candidate-age contract. */
   persistExpired(candidateId: Uuid, cycles: ActionCycle[]): Promise<void>;
@@ -40,7 +40,7 @@ export interface S0CycleReport {
 export async function runS0Cycle(deps: S0Deps): Promise<S0CycleReport> {
   const now = deps.clock.now();
   const report: S0CycleReport = { scanned: 0, cleared: 0, rejected: 0, expired: 0, rejectionsByCode: {}, errors: [] };
-  const awaiting = await deps.repo.listAwaiting(deps.strategies.SAFE.versionId, now, deps.config.batchSize);
+  const awaiting = await deps.repo.listAwaiting(deps.strategies.SAFE.versionId, now, deps.config.batchSize, S0_TRIGGER_FAMILIES);
   report.scanned = awaiting.length;
   for (const { candidate, snapshot } of awaiting) {
     try {

@@ -1,4 +1,4 @@
-import type { ActionCycle, AdversarialReview, Candidate, FeatureSnapshot, Instant, Proposal, ReasonCode, StrategyVersion, Uuid, VersionId } from '@sol-agent-trader/contracts';
+import type { ActionCycle, AdversarialReview, Candidate, FeatureSnapshot, Instant, Proposal, ReasonCode, StrategyVersion, TriggerFamily, Uuid, VersionId } from '@sol-agent-trader/contracts';
 import { asJson, type Sql } from './sql.js';
 
 /**
@@ -25,7 +25,7 @@ export async function ensureStrategyVersion(sql: Sql, v: StrategyVersion): Promi
 }
 
 /** DETECTED, unexpired candidates that have no action cycle yet for `strategyVersionId`, each with the feature snapshot it was detected on (point in time, not the latest). */
-export async function listCandidatesAwaitingStrategy(sql: Sql, strategyVersionId: VersionId, now: Instant, limit: number): Promise<{ candidate: Candidate; snapshot: FeatureSnapshot }[]> {
+export async function listCandidatesAwaitingStrategy(sql: Sql, strategyVersionId: VersionId, now: Instant, limit: number, families: readonly TriggerFamily[] = ['MOMENTUM_CONTINUATION']): Promise<{ candidate: Candidate; snapshot: FeatureSnapshot }[]> {
   const rows = await sql<Record<string, unknown>[]>`
     select c.id, c.asset_id, c.discovered_at, c.trigger_family, c.trigger_details, c.scanner_score, c.status, c.feature_snapshot_id, c.eligibility_evaluation_id, c.expires_at,
       c.deterministic_rejection_reason, c.dedupe_key, c.strategy_version_ids,
@@ -33,7 +33,7 @@ export async function listCandidatesAwaitingStrategy(sql: Sql, strategyVersionId
       f.regime as f_regime, f.market_sessions as f_sessions, f.self_influence_suppressed as f_suppressed
     from signals.candidates c
     join signals.feature_snapshots f on f.id = c.feature_snapshot_id
-    where c.status = 'DETECTED' and c.expires_at > ${now}
+    where c.status = 'DETECTED' and c.expires_at > ${now} and c.trigger_family = any(${[...families]}::enums.trigger_family[])
       and not exists (select 1 from agents.action_cycles x where x.candidate_id = c.id and x.strategy_version_id = ${strategyVersionId})
     order by c.discovered_at asc
     limit ${limit}`;

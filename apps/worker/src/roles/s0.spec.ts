@@ -61,7 +61,7 @@ describe('worker role s0: D32 candidate-age contract', () => {
     };
     const report = await runS0Cycle({ repo, clock: fixedClock(NOW), logger, strategies: { RAW: s0StrategyVersion('RAW', 'abcdef1', NOW), SAFE: s0StrategyVersion('SAFE', 'abcdef1', NOW) }, gatePolicy: DEFAULT_S0_SAFETY_GATE_POLICY, config: { batchSize: 10 } });
     expect(report).toMatchObject({ scanned: 2, expired: 1, cleared: 1, rejected: 0, errors: [] });
-    expect(expired).toEqual([{ candidateId: id(101), states: ['EXPIRED', 'EXPIRED'], versions: ['S0_RAW@1.1.0', 'S0_SAFE@1.1.0'] }]);
+    expect(expired).toEqual([{ candidateId: id(101), states: ['EXPIRED', 'EXPIRED'], versions: ['S0_RAW@1.2.0', 'S0_SAFE@1.2.0'] }]);
     expect(persisted).toHaveLength(1);
   });
 });

@@ -1,4 +1,4 @@
-import { DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, FEATURE_ENGINE_V2, S0_STRATEGY_VERSION_IDS, type GitSha, type Instant, type S0Variant, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_MOMENTUM_TRIGGER_POLICY, S0_TRIGGER_FAMILIES, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, FEATURE_ENGINE_V2, S0_STRATEGY_VERSION_IDS, type GitSha, type Instant, type S0Variant, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
 
 /**
  * The two S0 strategy versions (blueprint §12.1, §6.21; D7 immutable). Parameters are the
@@ -8,8 +8,8 @@ import { DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY
  */
 
 export const S0_STRATEGY_VERSION_UUIDS: Record<S0Variant, Uuid> = {
-  RAW: '50000000-0000-4000-8000-000000000003' as Uuid,
-  SAFE: '50000000-0000-4000-8000-000000000004' as Uuid,
+  RAW: '50000000-0000-4000-8000-000000000005' as Uuid,
+  SAFE: '50000000-0000-4000-8000-000000000006' as Uuid,
 };
 
 export function s0StrategyVersion(variant: S0Variant, gitSha: string, activeFrom: Instant): StrategyVersion {
@@ -23,7 +23,7 @@ export function s0StrategyVersion(variant: S0Variant, gitSha: string, activeFrom
     featureVersion: FEATURE_ENGINE_V2.version,
     promptVersions: {},
     modelSelections: {},
-    thresholds: { trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY.version, gate: safe ? DEFAULT_S0_SAFETY_GATE_POLICY.version : null },
+    thresholds: { triggers: { MOMENTUM_CONTINUATION: DEFAULT_MOMENTUM_TRIGGER_POLICY.version, EARLY_ACCELERATION: DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY.version }, families: [...S0_TRIGGER_FAMILIES], gate: safe ? DEFAULT_S0_SAFETY_GATE_POLICY.version : null },
     riskPolicyVersion: DEFAULT_RISK_POLICY.version,
     skillVersionId: null,
     guidelineVersionId: null,
