@@ -67,7 +67,7 @@ describe('Raydium CPMM adapter (layout captured from mainnet 2026-09-08)', () =>
   const adapter = new RaydiumCpmmAdapter();
   const accounts = MAINNET_POOL_FIXTURES.cpmm.accounts.map(raw);
   it('decodes the pool, config and vaults into tradeable reserves with the 30 bp fee', () => {
-    expect(adapter.dependentAccounts(cpmmHop, accounts[0]!)).toEqual(['BgxH5ifebqHDuiADWKhLjXGP5hWZeZLoCdmeWJLkRqLP', 'BaorCoZHp26WNmWZEJPKJYUQ98D4mRtx18v4euTukPT3', 'EyqTvZwKPMkt3TKP9gSD7Z8b2Jjj3DxwSaAz6Wbpixmf']);
+    expect(adapter.dependentAccounts(cpmmHop, accounts[0]!, [])).toEqual(['BgxH5ifebqHDuiADWKhLjXGP5hWZeZLoCdmeWJLkRqLP', 'BaorCoZHp26WNmWZEJPKJYUQ98D4mRtx18v4euTukPT3', 'EyqTvZwKPMkt3TKP9gSD7Z8b2Jjj3DxwSaAz6Wbpixmf']);
     const state = adapter.decode(cpmmHop, accounts, CTX);
     expect(state).toMatchObject({ program: 'RAYDIUM_CPMM', mintA: SOL, mintB: cpmmHop.inputMint, tokenProgramA: TOKEN_PROGRAM, feeBps: 30, tradeable: true, tradeableReason: null });
     expect(state.reserveA).toBeGreaterThan(0n);
@@ -97,7 +97,7 @@ describe('Raydium AMM v4 adapter (layout captured from mainnet 2026-09-08)', () 
   const adapter = new RaydiumAmmV4Adapter();
   const accounts = MAINNET_POOL_FIXTURES.ammv4.accounts.map(raw);
   it('decodes the pool and its OpenBook market, derives the vault signer and authority, and builds the 18-account swapBaseIn', () => {
-    expect(adapter.dependentAccounts(ammHop, accounts[0]!)).toEqual(['7hF2eZaLQWwztFq3ojdyY1FYWJQG9QisrScc5QACoGaK', 'BCaWrDNcFnTJ9xiKan82V7wuXcnWjEhL4ZGev4kzT8mK', 'AqbNjgq7YcyysT846feSezJa72nGspxq1h2ZEzJLpVXs']);
+    expect(adapter.dependentAccounts(ammHop, accounts[0]!, [])).toEqual(['7hF2eZaLQWwztFq3ojdyY1FYWJQG9QisrScc5QACoGaK', 'BCaWrDNcFnTJ9xiKan82V7wuXcnWjEhL4ZGev4kzT8mK', 'AqbNjgq7YcyysT846feSezJa72nGspxq1h2ZEzJLpVXs']);
     const state = adapter.decode(ammHop, accounts);
     expect(state).toMatchObject({ program: 'RAYDIUM_AMM_V4', mintA: ammHop.inputMint, mintB: SOL, feeBps: 25, tradeable: true });
     const d = state.detail as { authority: string; market: { bids: string; asks: string; eventQueue: string; vaultSigner: string } };
@@ -210,13 +210,14 @@ describe('Meteora DLMM adapter (layout captured from mainnet 2026-09-08, BANK/US
   });
   it('decodes the pair, walks the bins for a quote in both directions and builds swap2 with the crossed bin arrays as remaining accounts', () => {
     const pool = byAddress.get(F.pool)!;
-    const dependent = adapter.dependentAccounts(hop, pool);
-    // reserves, bitmap-extension slot, then the arrays with liquidity going down from the active array (-2)
-    expect(dependent.slice(0, 3)).toEqual(['2cUVAYX1YeTDPXPjxkyQbDqQEGJtr88AhTfqXn3FywKe', 'DoPExZQ53JStdZdpLjYf7nUmuDsrwePm6YdVmQaQSJdP', dependent[2]]);
-    expect(dependent.slice(3, 5)).toEqual([F.tokenX, F.tokenY]);
-    expect(dependent.length).toBeGreaterThanOrEqual(6);
-    expect(dependent[5]).toBe(deriveBinArray(F.pool, -2));
-    const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
+    const dependent = adapter.dependentAccounts(hop, pool, [null]);
+    // reserves, mints, then the arrays with liquidity going down from the active array (-2)
+    // the pool comes with its bitmap-extension slot (absent for this pair); reserves, mints and arrays follow in the dependent round
+    expect(adapter.requiredAccounts(hop)).toEqual([F.pool, dependent.length ? adapter.requiredAccounts(hop)[1] : '']);
+    expect(dependent.slice(0, 4)).toEqual(['2cUVAYX1YeTDPXPjxkyQbDqQEGJtr88AhTfqXn3FywKe', 'DoPExZQ53JStdZdpLjYf7nUmuDsrwePm6YdVmQaQSJdP', F.tokenX, F.tokenY]);
+    expect(dependent.length).toBeGreaterThanOrEqual(5);
+    expect(dependent[4]).toBe(deriveBinArray(F.pool, -2));
+    const accounts = [pool, null, ...dependent.map((a) => byAddress.get(a) ?? null)];
     const state = adapter.decode(hop, accounts, ctx);
     expect(state).toMatchObject({ program: 'METEORA_DLMM', mintA: F.tokenX, mintB: USDC, tokenProgramA: TOKEN_PROGRAM, tokenProgramB: TOKEN_PROGRAM, feeBps: 200, tradeable: true }); // base_factor 20000 × bin_step 100 × 10 = 2%
     const d = state.detail as { activeId: number; binStep: number; oracle: string; bitmapExtension: string | null; binArrays: { index: number }[] };
@@ -231,9 +232,9 @@ describe('Meteora DLMM adapter (layout captured from mainnet 2026-09-08, BANK/US
     expect(Number(q.expectedOutputAmount)).toBeLessThan(spot * 1_000_000);
     expect(BigInt(q.feeAmount)).toBeGreaterThan(0n);
     // buying BANK with USDC walks upward into the X-only bins
-    const up = adapter.dependentAccounts({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, pool);
-    expect(up[5]).toBe(deriveBinArray(F.pool, -2));
-    const upState = adapter.decode({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, [pool, ...up.map((a) => byAddress.get(a) ?? null)], ctx);
+    const up = adapter.dependentAccounts({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, pool, [null]);
+    expect(up[4]).toBe(deriveBinArray(F.pool, -2));
+    const upState = adapter.decode({ ...hop, inputMint: USDC, outputMint: hop.inputMint }, [pool, null, ...up.map((a) => byAddress.get(a) ?? null)], ctx);
     const q2 = adapter.quote(upState, USDC, 10_000_000n);
     expect(Number(q2.expectedOutputAmount)).toBeGreaterThan((10_000_000 / spot) * 0.9);
     // a size beyond the loaded bins is refused rather than guessed
@@ -292,12 +293,14 @@ describe('Raydium CLMM adapter (layout captured from mainnet 2026-09-08, USDC/Hc
   it('decodes the pool, config, bitmap extension and tick arrays; quotes both directions by walking ticks; builds swap_v2 with the extension and arrays as remaining accounts', () => {
     const pool = byAddress.get(F.pool)!;
     const hop: DirectPoolHop = { program: 'RAYDIUM_CLMM', programId: adapter.programId as SolanaAddress, poolAddress: F.pool as SolanaAddress, inputMint: HCRL, outputMint: USDC };
-    const dependent = adapter.dependentAccounts(hop, pool);
-    expect(dependent.slice(0, 6)).toEqual([F.ammConfig, 'Be76qZre4bLB5LsEZQVLumvCn3qcPuVeFNbnMGLEZr8L', '36yskKDMc8fonVifSDKYCDeurrRpecDZw55cej18nyxJ', USDC, HCRL, F.bitmapExtension]);
+    const ext = byAddress.get(F.bitmapExtension)!;
+    expect(adapter.requiredAccounts(hop)).toEqual([F.pool, F.bitmapExtension]);
+    const dependent = adapter.dependentAccounts(hop, pool, [ext]);
+    expect(dependent.slice(0, 5)).toEqual([F.ammConfig, 'Be76qZre4bLB5LsEZQVLumvCn3qcPuVeFNbnMGLEZr8L', '36yskKDMc8fonVifSDKYCDeurrRpecDZw55cej18nyxJ', USDC, HCRL]);
     // selling HcRL (token 1) pushes the price up: the current array first, then higher ones
-    expect(dependent[6]).toBe(deriveTickArray(F.pool, 90000));
-    expect(dependent.length).toBeGreaterThanOrEqual(8);
-    const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
+    expect(dependent[5]).toBe(deriveTickArray(F.pool, 90000));
+    expect(dependent.length).toBeGreaterThanOrEqual(7);
+    const accounts = [pool, ext, ...dependent.map((a) => byAddress.get(a) ?? null)];
     const state = adapter.decode(hop, accounts, ctx);
     expect(state).toMatchObject({ program: 'RAYDIUM_CLMM', mintA: USDC, mintB: HCRL, tokenProgramA: TOKEN_PROGRAM, feeBps: 40, tradeable: true, tradeableReason: null });
     const d = state.detail as { tickSpacing: number; tickCurrent: number; liquidity: bigint; bitmapExtension: string | null; tickArrays: { startTick: number }[]; dynamicFee: unknown };
@@ -360,7 +363,7 @@ describe('Orca Whirlpool adapter (layout captured from mainnet 2026-09-08, 31k8/
   it('decodes the whirlpool, fixed and dynamic tick arrays, quotes both directions and builds swap_v2 with three arrays and the oracle', () => {
     const pool = byAddress.get(F.pool)!;
     const hop: DirectPoolHop = { program: 'ORCA_WHIRLPOOL', programId: adapter.programId as SolanaAddress, poolAddress: F.pool as SolanaAddress, inputMint: A, outputMint: USDC };
-    const dependent = adapter.dependentAccounts(hop, pool);
+    const dependent = adapter.dependentAccounts(hop, pool, []);
     expect(dependent.slice(0, 5)).toEqual(['D8jrDk1xky71dYydPJvXuhUU7S3cKR3o7AnVCyp5V6QZ', 'd7gEhcZ7gYVpSiUhUGb51pvZsebujyfRwd9uJUyMoKL', A, USDC, F.oracle]);
     expect(dependent.slice(5)).toEqual([-81664, -83072, -84480].map((s) => deriveWhirlpoolTickArray(F.pool, s)));
     const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
@@ -376,7 +379,7 @@ describe('Orca Whirlpool adapter (layout captured from mainnet 2026-09-08, 31k8/
     expect(BigInt(q.feeAmount)).toBeGreaterThan(0n);
     expect(q.outputMint).toBe(USDC);
     const upHop = { ...hop, inputMint: USDC, outputMint: A };
-    const up = adapter.dependentAccounts(upHop, pool);
+    const up = adapter.dependentAccounts(upHop, pool, []);
     expect(up.slice(5)).toEqual([-81664, -80256, -78848].map((s) => deriveWhirlpoolTickArray(F.pool, s)));
     const upState = adapter.decode(upHop, [pool, ...up.map((a) => byAddress.get(a) ?? null)], ctx);
     const back = adapter.quote(upState, USDC, 1_000_000n);

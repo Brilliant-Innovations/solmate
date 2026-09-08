@@ -278,11 +278,11 @@ export class MeteoraDlmmAdapter implements DirectPoolAdapter {
   readonly programId = METEORA_DLMM_PROGRAM;
 
   requiredAccounts(hop: DirectPoolHop): string[] {
-    return [hop.poolAddress];
+    return [hop.poolAddress, deriveBitmapExtension(hop.poolAddress)];
   }
 
-  /** Reserves, the bitmap extension slot, and the bin arrays with liquidity in the exit direction (active first). */
-  dependentAccounts(hop: DirectPoolHop, pool: RawAccount): string[] {
+  /** Reserves, mints, and the bin arrays with liquidity in the exit direction (active first). */
+  dependentAccounts(hop: DirectPoolHop, pool: RawAccount, _first: readonly (RawAccount | null)[] = []): string[] {
     const h = readHeader(hop, pool);
     const swapForY = hop.inputMint === h.tokenX;
     const arrays: number[] = [];
@@ -294,11 +294,11 @@ export class MeteoraDlmmAdapter implements DirectPoolAdapter {
       idx = swapForY ? found - 1 : found + 1;
     }
     if (arrays.length === 0) arrays.push(binArrayIndex(h.activeId));
-    return [h.reserveX, h.reserveY, deriveBitmapExtension(hop.poolAddress), h.tokenX, h.tokenY, ...arrays.map((i) => deriveBinArray(hop.poolAddress, i))];
+    return [h.reserveX, h.reserveY, h.tokenX, h.tokenY, ...arrays.map((i) => deriveBinArray(hop.poolAddress, i))];
   }
 
   decode(hop: DirectPoolHop, accounts: readonly (RawAccount | null)[], context: DecodeContext): DecodedPoolState {
-    const [pool, reserveX, reserveY, bitmapExt, mintX, mintY, ...arrays] = accounts;
+    const [pool, bitmapExt, reserveX, reserveY, mintX, mintY, ...arrays] = accounts;
     if (!pool) throw new PoolDecodeError(this.program, `pool ${hop.poolAddress} does not exist`);
     const h = readHeader(hop, pool);
     if (!reserveX || !reserveY) throw new PoolDecodeError(this.program, 'reserve account missing');

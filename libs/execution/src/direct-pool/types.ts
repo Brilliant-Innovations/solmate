@@ -82,8 +82,8 @@ export interface DirectPoolAdapter {
    * (config, vaults, market). Callers pass every returned address to `decode` in the same order.
    */
   requiredAccounts(hop: DirectPoolHop): Promise<string[]> | string[];
-  /** Pool-dependent accounts that were not knowable before the pool was read (vaults, market accounts). */
-  dependentAccounts(hop: DirectPoolHop, pool: RawAccount): string[];
+  /** Pool-dependent accounts that were not knowable before the pool was read (vaults, market accounts, tick arrays). `first` holds the other first-round accounts, in `requiredAccounts` order. */
+  dependentAccounts(hop: DirectPoolHop, pool: RawAccount, first: readonly (RawAccount | null)[]): string[];
   decode(hop: DirectPoolHop, accounts: readonly (RawAccount | null)[], context: DecodeContext): DecodedPoolState;
   quote(state: DecodedPoolState, inputMint: MintAddress, amountIn: bigint): PoolQuote;
   swapInstruction(input: SwapBuildInput): DirectPoolInstruction;

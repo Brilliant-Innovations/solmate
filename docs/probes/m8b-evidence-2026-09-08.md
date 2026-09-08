@@ -76,4 +76,4 @@ Per family: DLMM 15 OK, AMM v4 5 OK, CLMM 2 OK, Whirlpool 2 OK, CPMM 1 OK.
 
 1. Jito-style private landing option with a health check, and the choice logic of §14.6 step 7 (prefer private when healthy, else direct RPC).
 2. A target-environment drill (Profile 2) that runs the fallback against a real held asset with the production signer unavailable to the primary path, recorded as a readiness row (operator).
-3. Loading the tick-array bitmap extension before choosing the first array for CLMM pools whose current tick sits outside the default bitmap (rare; the dry-run reports it honestly today).
+3. ~~Loading the tick-array bitmap extension before choosing the first array~~ — done the same day: the extension now travels with the pool in the first fetch round; the pool that reported `no tick array could be loaded` (`277xLdcm…`, eL5f → USDC) validates with quote 8975591 = simulated 8975591 across two arrays under an active dynamic fee.

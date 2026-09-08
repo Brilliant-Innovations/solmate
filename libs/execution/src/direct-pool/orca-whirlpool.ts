@@ -299,7 +299,7 @@ export class OrcaWhirlpoolAdapter implements DirectPoolAdapter {
   }
 
   /** Vaults, mints, the oracle slot, then the three tick arrays the program requires in the exit direction. */
-  dependentAccounts(hop: DirectPoolHop, pool: RawAccount): string[] {
+  dependentAccounts(hop: DirectPoolHop, pool: RawAccount, _first: readonly (RawAccount | null)[] = []): string[] {
     const h = readHeader(hop, pool);
     const aToB = hop.inputMint === h.mintA;
     const starts = whirlpoolSwapArrayStarts(h.tickCurrent, h.tickSpacing, aToB);

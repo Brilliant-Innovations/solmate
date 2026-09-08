@@ -133,7 +133,7 @@ export async function buildEmergencyExit(input: EmergencyBuildInput): Promise<Em
   const first = await input.reader.accounts(await adapter.requiredAccounts(input.hop));
   const pool = toRaw(first.accounts[0] ?? null);
   if (!pool) throw new PoolDecodeError(input.hop.program, `pool ${input.hop.poolAddress} does not exist`);
-  const dependent = adapter.dependentAccounts(input.hop, pool);
+  const dependent = adapter.dependentAccounts(input.hop, pool, first.accounts.slice(1).map(toRaw));
   const second = dependent.length ? await input.reader.accounts(dependent) : { slot: first.slot, accounts: [] };
   const state = adapter.decode(input.hop, [pool, ...first.accounts.slice(1).map(toRaw), ...second.accounts.map(toRaw)], { nowMs: Date.parse(input.now) });
   const quote = adapter.quote(state, input.hop.inputMint, input.amountIn);

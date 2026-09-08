@@ -356,35 +356,63 @@ function dynamicFeeRate(dyn: DynamicFee, tickSpacing: number): bigint {
   return rate > MAX_FEE_RATE_NUMERATOR ? MAX_FEE_RATE_NUMERATOR : rate;
 }
 
+/** The 1832-byte TickArrayBitmapExtension (positive and negative halves of fourteen 512-bit words each); null when the account does not exist. */
+function parseBitmapExtension(acc: RawAccount | null): ClmmDetail['extension'] {
+  if (!acc || acc.owner !== RAYDIUM_CLMM_PROGRAM || acc.data.length !== BITMAP_EXT_LEN) return null;
+  const e = new ByteReader(acc.data).seek(40);
+  const read = (): bigint[] => {
+    const out: bigint[] = [];
+    for (let i = 0; i < 14; i++) {
+      let w = 0n;
+      for (let j = 0; j < 8; j++) w |= e.u64() << BigInt(64 * j);
+      out.push(w);
+    }
+    return out;
+  };
+  const positive = read();
+  const negative = read();
+  return { positive, negative };
+}
+
 export class RaydiumClmmAdapter implements DirectPoolAdapter {
   readonly program = 'RAYDIUM_CLMM' as const;
   readonly programId = RAYDIUM_CLMM_PROGRAM;
 
+  /** The pool and its bitmap-extension slot: both are needed before the first tick array can be chosen. */
   requiredAccounts(hop: DirectPoolHop): string[] {
-    return [hop.poolAddress];
+    return [hop.poolAddress, deriveClmmBitmapExtension(hop.poolAddress)];
   }
 
-  /** Config, vaults, mints, the bitmap-extension slot, then the tick arrays the exit will cross (first the one holding the current tick when initialised). */
-  dependentAccounts(hop: DirectPoolHop, pool: RawAccount): string[] {
+  /** Config, vaults, mints, then the tick arrays the exit will cross (first the one holding the current tick when initialised). */
+  dependentAccounts(hop: DirectPoolHop, pool: RawAccount, first: readonly (RawAccount | null)[]): string[] {
     const h = readHeader(hop, pool);
+    const ext = parseBitmapExtension(first[0] ?? null);
     const zeroForOne = hop.inputMint === h.mint0;
     const starts: number[] = [];
     const current = tickArrayStartIndex(h.tickCurrent, h.tickSpacing);
-    const init = isTickArrayInitialised(h, null, current);
+    const init = isTickArrayInitialised(h, ext, current);
     let cursor = current;
     if (init === true) starts.push(current);
-    else if (init === null) starts.push(current); // outside the default bitmap: carry it and let the program judge
+    else if (init === null) starts.push(current); // no extension account exists yet: carry the current array and let the program judge
+    else {
+      // the current array is empty: the program's first array is the next initialised one in the swap direction
+      const firstInit = nextInitialisedTickArray(h, ext, cursor, zeroForOne);
+      if (firstInit !== null) {
+        starts.push(firstInit);
+        cursor = firstInit;
+      }
+    }
     while (starts.length < TICK_ARRAYS_FOR_SWAP) {
-      const next = nextInitialisedTickArray(h, null, cursor, zeroForOne);
+      const next = nextInitialisedTickArray(h, ext, cursor, zeroForOne);
       if (next === null) break;
       starts.push(next);
       cursor = next;
     }
-    return [h.ammConfig, h.vault0, h.vault1, h.mint0, h.mint1, deriveClmmBitmapExtension(hop.poolAddress), ...starts.map((s) => deriveTickArray(hop.poolAddress, s))];
+    return [h.ammConfig, h.vault0, h.vault1, h.mint0, h.mint1, ...starts.map((s) => deriveTickArray(hop.poolAddress, s))];
   }
 
   decode(hop: DirectPoolHop, accounts: readonly (RawAccount | null)[], context: DecodeContext): DecodedPoolState {
-    const [pool, config, vault0, vault1, mint0Acc, mint1Acc, bitmapExt, ...arrays] = accounts;
+    const [pool, bitmapExt, config, vault0, vault1, mint0Acc, mint1Acc, ...arrays] = accounts;
     if (!pool) throw new PoolDecodeError(this.program, `pool ${hop.poolAddress} does not exist`);
     const h = readHeader(hop, pool);
     if (!config || config.owner !== this.programId || config.data.length < 57) throw new PoolDecodeError(this.program, `amm config ${h.ammConfig} missing`);
@@ -392,25 +420,8 @@ export class RaydiumClmmAdapter implements DirectPoolAdapter {
     if (!vault0 || !vault1) throw new PoolDecodeError(this.program, 'vault account missing');
     const bal0 = decodeTokenAccount(vault0.data).amount;
     const bal1 = decodeTokenAccount(vault1.data).amount;
-    let extension: ClmmDetail['extension'] = null;
-    let bitmapExtension: string | null = null;
-    if (bitmapExt && bitmapExt.owner === this.programId && bitmapExt.data.length === BITMAP_EXT_LEN) {
-      const e = new ByteReader(bitmapExt.data).seek(40);
-      const positive: bigint[] = [];
-      const negative: bigint[] = [];
-      for (let i = 0; i < 14; i++) {
-        let w = 0n;
-        for (let j = 0; j < 8; j++) w |= e.u64() << BigInt(64 * j);
-        positive.push(w);
-      }
-      for (let i = 0; i < 14; i++) {
-        let w = 0n;
-        for (let j = 0; j < 8; j++) w |= e.u64() << BigInt(64 * j);
-        negative.push(w);
-      }
-      extension = { positive, negative };
-      bitmapExtension = bitmapExt.address;
-    }
+    const extension = parseBitmapExtension(bitmapExt ?? null);
+    const bitmapExtension = extension ? bitmapExt!.address : null;
     const tickArrays: TickArray[] = [];
     for (const a of arrays) if (a) tickArrays.push(readTickArray(a, hop.poolAddress));
     if (tickArrays.length === 0) throw new PoolDecodeError(this.program, 'no tick array could be loaded');

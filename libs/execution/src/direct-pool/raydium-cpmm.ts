@@ -35,7 +35,7 @@ export class RaydiumCpmmAdapter implements DirectPoolAdapter {
     return [hop.poolAddress];
   }
 
-  dependentAccounts(_hop: DirectPoolHop, pool: RawAccount): string[] {
+  dependentAccounts(_hop: DirectPoolHop, pool: RawAccount, _first: readonly (RawAccount | null)[] = []): string[] {
     const r = new ByteReader(pool.data).seek(8);
     const ammConfig = r.pubkey();
     r.pubkey(); // pool creator

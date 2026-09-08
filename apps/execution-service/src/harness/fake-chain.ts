@@ -131,7 +131,7 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
     const adapter = new RaydiumCpmmAdapter();
     const pool = this.extraAccounts.get(this.directRoute.poolAddress)!;
     const raw = (a: AccountSnapshot) => ({ address: a.address, owner: a.owner, lamports: a.lamports, data: new Uint8Array(Buffer.from(a.dataBase64, 'base64')) });
-    const dependent = adapter.dependentAccounts(this.directRoute.hop, raw(pool)).map((x) => this.extraAccounts.get(x)!);
+    const dependent = adapter.dependentAccounts(this.directRoute.hop, raw(pool), []).map((x) => this.extraAccounts.get(x)!);
     const state = adapter.decode(this.directRoute.hop, [raw(pool), ...dependent.map(raw)], { nowMs: Date.parse(this.opts.clock.now()) });
     const q = adapter.quote(state, this.directRoute.hop.inputMint, amountIn);
     return { inputMint: this.directRoute.hop.inputMint, outputMint: q.outputMint, out: BigInt(q.expectedOutputAmount) };
