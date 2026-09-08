@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { newActionCycle, transition, type ActionCycleEvent } from '@sol-agent-trader/agents';
-import { addMs, amountToBigInt, bigIntToAmount, mulDiv, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Clock, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Proposal, type RiskEvaluation, type RiskPolicy, type SignedAmount, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
+import { addMs, amountToBigInt, bigIntToAmount, mulDiv, quoteProbeOf, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Clock, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Proposal, type Quote, type QuoteProbe, type RiskEvaluation, type RiskPolicy, type SignedAmount, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import type { ExitApplication, OpenPositionRow, PaperBook, TradeIntentState } from '@sol-agent-trader/db/server';
 import { allocateExit, impliedPrice, type DetailedExecution } from '@sol-agent-trader/execution';
 import type { Logger } from '@sol-agent-trader/observability';
@@ -34,13 +34,15 @@ export interface PositionMonitorRepo {
   writeSnapshot(snapshot: PortfolioSnapshot): Promise<void>;
   /** The account's open session activity; WIND_DOWN closes every paper lot (§21.2B step 4). */
   sessionActivity(): Promise<string | null>;
+  /** Level B capture (§18.1): best effort, never blocks an exit. */
+  captureQuotes(probes: QuoteProbe[]): Promise<void>;
 }
 
 export interface PositionMonitorDeps {
   repo: PositionMonitorRepo;
   adapter: { executeDetailed(request: ExecutionRequest): Promise<DetailedExecution> };
   /** Exit quote at the full quantity: the executable mark (§17.2). Null = no route now. */
-  exitQuote: (inputMint: MintAddress, outputMint: MintAddress, inputAmount: Amount, maxSlippageBps: Bps, now: Instant) => Promise<{ expectedOutputAmount: Amount; impactBps: Bps | null } | null>;
+  exitQuote: (inputMint: MintAddress, outputMint: MintAddress, inputAmount: Amount, maxSlippageBps: Bps, now: Instant) => Promise<{ expectedOutputAmount: Amount; impactBps: Bps | null; quote?: Quote } | null>;
   clock: Clock;
   logger: Logger;
   account: { id: Uuid; settlementMint: MintAddress; settlementDecimals: number };
@@ -80,6 +82,7 @@ export async function runPositionMonitorCycle(deps: PositionMonitorDeps): Promis
         deps.logger.warn('position_unmarked', { positionId: p.id, asset: p.symbol, safetyState: p.safetyState, hint: safetyExit ? 'exit wanted but no route now; held-asset safety owns NO_EXIT_PATH' : 'no exit route for a mark this cycle' });
         continue;
       }
+      if (quote.quote) await captureQuotes(deps, [quoteProbeOf(randomUUID() as Uuid, quote.quote, 'EXIT_MARK', now, { assetId: p.assetId, positionId: p.id })], p.id);
       const price = impliedPrice(quote.expectedOutputAmount, deps.account.settlementDecimals, p.quantity, p.decimals);
       const unrealized = (amountToBigInt(quote.expectedOutputAmount) - amountToBigInt(p.costBasisBaseUnits)).toString() as SignedAmount;
       await deps.repo.updateMark(p.id, unrealized, addMs(now, deps.config.reassessMs));
@@ -134,6 +137,15 @@ export async function runPositionMonitorCycle(deps: PositionMonitorDeps): Promis
   deps.logger.info('position_monitor_cycle', { positions: report.positions, marked: report.marked, unmarked: report.unmarked, held: report.held, tightened: report.tightened, exits: report.exits, reductions: report.reductions, filled: report.filled, notFilled: report.notFilled, exitsByReason: report.exitsByReason, errors: report.errors.length });
   for (const e of report.errors) deps.logger.warn('position_monitor_failed', { positionId: e.positionId, error: e.error });
   return report;
+}
+
+async function captureQuotes(deps: PositionMonitorDeps, probes: QuoteProbe[], positionId: Uuid): Promise<void> {
+  if (probes.length === 0) return;
+  try {
+    await deps.repo.captureQuotes(probes);
+  } catch (err) {
+    deps.logger.warn('quote_capture_failed', { positionId, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 function takeProfitOf(p: OpenPositionRow, policy: RiskPolicy): RiskPolicy['takeProfit'] {
@@ -221,6 +233,10 @@ async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action
   const exec = await deps.adapter.executeDetailed({ intent, capitalAuthority: 'PAPER', authorization: null, approvalHash: null, executionPath: 'JUPITER_ORDER', requestedAt: now });
   const fill = exec.fill ? { ...exec.fill, lotAllocations: allocations } : null;
   await deps.repo.finishAttempt(exec.order, exec.attempt, fill);
+  const taken: QuoteProbe[] = [];
+  if (exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.decisionQuote, 'DECISION', now, { assetId: p.assetId, actionCycleId: cycle.id, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
+  if (exec.result.quote && exec.result.quote !== exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.result.quote, 'EXECUTABLE', now, { assetId: p.assetId, actionCycleId: cycle.id, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
+  await captureQuotes(deps, taken, p.id);
   if (!fill) {
     const rejection = exec.result.rejectionReasons[0] ?? 'UNKNOWN';
     await deps.repo.setIntentState(intent.id, rejection === 'INTENT_EXPIRED' ? 'EXPIRED' : exec.attempt.state === 'NOT_LANDED' ? 'FAILED' : 'CANCELLED');

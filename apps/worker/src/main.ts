@@ -14,6 +14,7 @@ import {
   finishAttempt,
   highSince,
   insertPortfolioSnapshot,
+  insertQuoteProbes,
   journalAttempt,
   listCyclesAwaitingEntry,
   listOpenPositionsForAccount,
@@ -543,12 +544,15 @@ async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
       finishAttempt: (order: Parameters<typeof finishAttempt>[1], attempt: Parameters<typeof finishAttempt>[2], fill: Parameters<typeof finishAttempt>[3]) => finishAttempt(sql, order, attempt, fill),
       openPosition: (p: Parameters<typeof openPosition>[1], lot: Parameters<typeof openPosition>[2]) => openPosition(sql, p, lot),
       writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
+      captureQuotes: async (probes: Parameters<typeof insertQuoteProbes>[1]) => {
+        await insertQuoteProbes(sql, probes);
+      },
     },
     adapter,
     referenceQuote: async (inputMint: MintAddress, outputMint: MintAddress, inputAmount: typeof startingCapital, maxSlippageBps: Parameters<typeof shared.jupiter.quote>[0]['maxSlippageBps'], now: Parameters<typeof paperBook>[4]) => {
       try {
         const { quote } = await shared.jupiter.quote({ inputMint, outputMint, inputAmount, maxSlippageBps, taker, cluster: env.SOLANA_CLUSTER, requestedAt: now });
-        return { impactBps: quote.priceImpactBps, expectedOutputAmount: quote.expectedOutputAmount, slippageBps: quote.slippageBps, quotedAt: quote.quotedAt };
+        return { impactBps: quote.priceImpactBps, expectedOutputAmount: quote.expectedOutputAmount, slippageBps: quote.slippageBps, quotedAt: quote.quotedAt, quote };
       } catch (err) {
         if (err instanceof NoRouteError) return null;
         throw err;
@@ -606,12 +610,15 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
       book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
       writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
       sessionActivity: async () => (await sessionEntryGate(sql, account.id))?.activity ?? null,
+      captureQuotes: async (probes: Parameters<typeof insertQuoteProbes>[1]) => {
+        await insertQuoteProbes(sql, probes);
+      },
     },
     adapter,
     exitQuote: async (inputMint: MintAddress, outputMint: MintAddress, inputAmount: typeof startingCapital, maxSlippageBps: Parameters<typeof shared.jupiter.quote>[0]['maxSlippageBps'], now: Parameters<typeof paperBook>[4]) => {
       try {
         const { quote } = await shared.jupiter.quote({ inputMint, outputMint, inputAmount, maxSlippageBps, taker, cluster: env.SOLANA_CLUSTER, requestedAt: now });
-        return { expectedOutputAmount: quote.expectedOutputAmount, impactBps: quote.priceImpactBps };
+        return { expectedOutputAmount: quote.expectedOutputAmount, impactBps: quote.priceImpactBps, quote };
       } catch (err) {
         if (err instanceof NoRouteError) return null;
         throw err;

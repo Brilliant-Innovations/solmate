@@ -18,3 +18,4 @@ export * from './strategies-repo.js';
 export * from './paper-repo.js';
 export * from './positions-repo.js';
 export * from './session-repo.js';
+export * from './quotes-repo.js';

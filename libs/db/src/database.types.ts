@@ -1739,6 +1739,75 @@ export type Database = {
         }
         Relationships: []
       }
+      quote_probes: {
+        Row: {
+          action_cycle_id: string | null
+          asset_id: string | null
+          expected_output_amount: number
+          id: string
+          input_amount: number
+          input_mint: string
+          intent_id: string | null
+          min_output_amount: number
+          observed_at: string
+          order_attempt_id: string | null
+          output_mint: string
+          position_id: string | null
+          price_impact_bps: number | null
+          provider: string
+          purpose: string
+          quoted_at: string
+          route_program_ids: unknown[]
+          router_label: string | null
+          slippage_bps: number
+          uses_address_lookup_tables: boolean
+        }
+        Insert: {
+          action_cycle_id?: string | null
+          asset_id?: string | null
+          expected_output_amount: number
+          id?: string
+          input_amount: number
+          input_mint: string
+          intent_id?: string | null
+          min_output_amount: number
+          observed_at?: string
+          order_attempt_id?: string | null
+          output_mint: string
+          position_id?: string | null
+          price_impact_bps?: number | null
+          provider: string
+          purpose: string
+          quoted_at: string
+          route_program_ids?: unknown[]
+          router_label?: string | null
+          slippage_bps: number
+          uses_address_lookup_tables?: boolean
+        }
+        Update: {
+          action_cycle_id?: string | null
+          asset_id?: string | null
+          expected_output_amount?: number
+          id?: string
+          input_amount?: number
+          input_mint?: string
+          intent_id?: string | null
+          min_output_amount?: number
+          observed_at?: string
+          order_attempt_id?: string | null
+          output_mint?: string
+          position_id?: string | null
+          price_impact_bps?: number | null
+          provider?: string
+          purpose?: string
+          quoted_at?: string
+          route_program_ids?: unknown[]
+          router_label?: string | null
+          slippage_bps?: number
+          uses_address_lookup_tables?: boolean
+        }
+        Relationships: []
+      }
       snapshots: {
         Row: {
           as_of: string

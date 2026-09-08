@@ -1,5 +1,6 @@
 import { addMs, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RISK_POLICY, fixedClock, toInstant, type Amount, type Bps, type Fill, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Position, type PositionLot, type RiskEvaluation, type SolanaAddress, type StrategySleeve, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import type { EntryCandidateRow, PaperBook } from '@sol-agent-trader/db/server';
+import type { QuoteProbe } from '@sol-agent-trader/contracts';
 import { PaperExecutionAdapter, quoteOf, scriptedQuoteClient } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { s0StrategyVersion } from '@sol-agent-trader/strategies';
@@ -31,6 +32,8 @@ class MemoryRepo implements PaperEntryRepo {
   attempts: { order: Order; attempt: OrderAttempt; fill: Fill | null }[] = [];
   positions: { position: Position; lot: PositionLot }[] = [];
   snapshots: PortfolioSnapshot[] = [];
+  probes: QuoteProbe[] = [];
+  async captureQuotes(p: QuoteProbe[]) { this.probes.push(...p); }
   bookState: PaperBook = { settlementBalance: '10000000000' as Amount, exposureAtCost: '0' as Amount, markValue: '0' as Amount, realizedBySleeve: {}, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [sleeve], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: null, rollingHighEquity: null };
   healthState = { feedsBlockEntries: false, entriesPaused: false, sessionAllowsEntries: true };
   async listAwaiting() { return this.rows.filter((r) => !this.evaluations.some((e) => e.actionCycleId === r.cycle.id)); }
@@ -49,7 +52,7 @@ function deps(repo: MemoryRepo, quotes: ReturnType<typeof scriptedQuoteClient>) 
   return {
     repo,
     adapter,
-    referenceQuote: async (_i: MintAddress, _o: MintAddress, amount: Amount) => ({ impactBps: 20 as Bps, expectedOutputAmount: ((BigInt(amount) * 10n ** 9n) / 100_000_000n).toString() as Amount, slippageBps: 100 as Bps, quotedAt: NOW }),
+    referenceQuote: async (_i: MintAddress, _o: MintAddress, amount: Amount) => ({ impactBps: 20 as Bps, expectedOutputAmount: ((BigInt(amount) * 10n ** 9n) / 100_000_000n).toString() as Amount, slippageBps: 100 as Bps, quotedAt: NOW, quote: quoteOf(BigInt(amount), (BigInt(amount) * 10n ** 9n) / 100_000_000n, 100, 20, USDC, TOKEN, NOW) }),
     clock: fixedClock(NOW),
     logger,
     account: { id: id(2), settlementMint: USDC, settlementDecimals: 6, startingCapital: '10000000000' as Amount, virtualSolLamports: '1000000000' as Amount },
@@ -83,6 +86,10 @@ describe('worker role paper-entry (§13, §17, M5a first paper trade)', () => {
     expect(lot).toMatchObject({ sleeveId: sleeve.id, strategyVersionId: SAFE.versionId, protectionMode: 'MONITORED_EXIT', entryIntentId: intent.id, entryFillIds: [repo.attempts[0]!.fill!.id], status: 'OPEN' });
     expect(repo.snapshots).toHaveLength(1);
     expect(repo.snapshots[0]).toMatchObject({ equityBaseUnits: '10000000000', exposureBaseUnits: '200000000', exposureFraction: 0.02 });
+    // Level B capture: the reference quote the risk core saw, then the decision and executable quotes the adapter used, all tied to the cycle
+    expect(repo.probes.map((p) => p.purpose)).toEqual(['ENTRY_REFERENCE', 'DECISION', 'EXECUTABLE']);
+    expect(repo.probes.every((p) => p.actionCycleId === id(10) && p.assetId === id(20))).toBe(true);
+    expect(repo.probes[2]).toMatchObject({ intentId: intent.id, orderAttemptId: repo.attempts[0]!.attempt.id, expectedOutputAmount: '1990000000' });
   });
 
   it('a refused evaluation is recorded once and creates no intent; a second cycle sees the first fill as exposure', async () => {

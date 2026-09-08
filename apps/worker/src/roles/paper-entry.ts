@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { addAmounts, addMs, amountToBigInt, compareAmounts, instantToMs, subAmounts, type Amount, type Bps, type Clock, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Position, type PositionLot, type RiskEvaluation, type RiskPolicy, type StrategySleeve, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
+import { addAmounts, addMs, amountToBigInt, compareAmounts, instantToMs, quoteProbeOf, subAmounts, type Amount, type Bps, type Clock, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Position, type PositionLot, type Quote, type QuoteProbe, type RiskEvaluation, type RiskPolicy, type StrategySleeve, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import type { EntryCandidateRow, PaperBook, TradeIntentState } from '@sol-agent-trader/db/server';
 import { impliedPrice, type DetailedExecution } from '@sol-agent-trader/execution';
 import type { Logger } from '@sol-agent-trader/observability';
@@ -27,6 +27,8 @@ export interface PaperEntryRepo {
   finishAttempt(order: Order, attempt: OrderAttempt, fill: Fill | null): Promise<void>;
   openPosition(position: Position, lot: PositionLot): Promise<void>;
   writeSnapshot(snapshot: PortfolioSnapshot): Promise<void>;
+  /** Level B capture (§18.1): best effort, never blocks a decision. */
+  captureQuotes(probes: QuoteProbe[]): Promise<void>;
 }
 
 export interface PaperExecutor {
@@ -37,7 +39,7 @@ export interface PaperEntryDeps {
   repo: PaperEntryRepo;
   adapter: PaperExecutor;
   /** Reference quote for impact and price at the policy's maximum position size, taken at evaluation time. */
-  referenceQuote: (inputMint: MintAddress, outputMint: MintAddress, inputAmount: Amount, maxSlippageBps: Bps, now: Instant) => Promise<{ impactBps: Bps | null; expectedOutputAmount: Amount; slippageBps: Bps; quotedAt: Instant } | null>;
+  referenceQuote: (inputMint: MintAddress, outputMint: MintAddress, inputAmount: Amount, maxSlippageBps: Bps, now: Instant) => Promise<{ impactBps: Bps | null; expectedOutputAmount: Amount; slippageBps: Bps; quotedAt: Instant; quote?: Quote } | null>;
   clock: Clock;
   logger: Logger;
   account: { id: Uuid; settlementMint: MintAddress; settlementDecimals: number; startingCapital: Amount; virtualSolLamports: Amount };
@@ -103,6 +105,14 @@ export async function runPaperEntryCycle(deps: PaperEntryDeps): Promise<PaperEnt
         now,
       );
       await deps.repo.recordRiskEvaluation(evaluation.record);
+      const capture = async (probes: QuoteProbe[]) => {
+        try {
+          await deps.repo.captureQuotes(probes);
+        } catch (err) {
+          deps.logger.warn('quote_capture_failed', { cycleId: row.cycle.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      };
+      if (ref?.quote) await capture([quoteProbeOf(randomUUID() as Uuid, ref.quote, 'ENTRY_REFERENCE', now, { assetId: row.asset.id, actionCycleId: row.cycle.id })]);
       if (!evaluation.record.allowed) {
         report.refused++;
         for (const code of evaluation.record.reasonCodes) report.refusalsByCode[code] = (report.refusalsByCode[code] ?? 0) + 1;
@@ -138,6 +148,10 @@ export async function runPaperEntryCycle(deps: PaperEntryDeps): Promise<PaperEnt
       await deps.repo.setIntentState(intent.id, 'EXECUTING');
       const exec = await deps.adapter.executeDetailed({ intent, capitalAuthority: 'PAPER', authorization: null, approvalHash: null, executionPath: 'JUPITER_ORDER', requestedAt: now });
       await deps.repo.finishAttempt(exec.order, exec.attempt, exec.fill);
+      const taken: QuoteProbe[] = [];
+      if (exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.decisionQuote, 'DECISION', now, { assetId: row.asset.id, actionCycleId: row.cycle.id, intentId: intent.id, orderAttemptId: exec.attempt.id }));
+      if (exec.result.quote && exec.result.quote !== exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.result.quote, 'EXECUTABLE', now, { assetId: row.asset.id, actionCycleId: row.cycle.id, intentId: intent.id, orderAttemptId: exec.attempt.id }));
+      await capture(taken);
 
       if (exec.fill) {
         const positionId = randomUUID() as Uuid;

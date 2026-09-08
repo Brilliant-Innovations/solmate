@@ -1,4 +1,4 @@
-import { addMs, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RISK_POLICY, fixedClock, toInstant, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Proposal, type RiskEvaluation, type SignedAmount, type SolanaAddress, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RISK_POLICY, fixedClock, toInstant, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Proposal, type QuoteProbe, type RiskEvaluation, type SignedAmount, type SolanaAddress, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
 import type { ExitApplication, OpenPositionRow, PaperBook } from '@sol-agent-trader/db/server';
 import { PaperExecutionAdapter, quoteOf, scriptedQuoteClient } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
@@ -45,6 +45,8 @@ class MemoryRepo implements PositionMonitorRepo {
   async writeSnapshot(s: PortfolioSnapshot) { this.snapshots.push(s); }
   activity: string | null = 'ACTIVE';
   async sessionActivity() { return this.activity; }
+  probes: QuoteProbe[] = [];
+  async captureQuotes(p: QuoteProbe[]) { this.probes.push(...p); }
 }
 
 /** Exit quote: selling 2 tokens returns `usdc` USDC. */
@@ -54,7 +56,7 @@ function deps(repo: MemoryRepo, usdcForTwoTokens: bigint, execOut = usdcForTwoTo
   return {
     repo,
     adapter,
-    exitQuote: async (_i: MintAddress, _o: MintAddress, amount: Amount) => ({ expectedOutputAmount: ((BigInt(amount) * usdcForTwoTokens * 1_000_000n) / 2_000_000_000n).toString() as Amount, impactBps: 20 as Bps }),
+    exitQuote: async (_i: MintAddress, _o: MintAddress, amount: Amount) => ({ expectedOutputAmount: ((BigInt(amount) * usdcForTwoTokens * 1_000_000n) / 2_000_000_000n).toString() as Amount, impactBps: 20 as Bps, quote: quoteOf(BigInt(amount), (BigInt(amount) * usdcForTwoTokens * 1_000_000n) / 2_000_000_000n, 100, 20, TOKEN, USDC, NOW) }),
     clock: fixedClock(NOW),
     logger,
     account: { id: id(2), settlementMint: USDC, settlementDecimals: 6 },
@@ -106,6 +108,9 @@ describe('worker role position-monitor (§13.4–13.5, §17.2, D31, D39, D44)', 
     expect(x.fill.lotAllocations).toEqual([{ lotId: id(4), quantity: '2000000000' }]);
     // 190 USDC gross, 15 bps allowance → 189.715 USDC proceeds against 200 USDC cost
     expect(x.lots).toEqual([{ lotId: id(4), sleeveId: id(5), quantity: '2000000000', costReleased: '200000000', realizedPnl: '-10285000' }]);
+    // Level B capture: the mark, then the exit's decision and executable quotes bound to the position, cycle, intent and attempt
+    expect(repo.probes.map((p) => p.purpose)).toEqual(['EXIT_MARK', 'DECISION', 'EXECUTABLE']);
+    expect(repo.probes[1]).toMatchObject({ positionId: id(1), actionCycleId: d.cycle.id, intentId: intent.id, orderAttemptId: repo.attempts[0]!.attempt.id });
   });
 
   it('a partial tier reduces half across lots pro rata and leaves the position open; a safety CRITICAL_EXIT exits regardless of price', async () => {
