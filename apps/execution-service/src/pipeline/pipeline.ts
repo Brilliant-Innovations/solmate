@@ -6,6 +6,8 @@ import { modeGate, type ModeFacts } from '../authority/mode-gate.js';
 import { checkCaps, type CapRejection } from '../caps/check.js';
 import { ExecutorExposureLedger, type ExposureEvent } from '../caps/exposure-ledger.js';
 import { ExecutorJournal } from '../journal/journal.js';
+import { DirectPoolEmergencyAdapter, type DirectPoolAdapter, type TransactionSubmitter } from '@sol-agent-trader/execution';
+import type { DirectPoolHop, EmergencyRoutePolicy, ExecutionPath, MintAddress as _MintAddressAlias } from '@sol-agent-trader/contracts';
 import { IdempotencyRegistry } from '../idempotency/intents.js';
 
 /**
@@ -70,7 +72,26 @@ export interface PipelineDeps {
   signatureGraceSlots?: number;
   /** Best-effort database reconciliation of a tracked finality change; the journal already holds the truth. */
   persistFinality?: (u: FinalityPersist) => Promise<void>;
+  /**
+   * Provider-independent emergency exit (§14.6, D33): when Jupiter is unavailable or unrouteable
+   * before submission, the executor rebuilds the close from the persisted direct-pool route.
+   */
+  directPool?: DirectPoolFallback;
 }
+
+export interface DirectPoolFallback {
+  submitter: TransactionSubmitter;
+  /** Latest persisted route for a held mint (database read, with whatever cache the deployment keeps); null when none. */
+  routes: (mint: MintAddress) => Promise<DirectPoolHop | null>;
+  policy: Pick<EmergencyRoutePolicy, 'computeUnitLimit' | 'computeUnitPriceMicroLamports'>;
+  adapters?: readonly DirectPoolAdapter[];
+  /** Polls the chain for confirmation of a directly submitted transaction. */
+  awaitConfirmed: (signature: string, lastValidBlockHeight: number | null) => Promise<{ slot: number } | null>;
+  tokenAccountFor?: (mint: string, tokenProgram: string) => string;
+}
+
+/** Primary-path outcomes that mean "the provider could not be used", never "the provider may have landed something". */
+const PRIMARY_UNAVAILABLE = /^(NO_ROUTE|TRANSACTION_UNDECODABLE|PROVIDER_|EXECUTE_FAILED_5|VERSION_UNSUPPORTED|UNEXPECTED_SIGNER|FEE_PAYER_MISMATCH|PROGRAM_)/;
 
 export interface FinalityPersist {
   intentId: Uuid;
@@ -111,6 +132,8 @@ export interface EmergencyActionOutcome {
   state: OrderAttempt['state'] | 'SKIPPED';
   txSignature: string | null;
   reasons: string[];
+  executionPath?: ExecutionPath;
+  fallbackFrom?: string | null;
 }
 
 export type EmergencyInput =
@@ -339,9 +362,82 @@ export class ExecutorPipeline {
     };
     const request: ExecutionRequest = { intent, capitalAuthority: 'LIVE_AUTO', authorization: null, approvalHash: null, executionPath: 'JUPITER_ORDER', requestedAt: this.deps.clock.now() };
     const adapter = this.adapterFor(intentId, key, cmd.nonce, 'JUPITER_ORDER', cmd.commandId);
-    const execution = await adapter.executeDetailed(request, { bounds: a.bounds });
+    let execution: DetailedExecution;
+    let primaryFailure: string | null = null;
+    try {
+      execution = await adapter.executeDetailed(request, { bounds: a.bounds });
+      const first = execution.result.rejectionReasons[0] ?? null;
+      // Only a refusal before anything was signed counts as "provider unavailable"; a signed attempt is recovery's business.
+      if (execution.attempt.state === 'PREPARED' && first !== null && PRIMARY_UNAVAILABLE.test(first)) primaryFailure = first;
+    } catch (err) {
+      // The provider threw before a signature existed (order/quote endpoint down): nothing can have landed.
+      if (this.registry.state(key) !== 'AUTHORIZED') throw err;
+      primaryFailure = `PROVIDER_ERROR:${err instanceof Error ? err.message : String(err)}`.slice(0, 160);
+      execution = null as unknown as DetailedExecution;
+    }
+    if (primaryFailure !== null && this.deps.directPool) {
+      const fallback = await this.directPoolFallback(cmd, a, intent, request, key, primaryFailure);
+      if (fallback) execution = fallback;
+    }
+    if (!execution) throw new Error(`emergency close of ${a.mint}: primary path failed (${primaryFailure}) and no direct-pool route is available`);
     await this.record(intentId, key, execution.attempt.state, execution.fill, execution.result.txSignature, execution.result.rejectionReasons, a.bounds, { mint: a.mint, heldAmount: a.heldAmount });
-    return { mint: a.mint, amount: a.amount, heldAmount: a.heldAmount, state: execution.attempt.state, txSignature: execution.result.txSignature, reasons: execution.result.rejectionReasons };
+    return { mint: a.mint, amount: a.amount, heldAmount: a.heldAmount, state: execution.attempt.state, txSignature: execution.result.txSignature, reasons: execution.result.rejectionReasons, executionPath: execution.result.executionPath, fallbackFrom: execution.result.executionPath === 'DIRECT_POOL_RPC' ? primaryFailure : null };
+  }
+
+  /** §14.6 steps 4–9: the persisted direct-pool route, refreshed and rebuilt locally, submitted over the approved RPC path. */
+  private async directPoolFallback(cmd: { commandId: Uuid; nonce: string; reason: string }, a: EmergencyCloseAction, intent: TradeIntent, request: ExecutionRequest, key: IdempotencyKey, primaryFailure: string): Promise<DetailedExecution | null> {
+    const dp = this.deps.directPool!;
+    let hop: DirectPoolHop | null = null;
+    try {
+      hop = await dp.routes(a.mint);
+    } catch (err) {
+      await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', cmd.commandId, { reasons: ['DIRECT_POOL_ROUTE_UNAVAILABLE'], mint: a.mint, primaryFailure, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+    if (!hop || hop.inputMint !== a.mint || hop.outputMint !== a.outputMint) {
+      await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', cmd.commandId, { reasons: ['DIRECT_POOL_ROUTE_MISSING'], mint: a.mint, primaryFailure, hop });
+      return null;
+    }
+    const intentId = intent.id;
+    await this.deps.journal.append('ATTEMPT_PREPARED', intentId, { intentId, idempotencyKey: key, nonce: cmd.nonce, emergency: true, commandId: cmd.commandId, mint: a.mint, maxInputAmount: a.amount, executionPath: 'DIRECT_POOL_RPC', fallbackFrom: primaryFailure, hop, expiresAt: a.bounds.expiresAt });
+    const journal = this.deps.journal;
+    const deps = this.deps;
+    let signedAttempt: OrderAttempt | null = null;
+    const adapter = new DirectPoolEmergencyAdapter({
+      submitter: dp.submitter,
+      simulation: deps.adapter.simulation,
+      signer: withRetry(deps.signer, deps.signerRetries ?? 2),
+      clock: deps.clock,
+      newId: deps.newId,
+      structure: { allowedPrograms: deps.adapter.structure.allowedPrograms, allowedTransferRecipients: deps.adapter.structure.allowedTransferRecipients },
+      maxSolDebitLamports: deps.adapter.maxSolDebitLamports,
+      policy: dp.policy,
+      adapters: dp.adapters,
+      tokenAccountFor: dp.tokenAccountFor,
+      journal: async ({ attempt }) => {
+        signedAttempt = attempt;
+        await journal.append('ATTEMPT_SIGNED', intentId, { intentId, idempotencyKey: key, nonce: cmd.nonce, signedTxHash: attempt.signedTxHash, expectedTxSignature: attempt.expectedTxSignature, lastValidBlockHeight: attempt.lastValidBlockHeight, executionPath: 'DIRECT_POOL_RPC', hop });
+        this.probe('AFTER_SIGNED_JOURNAL');
+      },
+      beforeSubmit: async (bounds) => {
+        const gate = modeGate(await this.facts(), bounds.exposureEffect);
+        if (!gate.allowed) return { allowed: false, reason: `MODE_GATE_${gate.reason}` };
+        await journal.append('ATTEMPT_SUBMITTED', intentId, { intentId, idempotencyKey: key, nonce: cmd.nonce, path: 'DIRECT_POOL_RPC', expectedTxSignature: signedAttempt?.expectedTxSignature ?? null, signedTxHash: signedAttempt?.signedTxHash ?? null });
+        if (this.registry.state(key) === 'AUTHORIZED') this.registry.advance(key, 'EXECUTING');
+        this.probe('AFTER_SUBMITTED_JOURNAL');
+        return { allowed: true };
+      },
+      awaitConfirmed: async (signature, lastValidBlockHeight) => {
+        const r = await dp.awaitConfirmed(signature, lastValidBlockHeight);
+        return r ? { slot: r.slot as never } : null;
+      },
+      awaitFinalized: async (signature, lastValidBlockHeight) => {
+        const r = await deps.awaitFinalized(signature, lastValidBlockHeight);
+        return r ? { slot: r.slot as never } : null;
+      },
+      proveDead: (signature, lastValidBlockHeight) => proveDead(deps.chain, signature, lastValidBlockHeight),
+    });
+    return adapter.executeDetailed({ ...request, executionPath: 'DIRECT_POOL_RPC' }, { bounds: a.bounds, hop, fallbackFrom: primaryFailure });
   }
 
   private async record(intentId: Uuid, key: IdempotencyKey, state: OrderAttempt['state'], fill: Fill | null, signature: string | null, reasons: string[], authorized: ExecutionBounds, exit?: { mint: MintAddress; heldAmount: Amount }): Promise<void> {

@@ -187,3 +187,59 @@ describe('D22 emergency close: chain-bounded, settlement-only, journaled, pauses
   });
 });
 
+describe('§14.6 provider-independent emergency exit: the persisted direct-pool route when Jupiter is unusable', () => {
+  it('with the router unrouteable, the close is rebuilt locally from the direct-pool snapshot, validated like any live transaction, journaled with its path, submitted over RPC and finalized; the ledger releases and entries pause', async () => {
+    const w = await world({ directPool: { risk: 100_000_000n, settlement: 10_000_000_000n } });
+    await enter(w);
+    expect(w.chain.balances.get(TOKEN)).toBe(998_000n);
+    w.chain.noRoute = true;
+    const r = await w.pipeline.emergency({ signed: await command(w) });
+    expect(r.outcome).toBe('CLOSED');
+    if (r.outcome !== 'CLOSED') return;
+    expect(r.actions[0]).toMatchObject({ mint: TOKEN, state: 'FINALIZED', executionPath: 'DIRECT_POOL_RPC', fallbackFrom: 'NO_ROUTE' });
+    expect(w.chain.landedDirect).toHaveLength(1);
+    expect(w.chain.landedDirect[0]?.inputAmount).toBe(998_000n);
+    expect(w.chain.balances.get(TOKEN)).toBe(0n);
+    expect(w.chain.executeCalls).toHaveLength(1); // only the entry went through Jupiter
+    expect(w.pipeline.openExposure()).toBe(0n);
+    expect(w.pipeline.localPause.active).toBe(true);
+    const prepared = w.pipeline.journal.all().filter((e) => e.kind === 'ATTEMPT_PREPARED' && e.payload['executionPath'] === 'DIRECT_POOL_RPC');
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.payload['fallbackFrom']).toBe('NO_ROUTE');
+    expect((prepared[0]?.payload['hop'] as { program: string }).program).toBe('RAYDIUM_CPMM');
+    const submitted = w.pipeline.journal.all().filter((e) => e.kind === 'ATTEMPT_SUBMITTED');
+    expect(submitted.at(-1)?.payload['path']).toBe('DIRECT_POOL_RPC');
+    // the sale is a REDUCE of the held mint into the settlement mint and nothing else: the fallback never buys
+    const result = w.pipeline.journal.all().filter((e) => e.kind === 'ATTEMPT_RESULT').at(-1);
+    expect(result?.payload['state']).toBe('FINALIZED');
+  });
+
+  it('without a persisted route the primary refusal stands, is journaled as a missing route, and nothing is signed or sent directly', async () => {
+    const w = await world({ directPool: { risk: 100_000_000n, settlement: 10_000_000_000n } });
+    await enter(w);
+    w.chain.noRoute = true;
+    w.chain.directRoute = null; // the pipeline still has the fallback armed, but the route lookup finds nothing
+    const r = await w.pipeline.emergency({ signed: await command(w) });
+    expect(r.outcome).toBe('CLOSED');
+    if (r.outcome !== 'CLOSED') return;
+    expect(r.actions[0]).toMatchObject({ mint: TOKEN, state: 'PREPARED' });
+    expect(r.actions[0]?.reasons[0]).toBe('NO_ROUTE');
+    expect(w.chain.landedDirect).toHaveLength(0);
+    expect(w.chain.balances.get(TOKEN)).toBe(998_000n);
+    const rejected = w.pipeline.journal.all().filter((e) => e.kind === 'EMERGENCY_COMMAND_REJECTED').at(-1);
+    expect(rejected?.payload['reasons']).toEqual(['DIRECT_POOL_ROUTE_MISSING']);
+  });
+
+  it('a route whose pool no longer trades is refused before signing and recorded on the attempt', async () => {
+    const w = await world({ directPool: { risk: 0n, settlement: 10_000_000_000n } });
+    await enter(w);
+    w.chain.noRoute = true;
+    const r = await w.pipeline.emergency({ signed: await command(w) });
+    expect(r.outcome).toBe('CLOSED');
+    if (r.outcome !== 'CLOSED') return;
+    expect(r.actions[0]).toMatchObject({ mint: TOKEN, state: 'PREPARED', executionPath: 'DIRECT_POOL_RPC' });
+    expect(r.actions[0]?.reasons[0]).toBe('ROUTE_NOT_TRADEABLE');
+    expect(w.chain.sentDirect).toHaveLength(0);
+    expect(w.pipeline.journal.all().some((e) => e.kind === 'ATTEMPT_SIGNED' && e.payload['executionPath'] === 'DIRECT_POOL_RPC')).toBe(false);
+  });
+});

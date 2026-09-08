@@ -5,7 +5,7 @@ import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, SoftwareDevSigner, baseIntent, quote
 import { ExecutorPipeline, type Boundary, type PipelineDeps, type SubmitOutcome } from '../pipeline/pipeline.js';
 import { ExecutorJournal } from '../journal/journal.js';
 import type { ModeFacts } from '../authority/mode-gate.js';
-import { FakeChain, type ExecuteBehaviour, type FakeChainOptions } from './fake-chain.js';
+import { FakeChain, syntheticCpmmRoute, type ExecuteBehaviour, type FakeChainOptions } from './fake-chain.js';
 
 /** Shared harness world (§24.3): the real pipeline over the fake chain, one journal per world, rebuildable after a "crash". Test-only. */
 
@@ -68,6 +68,8 @@ export interface WorldOptions {
   finality?: 'WITHIN_BUDGET' | 'DEFERRED';
   secondaryChain?: QuorumObserver;
   persistFinality?: PipelineDeps['persistFinality'];
+  /** Arms the §14.6 direct-pool fallback with a synthetic CPMM pool (token1 = TOKEN, token0 = USDC) at these reserves. */
+  directPool?: { risk: bigint; settlement: bigint };
 }
 
 export async function createWorld(dir: string, keys: { authorizer: SigningKeyPair; emergencyOperator: SigningKeyPair }, opts: WorldOptions = {}): Promise<World> {
@@ -82,6 +84,11 @@ export async function createWorld(dir: string, keys: { authorizer: SigningKeyPai
     hardMaxSlippageBps: 150 as Bps, hardMaxProtectiveSlippageBps: 300 as Bps, acceptedRiskAuthorizerKeyIds: [keys.authorizer.keyId], acceptedEmergencyOperatorKeyIds: [keys.emergencyOperator.keyId], expectedSignerPolicyDigest: null, expectedSignerWorkloadFingerprint: null,
     ...opts.guardrails,
   };
+  if (opts.directPool) {
+    const route = syntheticCpmmRoute(TOKEN, USDC, opts.directPool);
+    for (const [k, v] of route.accounts) chain.extraAccounts.set(k, v);
+    chain.directRoute = { hop: route.hop, poolAddress: route.poolAddress };
+  }
   const journalPath = join(dir, `executor-${nextSeq()}.journal`);
   let token = 0;
   const open = async (over: Partial<Pick<PipelineDeps, 'probe' | 'signer' | 'modeFacts'>> = {}): Promise<ExecutorPipeline> => {
@@ -94,6 +101,15 @@ export async function createWorld(dir: string, keys: { authorizer: SigningKeyPai
       awaitFinalized: async (signature) => { if (opts.finality === 'DEFERRED') return null; const s = chain.statuses.get(signature); if (!s) return null; s.confirmationStatus = 'finalized'; return { slot: s.slot }; },
       secondaryChains: opts.secondaryChain ? [opts.secondaryChain] : undefined,
       persistFinality: opts.persistFinality,
+      directPool: chain.directRoute
+        ? {
+            submitter: chain.submitter(),
+            routes: async (mint) => (mint === TOKEN && chain.directRoute ? chain.directRoute.hop : null),
+            policy: { computeUnitLimit: 400_000, computeUnitPriceMicroLamports: 1_000 },
+            awaitConfirmed: async (signature) => { const s = chain.statuses.get(signature); return s && s.err === null ? { slot: s.slot } : null; },
+            tokenAccountFor: (mint) => chain.ataFor(mint),
+          }
+        : undefined,
       maxSkewMs: 5_000,
       probe: opts.probe,
       ...over,

@@ -1,6 +1,8 @@
 import { hostname } from 'node:os';
 import { DEFAULT_CHAIN_HEALTH_POLICY, getContractSetDigest, importVerificationKey, parseExecutionServiceEnv, systemClock, type Bps, type Instant, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { advanceAttemptFinality, createSql, decisionQuoteForCycle, executorModeFacts, loadApprovalGrant, loadTradeIntent, persistExecution, type Sql } from '@sol-agent-trader/db/server';
+import { RpcTransactionSubmitter } from '@sol-agent-trader/execution';
+import { DEFAULT_EMERGENCY_ROUTE_POLICY, type DirectPoolHop } from '@sol-agent-trader/contracts';
+import { advanceAttemptFinality, createSql, decisionQuoteForCycle, executorModeFacts, latestEmergencyRouteForMint, loadApprovalGrant, loadTradeIntent, persistExecution, type Sql } from '@sol-agent-trader/db/server';
 import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, JupiterOrderHttpClient, JupiterSwapClient, RpcChainObserver, RpcCustodyReader, SimulationRpcClient, SoftwareDevSigner, type DetailedExecution } from '@sol-agent-trader/execution';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
@@ -27,6 +29,10 @@ const SERVICE = 'execution-service' as const;
 
 /** Deployment-local emergency close policy (D22). Slippage is further capped by the guardrails' protective ceiling. */
 const EMERGENCY_CLOSE_POLICY = { slippageBps: 200 as Bps, maxPriceImpactBps: 500 as Bps, maxQuoteAgeMs: 15_000, validityMs: 60_000 };
+/** How long a directly submitted emergency transaction may take to reach `confirmed` before it is left to recovery. */
+const CONFIRM_BUDGET_MS = 45_000;
+/** Last route seen per mint, so a database outage does not take the fallback with it (§15.10). */
+const routeCache = new Map<string, DirectPoolHop>();
 /** Fees, priority and one ATA rent the swap shape may debit from the wallet (0.02 SOL). */
 const MAX_SOL_DEBIT_LAMPORTS = 20_000_000n;
 const FINALITY_POLL_MS = 2_000;
@@ -134,6 +140,32 @@ async function main(): Promise<void> {
     journal, guardrails, authorizerKeys, approverKeys, emergencyOperatorKeys, signer, chain, custody, clock, newId: () => randomUUID() as Uuid,
     modeFacts,
     emergency: EMERGENCY_CLOSE_POLICY,
+    // §14.6 / D33: provider-independent emergency exit over the primary RPC; routes come from the persisted snapshots and stay cached for a database outage.
+    directPool: {
+      submitter: new RpcTransactionSubmitter({ url: env.SOLANA_RPC_PRIMARY, allowedOrigins: [primaryOrigin], label: 'primary' }),
+      routes: async (mint) => {
+        try {
+          const s = await latestEmergencyRouteForMint(sql, mint);
+          const hop = s?.hops[0] ?? null;
+          if (hop) routeCache.set(mint, hop);
+          return hop ?? routeCache.get(mint) ?? null;
+        } catch (err) {
+          logger.error('emergency_route_read_failed', { mint, error: err instanceof Error ? err.message : String(err), cached: routeCache.has(mint) });
+          return routeCache.get(mint) ?? null;
+        }
+      },
+      policy: DEFAULT_EMERGENCY_ROUTE_POLICY,
+      awaitConfirmed: async (signature) => {
+        const deadline = clock.nowMs() + CONFIRM_BUDGET_MS;
+        while (clock.nowMs() < deadline) {
+          const s = await chain.signatureStatus(signature).catch(() => null);
+          if (s && s.err === null && (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized')) return { slot: s.slot };
+          if (s && s.err !== null) return null;
+          await new Promise((r) => setTimeout(r, FINALITY_POLL_MS));
+        }
+        return null;
+      },
+    },
     adapter: {
       orders, quotes, simulation, cluster: guardrails.cluster,
       structure: { allowedPrograms: [...BASE_PROGRAMS, JUPITER_V6_PROGRAM], allowLookupTables: true, allowedTransferRecipients: [] },

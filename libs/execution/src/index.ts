@@ -16,6 +16,8 @@ export * from './adapter/live-adapter.js';
 export * from './chain/observer.js';
 export * from './chain/quorum.js';
 export * from './chain/health.js';
+export * from './chain/submit.js';
+export * from './adapter/direct-pool-adapter.js';
 export * from './shadow/build.js';
 export * from './validate/bounds.js';
 export * from './chain/custody.js';

@@ -2,6 +2,8 @@ import { type Amount, type Clock, type JupiterQuoteClient, type MintAddress, typ
 import { ASSOCIATED_TOKEN_PROGRAM, BASE_PROGRAMS, COMPUTE_BUDGET_PROGRAM, JUPITER_V6_PROGRAM, JupiterHttpError, NoRouteError, SYSTEM_PROGRAM, TOKEN_PROGRAM, decodeTransaction, encodeTransaction, fromBase64, toBase64, type AccountSnapshot, type ChainObserver, type CustodyReader, type Holding, type DecodedMessage, type JupiterExecuteResult, type JupiterOrder, type JupiterOrderClient, type SignatureStatus, type SimulationOutcome, type SimulationReader } from '@sol-agent-trader/execution';
 import { base58Decode, base58Encode } from '@sol-agent-trader/solana-hard-state';
 import { CrashSignal, SignerTimeout } from '../pipeline/pipeline.js';
+import { RAYDIUM_CPMM_PROGRAM, RaydiumCpmmAdapter, findProgramAddress, type TransactionSubmitter } from '@sol-agent-trader/execution';
+import type { DirectPoolHop } from '@sol-agent-trader/contracts';
 
 /**
  * Fake Jupiter/Solana for the execution harness (blueprint §24.3). One in-memory chain: wallet
@@ -74,6 +76,13 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
   readonly landed: { signature: string; inputAmount: bigint; outputAmount: bigint }[] = [];
   readonly executeCalls: string[] = [];
   readonly orders: JupiterOrder[] = [];
+  /** When set, the router reports no route: the primary provider is unusable and the direct-pool fallback must take over. */
+  noRoute = false;
+  /** Extra accounts served to `accounts()` (a synthetic direct pool and its vaults). */
+  readonly extraAccounts = new Map<string, AccountSnapshot>();
+  directRoute: { hop: DirectPoolHop; poolAddress: string } | null = null;
+  readonly landedDirect: { signature: string; inputAmount: bigint; outputAmount: bigint }[] = [];
+  readonly sentDirect: string[] = [];
   private quoteCalls = 0;
   private ordinal = 0;
 
@@ -108,7 +117,7 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
     if (address === IN_ATA) return { address, lamports: 2_039_280, owner: TOKEN_PROGRAM, dataBase64: tokenAccountData(this.opts.inputMint, w, balances.get(this.opts.inputMint) ?? 0n) };
     if (address === OUT_ATA) return { address, lamports: 2_039_280, owner: TOKEN_PROGRAM, dataBase64: tokenAccountData(this.opts.outputMint, w, balances.get(this.opts.outputMint) ?? 0n) };
     if (address === OTHER_ATA) return { address, lamports: 2_039_280, owner: TOKEN_PROGRAM, dataBase64: tokenAccountData(OTHER_MINT, w, balances.get(OTHER_MINT) ?? 0n) };
-    return null;
+    return this.extraAccounts.get(address) ?? null;
   }
 
   // --- SimulationReader ---------------------------------------------------------------------
@@ -116,7 +125,53 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
     return { slot: this.slot, accounts: addresses.map((a) => this.snapshot(a, this.balances, this.lamports)) };
   }
 
-  async simulate(_tx: string, addresses: readonly string[]): Promise<SimulationOutcome> {
+  /** What the synthetic direct pool pays for selling `amountIn` of the risk token, from the same adapter the executor uses. */
+  directQuote(amountIn: bigint): { inputMint: string; outputMint: string; out: bigint } {
+    if (!this.directRoute) throw new Error('fake chain: no direct route configured');
+    const adapter = new RaydiumCpmmAdapter();
+    const pool = this.extraAccounts.get(this.directRoute.poolAddress)!;
+    const raw = (a: AccountSnapshot) => ({ address: a.address, owner: a.owner, lamports: a.lamports, data: new Uint8Array(Buffer.from(a.dataBase64, 'base64')) });
+    const dependent = adapter.dependentAccounts(this.directRoute.hop, raw(pool)).map((x) => this.extraAccounts.get(x)!);
+    const state = adapter.decode(this.directRoute.hop, [raw(pool), ...dependent.map(raw)], { nowMs: Date.parse(this.opts.clock.now()) });
+    const q = adapter.quote(state, this.directRoute.hop.inputMint, amountIn);
+    return { inputMint: this.directRoute.hop.inputMint, outputMint: q.outputMint, out: BigInt(q.expectedOutputAmount) };
+  }
+
+  /** Direct RPC submission for the fallback path: lands what the synthetic pool pays, minus the scenario's adverse move. */
+  submitter(): TransactionSubmitter {
+    return {
+      label: 'fake-rpc',
+      latestBlockhash: async () => ({ blockhash: base58Encode(new Uint8Array(32).fill(7)), lastValidBlockHeight: this.blockHeight_ + 150 }),
+      send: async (signedTransactionBase64) => {
+        const tx = decodeTransaction(fromBase64(signedTransactionBase64));
+        const signature = tx.signatures[0];
+        if (!signature) throw new Error('fake chain: unsigned direct transaction');
+        this.sentDirect.push(signedTransactionBase64);
+        const amountIn = this.balances.get(this.directRoute!.hop.inputMint) ?? 0n;
+        const q = this.directQuote(amountIn);
+        const adverse = q.out - (q.out * BigInt(this.opts.adverseBps ?? 20)) / 10_000n;
+        this.balances.set(q.inputMint, 0n);
+        this.balances.set(q.outputMint, (this.balances.get(q.outputMint) ?? 0n) + adverse);
+        this.lamports -= 5_000;
+        this.slot += 1;
+        this.statuses.set(signature, { slot: this.slot, confirmationStatus: 'confirmed', err: null });
+        this.landedDirect.push({ signature, inputAmount: amountIn, outputAmount: adverse });
+        return signature as never;
+      },
+    };
+  }
+
+  async simulate(tx: string, addresses: readonly string[]): Promise<SimulationOutcome> {
+    if (this.directRoute && addresses.includes(this.directRoute.poolAddress)) {
+      const decoded = decodeTransaction(fromBase64(tx));
+      void decoded;
+      const amountIn = this.balances.get(this.directRoute.hop.inputMint) ?? 0n;
+      const q = this.directQuote(amountIn);
+      const post = new Map(this.balances);
+      post.set(q.inputMint, 0n);
+      post.set(q.outputMint, (post.get(q.outputMint) ?? 0n) + q.out);
+      return { slot: this.slot, err: null, logs: [`Program ${RAYDIUM_CPMM_PROGRAM} invoke [1]`, `Program ${RAYDIUM_CPMM_PROGRAM} success`], unitsConsumed: 40_000, accounts: addresses.map((a) => this.snapshot(a, post, this.lamports - 5_000)) };
+    }
     const o = this.orders[this.orders.length - 1];
     if (!o) throw new Error('simulate before order');
     const post = new Map(this.balances);
@@ -143,6 +198,7 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
   // --- Router --------------------------------------------------------------------------------
   quoteClient(): JupiterQuoteClient {
     const next = (request: QuoteRequest): { quote: Quote; route: QuoteRoutePlan } => {
+      if (this.noRoute) throw new NoRouteError('FAKE', 'router unavailable');
       const q = this.opts.quotes[Math.min(this.quoteCalls++, this.opts.quotes.length - 1)];
       if (!q) throw new NoRouteError('FAKE', 'no route');
       const requested = BigInt(request.inputAmount);
@@ -270,4 +326,43 @@ function decodeMessageBytes(messageBytes: Uint8Array): DecodedMessage {
   bytes[0] = 0;
   bytes.set(messageBytes, 1);
   return decodeTransaction(bytes).message;
+}
+
+/**
+ * A synthetic Raydium CPMM pool over the harness mints (token0 = settlement, token1 = risk token) with
+ * the exact byte layout the executor's adapter decodes, so the fallback path runs the real decoder,
+ * quote and instruction builder against controllable reserves.
+ */
+export function syntheticCpmmRoute(inputMint: MintAddress, outputMint: MintAddress, reserves: { risk: bigint; settlement: bigint }, tradeFeeRate = 2_500n): { hop: DirectPoolHop; accounts: Map<string, AccountSnapshot>; poolAddress: string } {
+  const key = (fill: number) => base58Encode(new Uint8Array(32).fill(fill));
+  const poolAddress = key(120);
+  const ammConfig = key(121);
+  const vault0 = key(122);
+  const vault1 = key(123);
+  const observation = key(124);
+  const authority = findProgramAddress([new TextEncoder().encode('vault_and_lp_mint_auth_seed')], RAYDIUM_CPMM_PROGRAM).address;
+  const pool = new Uint8Array(637);
+  let o = 8;
+  for (const pk of [ammConfig, key(125), vault0, vault1, key(126), outputMint, inputMint, TOKEN_PROGRAM, TOKEN_PROGRAM, observation]) {
+    pool.set(base58Decode(pk), o);
+    o += 32;
+  }
+  pool[o++] = 253; // auth bump
+  pool[o++] = 0; // status: all enabled
+  pool[o++] = 9;
+  pool[o++] = 6;
+  pool[o++] = 9;
+  new DataView(pool.buffer).setBigUint64(o, 1_000_000n, true); // lp supply; fees and open time stay zero
+  const config = new Uint8Array(236);
+  config[8] = 254;
+  new DataView(config.buffer).setBigUint64(12, tradeFeeRate, true);
+  const token = (mint: string, amount: bigint) => tokenAccountData(mint, authority, amount);
+  const accounts = new Map<string, AccountSnapshot>([
+    [poolAddress, { address: poolAddress, owner: RAYDIUM_CPMM_PROGRAM, lamports: 1, dataBase64: Buffer.from(pool).toString('base64') }],
+    [ammConfig, { address: ammConfig, owner: RAYDIUM_CPMM_PROGRAM, lamports: 1, dataBase64: Buffer.from(config).toString('base64') }],
+    [vault0, { address: vault0, owner: TOKEN_PROGRAM, lamports: 2_039_280, dataBase64: token(outputMint, reserves.settlement) }],
+    [vault1, { address: vault1, owner: TOKEN_PROGRAM, lamports: 2_039_280, dataBase64: token(inputMint, reserves.risk) }],
+  ]);
+  const hop: DirectPoolHop = { program: 'RAYDIUM_CPMM', programId: RAYDIUM_CPMM_PROGRAM as never, poolAddress: poolAddress as never, inputMint, outputMint };
+  return { hop, accounts, poolAddress };
 }

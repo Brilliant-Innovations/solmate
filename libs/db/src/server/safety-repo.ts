@@ -62,3 +62,10 @@ export async function latestEmergencySnapshot(sql: Sql, assetId: Uuid): Promise<
     lastDryRun: r['last_dry_run'] as EmergencyExitRouteSnapshot['lastDryRun'],
   };
 }
+
+/** §14.6: the executor's read of the latest persisted direct-pool route for a mint it must sell; null when none was ever discovered. */
+export async function latestEmergencyRouteForMint(sql: Sql, mint: MintAddress): Promise<EmergencyExitRouteSnapshot | null> {
+  const [a] = await sql<{ id: string }[]>`select id from core.assets where mint_address = ${mint}`;
+  if (!a) return null;
+  return latestEmergencySnapshot(sql, a.id as Uuid);
+}

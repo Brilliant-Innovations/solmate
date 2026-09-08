@@ -111,6 +111,10 @@ export interface EmergencyBuildInput {
   now: Instant;
   /** Source token account to debit; defaults to the user's ATA for the input mint. A stand-in holder's real account goes here. */
   userSource?: string;
+  /** Resolves the user's token account for a mint; defaults to the associated token account. The executor harness overrides it. */
+  tokenAccountFor?: (mint: string, tokenProgram: string) => string;
+  /** Recent blockhash for a transaction that will really be signed; the dry-run uses a placeholder the simulator replaces. */
+  recentBlockhash?: string;
   amountIn: bigint;
   slippageBps: number;
   policy: Pick<EmergencyRoutePolicy, 'computeUnitLimit' | 'computeUnitPriceMicroLamports'>;
@@ -135,8 +139,9 @@ export async function buildEmergencyExit(input: EmergencyBuildInput): Promise<Em
   const quote = adapter.quote(state, input.hop.inputMint, input.amountIn);
   const inputProgram = input.hop.inputMint === state.mintA ? state.tokenProgramA : state.tokenProgramB;
   const outputProgram = input.hop.inputMint === state.mintA ? state.tokenProgramB : state.tokenProgramA;
-  const userSource = input.userSource ?? associatedTokenAddress(input.user, input.hop.inputMint, inputProgram);
-  const userDestination = associatedTokenAddress(input.user, quote.outputMint, outputProgram);
+  const resolve = input.tokenAccountFor ?? ((mint: string, program: string) => associatedTokenAddress(input.user, mint, program));
+  const userSource = input.userSource ?? resolve(input.hop.inputMint, inputProgram);
+  const userDestination = resolve(quote.outputMint, outputProgram);
   const expected = BigInt(quote.expectedOutputAmount);
   const minimumAmountOut = (expected * BigInt(10_000 - input.slippageBps)) / 10_000n;
   const instructions = [
@@ -144,7 +149,7 @@ export async function buildEmergencyExit(input: EmergencyBuildInput): Promise<Em
     createAtaIdempotentInstruction(input.user, userDestination, input.user, quote.outputMint, outputProgram),
     adapter.swapInstruction({ state, user: input.user, inputMint: input.hop.inputMint, userSource, userDestination, amountIn: input.amountIn, minimumAmountOut }),
   ];
-  const message = compileLegacyMessage(input.user, instructions);
+  const message = compileLegacyMessage(input.user, instructions, input.recentBlockhash);
   return { adapter, state, quote, userSource, userDestination, minimumAmountOut, message, unsignedTransactionBase64: toBase64(encodeTransaction([null], message)), accountsSlot: Math.max(first.slot, second.slot) };
 }
 
