@@ -497,6 +497,57 @@ export type Database = {
           },
         ]
       }
+      tool_refusals: {
+        Row: {
+          action_cycle_id: string
+          agent_run_id: string
+          created_at: string
+          cutoff_version: number
+          detail: string
+          id: string
+          reason: string
+          request_hash: string
+          requested_tool: string
+        }
+        Insert: {
+          action_cycle_id: string
+          agent_run_id: string
+          created_at?: string
+          cutoff_version: number
+          detail: string
+          id?: string
+          reason: string
+          request_hash: string
+          requested_tool: string
+        }
+        Update: {
+          action_cycle_id?: string
+          agent_run_id?: string
+          created_at?: string
+          cutoff_version?: number
+          detail?: string
+          id?: string
+          reason?: string
+          request_hash?: string
+          requested_tool?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tool_refusals_action_cycle_id_fkey"
+            columns: ["action_cycle_id"]
+            isOneToOne: false
+            referencedRelation: "action_cycles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tool_refusals_agent_run_id_fkey"
+            columns: ["agent_run_id"]
+            isOneToOne: false
+            referencedRelation: "runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -2651,6 +2702,33 @@ export type Database = {
           p_provider: string
         }
         Returns: number
+      }
+      charge_spend_usage: {
+        Args: {
+          p_budget_id: string
+          p_cycles: number
+          p_model_usd: number
+          p_provider_requests: number
+          p_window_end: string
+          p_window_start: string
+        }
+        Returns: {
+          budget_id: string
+          cycles: number
+          id: string
+          model_usd: number
+          provider_requests: number
+          state: string
+          updated_at: string
+          window_end: string
+          window_start: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "spend_usage"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       consume_step_up_challenge: {
         Args: {
