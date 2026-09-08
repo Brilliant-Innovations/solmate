@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { signServiceRequest, type Amount, type Clock, type EmergencyCommand, type ExecutionRequest, type MintAddress, type PositionRiskShadow, type ProtectionMode, type Uuid } from '@sol-agent-trader/contracts';
+import { type ExecutorJournalEntry, signServiceRequest, type Amount, type Clock, type EmergencyCommand, type ExecutionRequest, type MintAddress, type PositionRiskShadow, type ProtectionMode, type Uuid } from '@sol-agent-trader/contracts';
 
 /**
  * Worker-side client for the executor's internal API (blueprint §15.2, §15.8). Every request is
@@ -58,6 +58,11 @@ export class ExecutorClient {
 
   clearLocalPause(reviewedBy: string): Promise<Record<string, unknown>> {
     return this.call('POST', '/v1/pause/clear', { reviewedBy });
+  }
+
+  /** §15.10: page through the executor's local journal after `after` (-1 for the start) so the worker can import it into the audit ledger. */
+  journal(after: number, limit: number): Promise<{ entries: ExecutorJournalEntry[]; head: number | null; at: string }> {
+    return this.call('POST', '/v1/journal', { after, limit });
   }
 
   /** §15.10A: push the sequenced position shadow; a regression comes back as a refusal, not an exception. */

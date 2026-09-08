@@ -139,6 +139,10 @@ import {
   acknowledgeNotification,
   listOpenNotifications,
   raiseNotification,
+  lastImportedJournalSequence,
+  importJournalEntry,
+  importedEmergencyCorrelationIds,
+  insertEntryPauseOnce,
   resolveNotifications,
   deliveriesFor,
   recordDelivery,
@@ -175,6 +179,7 @@ import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
 import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
 import { runShadowSyncCycle, type ShadowSyncDeps, type ShadowSyncState } from './roles/shadow-sync.js';
+import { runJournalImportCycle, type JournalImportDeps } from './roles/journal-import.js';
 import { FileShadowJournal } from './shadow/journal.js';
 import { impliedPrice } from '@sol-agent-trader/execution';
 import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from './notifications/channels.js';
@@ -267,7 +272,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -393,6 +398,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
+  if (roles.has('journal-import')) loops.push(journalImportLoop(env, logger, shared));
   if (roles.has('audit-checkpoint')) {
     if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
     else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
@@ -1567,4 +1573,33 @@ async function shadowSyncLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+}
+
+/** Role journal-import (§15.10, §20.25): executor journal → audit ledger, with the operator review gate after a DB-outage emergency action. */
+async function journalImportLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.JOURNAL_IMPORT_INTERVAL_MS;
+  if (!env.EXECUTION_SERVICE_URL || !env.INTERNAL_API_SECRET) {
+    logger.warn('roles_disabled', { roles: ['journal-import'], reason: 'EXECUTION_SERVICE_URL / INTERNAL_API_SECRET not set' });
+    return;
+  }
+  const { sql } = shared;
+  const executor = new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 15_000 });
+  const deps: JournalImportDeps = {
+    repo: {
+      lastImportedSequence: () => lastImportedJournalSequence(sql),
+      importEntry: (entry) => importJournalEntry(sql, entry, shared.holder),
+      emergencyCorrelationIds: () => importedEmergencyCorrelationIds(sql),
+      insertEntryPauseOnce: (reason, ref) => insertEntryPauseOnce(sql, reason, 'WORKER', ref),
+      openAlertExists: async (alertClass) => (await listOpenNotifications(sql)).some((n) => n.alertClass === alertClass),
+      raise: (n) => raiseNotification(sql, { ...n, deadManDeadline: null }),
+    },
+    executor,
+    clock: systemClock,
+    logger,
+    config: { batchSize: 200 },
+  };
+  logger.info('journal_import_starting', { intervalMs, holder: shared.holder });
+  await loopUnderLease('journal-import', intervalMs, logger, shared, async () => {
+    await runJournalImportCycle(deps);
+  });
 }

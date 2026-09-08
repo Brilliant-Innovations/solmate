@@ -33,3 +33,4 @@ export * from './chain-health-repo.js';
 export * from './recovery-repo.js';
 export * from './readiness-repo.js';
 export * from './notifications-repo.js';
+export * from './journal-import-repo.js';

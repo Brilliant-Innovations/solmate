@@ -2189,6 +2189,42 @@ export type Database = {
         }
         Relationships: []
       }
+      executor_journal_imports: {
+        Row: {
+          audit_sequence: number
+          correlation_id: string
+          id: string
+          imported_at: string
+          journal_hash: string
+          journal_sequence: number
+          kind: string
+          original_local_at: string
+          payload: Json
+        }
+        Insert: {
+          audit_sequence: number
+          correlation_id: string
+          id?: string
+          imported_at?: string
+          journal_hash: string
+          journal_sequence: number
+          kind: string
+          original_local_at: string
+          payload: Json
+        }
+        Update: {
+          audit_sequence?: number
+          correlation_id?: string
+          id?: string
+          imported_at?: string
+          journal_hash?: string
+          journal_sequence?: number
+          kind?: string
+          original_local_at?: string
+          payload?: Json
+        }
+        Relationships: []
+      }
       notification_deliveries: {
         Row: {
           attempted_at: string

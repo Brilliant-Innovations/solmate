@@ -158,6 +158,12 @@ describe('executor internal API and out-of-band endpoint', () => {
       const fresh = await client.emergencyMonitor({ commandId: newId(), type: 'PAUSE_NEW_ENTRIES', mint: null, maxAmount: null, reason: 'db down, stop hit', shadowSequence: 3 });
       expect(fresh).toMatchObject({ outcome: 'PAUSED' });
       expect(w.pipeline.localPause.active).toBe(true);
+      // §15.10: the journal is readable through the authenticated API for import, paged by sequence
+      const page = await client.journal(-1, 1000);
+      expect(page.entries.map((e) => e.kind)).toContain('SHADOW_SYNCED');
+      expect(page.head).toBe(page.entries.at(-1)?.sequence ?? null);
+      expect((await client.journal(page.head!, 1000)).entries).toEqual([]);
+      expect((await client.journal(-1, 1)).entries).toHaveLength(1);
       // unauthenticated callers get nothing
       const raw = await fetch(`${s.internalUrl}/v1/shadow`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(shadow(4)) });
       expect(raw.status).toBe(401);

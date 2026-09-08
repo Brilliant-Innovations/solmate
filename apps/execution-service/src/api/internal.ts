@@ -32,6 +32,7 @@ export interface InternalApiDeps {
 const ExecuteBody = z.object({ request: ExecutionRequest, protectionMode: ProtectionMode });
 const ClearPauseBody = z.object({ reviewedBy: z.string().min(1).max(200) });
 /** The position monitor's authenticated emergency path (§15.10A): risk reduction only, bound to the shadow sequence it acted on. */
+const JournalBody = z.object({ after: z.number().int().min(-1), limit: z.number().int().min(1).max(1000).default(200) });
 const MonitorBody = z.object({ commandId: Uuid, type: EmergencyCommandType, mint: MintAddress.nullable(), maxAmount: Amount.nullable(), reason: z.string().min(1).max(1024), shadowSequence: z.number().int().nonnegative().nullable() });
 
 export const INTERNAL_ROUTES = ['GET /v1/health', 'POST /v1/execute', 'POST /v1/recover', 'POST /v1/pause/clear', 'POST /v1/shadow', 'POST /v1/emergency/monitor'] as const;
@@ -109,6 +110,18 @@ export function internalApiHandler(deps: InternalApiDeps): Handler {
         await deps.pipeline.clearLocalPause(parsed.reviewedBy);
         deps.logger.warn('internal_api_local_pause_cleared', { reviewedBy: parsed.reviewedBy });
         return json(res, 200, { localPause: deps.pipeline.localPause });
+      }
+      case 'POST /v1/journal': {
+        // §15.10 / §20.25: the worker imports emergency, pause and shadow records into the audit ledger once Postgres is back.
+        let q: z.infer<typeof JournalBody>;
+        try {
+          q = JournalBody.parse(JSON.parse(body));
+        } catch (err) {
+          return json(res, 400, { error: 'INVALID_BODY', detail: err instanceof Error ? err.message : String(err) });
+        }
+        const all = deps.pipeline.journal.all();
+        const entries = all.filter((e) => e.sequence > q.after).slice(0, q.limit);
+        return json(res, 200, { entries, head: all.length ? all[all.length - 1]!.sequence : null, at: deps.clock.now() });
       }
       case 'POST /v1/shadow': {
         let shadow: z.infer<typeof PositionRiskShadow>;
