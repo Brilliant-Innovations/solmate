@@ -39,6 +39,7 @@ invariants:
     tests:
       - apps/execution-service/src/authority/verify.spec.ts
       - libs/execution/src/adapter/live-adapter.spec.ts
+      - apps/execution-service/src/harness/harness.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -97,9 +98,11 @@ invariants:
     owner_modules:
       - libs/execution/src/state/intent.ts
       - apps/execution-service/src/idempotency
+      - apps/execution-service/src/pipeline/pipeline.ts
     tests:
       - libs/execution/src/state/intent.spec.ts
       - apps/execution-service/src/idempotency/intents.spec.ts
+      - apps/execution-service/src/harness/harness.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -121,6 +124,7 @@ invariants:
     tests:
       - libs/risk/src/runtime-session/runtime-session.spec.ts
       - apps/execution-service/src/authority/mode-gate.spec.ts
+      - apps/execution-service/src/harness/harness.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -463,10 +467,11 @@ invariants:
     owner_modules:
       - libs/execution/src/state/order-attempt.ts
       - libs/execution/src/adapter/live-adapter.ts
-      - apps/execution-service/src/submission
+      - apps/execution-service/src/pipeline/pipeline.ts
     tests:
       - libs/execution/src/state/order-attempt.spec.ts
       - libs/execution/src/adapter/live-adapter.spec.ts
+      - apps/execution-service/src/harness/harness.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped

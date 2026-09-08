@@ -23,7 +23,15 @@ export class IdempotencyRegistry {
       }
       else if (e.kind === 'ATTEMPT_RESULT') {
         const state = e.payload['lifecycle'];
-        if (state === 'COMPLETED' || state === 'FAILED' || state === 'EXPIRED' || state === 'CANCELLED') r.advance(key as IdempotencyKey, state);
+        if (state === 'COMPLETED' || state === 'FAILED' || state === 'EXPIRED' || state === 'CANCELLED') {
+          // A result recovered after a crash may arrive before any SUBMITTED line: walk the lifecycle forward first.
+          const k = key as IdempotencyKey;
+          if (state === 'COMPLETED') {
+            if (r.state(k) === 'CREATED') r.advance(k, 'AUTHORIZED');
+            if (r.state(k) === 'AUTHORIZED' || r.state(k) === 'APPROVED') r.advance(k, 'EXECUTING');
+          }
+          r.advance(k, state);
+        }
       }
     }
     return r;
@@ -41,6 +49,12 @@ export class IdempotencyRegistry {
     if (!r.ok) return false;
     this.registry = r.registry;
     return true;
+  }
+
+  /** The entry a key currently holds, without claiming it. */
+  peek(key: IdempotencyKey): { intentId: Uuid; state: IntentLifecycleState } | null {
+    const e = this.registry.get(key);
+    return e ? { intentId: e.intentId, state: e.state } : null;
   }
 
   state(key: IdempotencyKey): IntentLifecycleState | null {

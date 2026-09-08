@@ -245,7 +245,6 @@ describe('live execution adapter (§15.4, D12, D21, P7)', () => {
       [{ tamperPost: (post) => post.map((a) => (a && a.address === IN_ATA ? tokenSnap(IN_ATA, USDC, devWallet, 0n) : a)) }, 'INPUT_DECREASE_ABOVE_AUTHORIZED'],
       [{ tamperPost: (post) => post.map((a) => (a && a.address === OUT_ATA ? tokenSnap(OUT_ATA, TOKEN, ATTACKER, 1_000_000n) : a)) }, 'ACCOUNT_OWNER_CHANGED'],
       [{ tamperPost: (post) => post.map((a) => (a && a.owner === SYSTEM_PROGRAM ? { ...a, lamports: 900_000_000 } : a)) }, 'SOL_DEBIT_ABOVE_MODELED'],
-      [{ beforeSubmit: async () => ({ allowed: false, reason: 'MODE_GATE_CLOSED' }) }, 'MODE_GATE_CLOSED'],
     ];
     const clock = steppingClock(AT, 100);
     const signer = devSigner(clock);
@@ -259,6 +258,17 @@ describe('live execution adapter (§15.4, D12, D21, P7)', () => {
       expect(h.journaled, reason).toEqual([]);
       expect(h.executed, reason).toEqual([]);
     }
+  });
+
+  it('the executor gate is re-read after the durable signed record and immediately before /execute: a closed gate leaves SIGNED_NOT_SUBMITTED, nothing submitted', async () => {
+    const q = () => quoteOf(100_000_000n, 1_000_000n, 100, 20, USDC, TOKEN, AT);
+    const h = harness(scriptedQuoteClient([q(), q()]), devSigner(steppingClock(AT, 100)), { beforeSubmit: async () => ({ allowed: false, reason: 'MODE_GATE_CLOSED' }) });
+    const d = await h.adapter.executeDetailed(await liveRequest(baseIntent(newId(), 'live:gate', USDC, TOKEN, AT, addMs(AT, 60_000))));
+    expect(d.result.rejectionReasons).toEqual(['MODE_GATE_CLOSED']);
+    expect(d.attempt.state).toBe('SIGNED_NOT_SUBMITTED');
+    expect(d.result.signedTxHash).not.toBeNull();
+    expect(h.journaled).toHaveLength(1);
+    expect(h.executed).toEqual([]);
   });
 
   it('a request without a verified authorization for this intent never reaches the router', async () => {

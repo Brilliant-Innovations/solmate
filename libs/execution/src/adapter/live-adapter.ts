@@ -171,8 +171,6 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     );
     if (!recheck.ok) return reject(canonicalReasons(recheck.reasons), built.quote);
     if (instantToMs(this.opts.clock.now()) >= instantToMs(intent.expiresAt)) return reject(['INTENT_EXPIRED'], built.quote);
-    const gate = await this.opts.beforeSubmit(authorized);
-    if (!gate.allowed) return reject([gate.reason], built.quote);
 
     // 8–10. Sign, derive identifiers, persist before submit.
     const messageHash = await sha256Hex(decoded.messageBytes);
@@ -185,6 +183,11 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     times.signedAt = signedAt;
     await this.opts.journal({ order, attempt: this.toAttempt(attemptId, order, machine, times, requestId, router) });
     machine = must(attemptTransition(machine, { type: 'JOURNALED', at: signedAt }));
+
+    // Executor gate re-read immediately before submit (P3): a pause that landed while we were signing stops here,
+    // with the signed attempt durably recorded and never sent.
+    const gate = await this.opts.beforeSubmit(authorized);
+    if (!gate.allowed) return { ...reject([gate.reason], built.quote), result: this.result(intent.id, attemptId, request.executionPath, machine.state, built.quote, simulation, signedTxHash, null, null, [gate.reason]) };
 
     // 11–12. Submit and record the provider response.
     const submittedAt = this.opts.clock.now();
