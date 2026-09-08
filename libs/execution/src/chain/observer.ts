@@ -55,7 +55,7 @@ export class RpcChainObserver implements ChainObserver {
     return this.opts.label;
   }
 
-  private async call<T extends z.ZodType>(method: 'getSignatureStatuses' | 'getBlockHeight', params: unknown[], schema: T): Promise<z.infer<T>> {
+  private async call<T extends z.ZodType>(method: 'getSignatureStatuses' | 'getBlockHeight' | 'getSlot', params: unknown[], schema: T): Promise<z.infer<T>> {
     const id = ++this.id;
     const res = await this.transport({ url: this.opts.url, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), timeoutMs: this.opts.timeoutMs ?? 10_000 });
     let json: unknown;
@@ -81,6 +81,11 @@ export class RpcChainObserver implements ChainObserver {
 
   async blockHeight(): Promise<number> {
     return this.call('getBlockHeight', [{ commitment: 'confirmed' }], z.number().int().nonnegative());
+  }
+
+  /** This view's confirmed head, so a missing signature can be told apart from a view that is merely behind. */
+  async headSlot(): Promise<number> {
+    return this.call('getSlot', [{ commitment: 'confirmed' }], z.number().int().nonnegative());
   }
 }
 

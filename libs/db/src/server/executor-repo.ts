@@ -101,3 +101,49 @@ export async function persistExecution(sql: Sql, order: Order, attempt: OrderAtt
   else await finishAttempt(sql, order, attempt, fill);
   if (lifecycle) await setIntentState(sql, order.intentId, lifecycle);
 }
+
+export interface FinalityAdvance {
+  intentId: Uuid;
+  signature: string;
+  state: 'CONFIRMED_PROVISIONAL' | 'FINALIZED' | 'REORG_PENDING' | 'NOT_LANDED';
+  slot: number | null;
+  at: Instant;
+  reason: string | null;
+}
+
+/**
+ * The finality tracker's reconciliation of one attempt (§14.7, INV-22): the attempt row moves to what the
+ * chain views agreed on; a FINALIZED verdict copies the confirmed fill into an immutable finalized fill
+ * (fills are staged rows, never rewritten) and completes the intent; NOT_LANDED fails it.
+ */
+export async function advanceAttemptFinality(sql: Sql, u: FinalityAdvance): Promise<{ attemptId: Uuid | null; fillPromoted: boolean }> {
+  return sql.begin(async (tx) => {
+    const t = tx as unknown as Sql;
+    const landed = u.state === 'CONFIRMED_PROVISIONAL' || u.state === 'FINALIZED';
+    const rows = await t<{ id: string }[]>`
+      update trading.order_attempts set
+        state = ${u.state},
+        confirmed_at = case when ${landed} then coalesce(confirmed_at, ${u.at}) else confirmed_at end,
+        confirmed_slot = case when ${landed} then coalesce(confirmed_slot, ${u.slot}) else confirmed_slot end,
+        finalized_at = case when ${u.state === 'FINALIZED'} then ${u.at} else finalized_at end,
+        finalized_slot = case when ${u.state === 'FINALIZED'} then ${u.slot} else finalized_slot end,
+        reorg_detected_at = case when ${u.state === 'REORG_PENDING'} then coalesce(reorg_detected_at, ${u.at}) else reorg_detected_at end,
+        not_landed_reason = case when ${u.state === 'NOT_LANDED'} then ${u.reason} else not_landed_reason end,
+        reconciliation_outcome = ${'FINALITY_TRACKER:' + u.state}
+      where intent_id = ${u.intentId} and (expected_tx_signature = ${u.signature} or wallet_signature = ${u.signature})
+        and state in ('SIGNED_NOT_SUBMITTED', 'SUBMITTED', 'CONFIRMED_PROVISIONAL', 'REORG_PENDING')
+      returning id`;
+    const id = rows[0]?.id ?? null;
+    let fillPromoted = false;
+    if (id && u.state === 'FINALIZED' && u.slot !== null) {
+      const ins = await t<{ id: string }[]>`
+        insert into trading.fills (order_attempt_id, tx_signature, commitment, slot, input_mint, output_mint, input_amount, output_amount, fees, execution_shortfall_bps, execution_path, lot_allocations, filled_at)
+        select order_attempt_id, tx_signature, 'finalized', ${u.slot}, input_mint, output_mint, input_amount, output_amount, fees, execution_shortfall_bps, execution_path, lot_allocations, ${u.at}
+        from trading.fills where order_attempt_id = ${id} and commitment = 'confirmed'
+        on conflict (tx_signature, commitment) do nothing returning id`;
+      fillPromoted = ins.length > 0;
+    }
+    if (id && (u.state === 'FINALIZED' || u.state === 'NOT_LANDED')) await t`update trading.intents set lifecycle_state = ${u.state === 'FINALIZED' ? 'COMPLETED' : 'FAILED'} where id = ${u.intentId}`;
+    return { attemptId: id as Uuid | null, fillPromoted };
+  }) as Promise<{ attemptId: Uuid | null; fillPromoted: boolean }>;
+}

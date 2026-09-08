@@ -215,6 +215,10 @@ export class SolanaRpcClient {
     return this.call('getSlot', [{ commitment: this.commitment }], z.number().int().nonnegative());
   }
 
+  getBlockHeight(): Promise<number> {
+    return this.call('getBlockHeight', [{ commitment: this.commitment }], z.number().int().nonnegative());
+  }
+
   getAccountInfo(address: string): Promise<AccountInfo> {
     return this.call('getAccountInfo', [address, { encoding: 'base64', commitment: this.commitment }], AccountInfo);
   }

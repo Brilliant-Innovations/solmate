@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { join } from 'node:path';
 import { addMs, canonicalHash, fixtures, signPayload, toInstant, type Bps, type Clock, type ExecutionRequest, type ExecutorGuardrails, type Instant, type KeyId, type MintAddress, type Nonce, type Quote, type RiskAuthorizedIntent, type SigningKeyPair, type TradeIntent, type TradingWalletSigner, type Uuid } from '@sol-agent-trader/contracts';
-import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, SoftwareDevSigner, baseIntent, quoteOf } from '@sol-agent-trader/execution';
+import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, SoftwareDevSigner, baseIntent, quoteOf, type QuorumObserver } from '@sol-agent-trader/execution';
 import { ExecutorPipeline, type Boundary, type PipelineDeps, type SubmitOutcome } from '../pipeline/pipeline.js';
 import { ExecutorJournal } from '../journal/journal.js';
 import type { ModeFacts } from '../authority/mode-gate.js';
@@ -64,6 +64,10 @@ export interface WorldOptions {
   chain?: Partial<FakeChainOptions>;
   modeFacts?: () => ModeFacts;
   guardrails?: Partial<ExecutorGuardrails>;
+  /** DEFERRED: `/execute` returns CONFIRMED_PROVISIONAL and the finality tracker finishes the attempt. */
+  finality?: 'WITHIN_BUDGET' | 'DEFERRED';
+  secondaryChain?: QuorumObserver;
+  persistFinality?: PipelineDeps['persistFinality'];
 }
 
 export async function createWorld(dir: string, keys: { authorizer: SigningKeyPair; emergencyOperator: SigningKeyPair }, opts: WorldOptions = {}): Promise<World> {
@@ -87,7 +91,9 @@ export async function createWorld(dir: string, keys: { authorizer: SigningKeyPai
       modeFacts: opts.modeFacts ?? (() => ACTIVE),
       emergency: { slippageBps: 200 as Bps, maxPriceImpactBps: 500 as Bps, maxQuoteAgeMs: 15_000, validityMs: 60_000 },
       adapter: { orders: chain.orderClient(), quotes: chain.quoteClient(), simulation: chain, cluster: 'devnet', structure: { allowedPrograms: [...BASE_PROGRAMS, JUPITER_V6_PROGRAM], allowLookupTables: false, allowedTransferRecipients: [] }, maxSolDebitLamports: 50_000n, decisionQuote: async (intent) => (await chain.quoteClient().quote({ inputMint: intent.inputMint, outputMint: intent.outputMint, inputAmount: intent.maxInputAmount, maxSlippageBps: intent.constraints.maxSlippageBps, taker: base.publicKey, cluster: 'devnet', requestedAt: clock.now() })).quote },
-      awaitFinalized: async (signature) => { const s = chain.statuses.get(signature); if (!s) return null; s.confirmationStatus = 'finalized'; return { slot: s.slot }; },
+      awaitFinalized: async (signature) => { if (opts.finality === 'DEFERRED') return null; const s = chain.statuses.get(signature); if (!s) return null; s.confirmationStatus = 'finalized'; return { slot: s.slot }; },
+      secondaryChains: opts.secondaryChain ? [opts.secondaryChain] : undefined,
+      persistFinality: opts.persistFinality,
       maxSkewMs: 5_000,
       probe: opts.probe,
       ...over,

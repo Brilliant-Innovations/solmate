@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
-import { getContractSetDigest, importVerificationKey, parseExecutionServiceEnv, systemClock, type Bps, type Instant, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { createSql, decisionQuoteForCycle, executorModeFacts, loadApprovalGrant, loadTradeIntent, persistExecution, type Sql } from '@sol-agent-trader/db/server';
+import { DEFAULT_CHAIN_HEALTH_POLICY, getContractSetDigest, importVerificationKey, parseExecutionServiceEnv, systemClock, type Bps, type Instant, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { advanceAttemptFinality, createSql, decisionQuoteForCycle, executorModeFacts, loadApprovalGrant, loadTradeIntent, persistExecution, type Sql } from '@sol-agent-trader/db/server';
 import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, JupiterOrderHttpClient, JupiterSwapClient, RpcChainObserver, RpcCustodyReader, SimulationRpcClient, SoftwareDevSigner, type DetailedExecution } from '@sol-agent-trader/execution';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
@@ -85,6 +85,13 @@ async function main(): Promise<void> {
   if (primaryOrigin === simulationOrigin) logger.warn('simulation_rpc_not_independent', { origin: primaryOrigin });
   const rpc = new SolanaRpcClient({ url: env.SOLANA_RPC_PRIMARY, allowedOrigins: [primaryOrigin], nowMs: () => clock.nowMs() });
   const chain = new RpcChainObserver({ url: env.SOLANA_RPC_PRIMARY, allowedOrigins: [primaryOrigin], label: 'primary' });
+  // §14.7: a second independent view for staged finality; without it divergence cannot be observed and REORG_PENDING rests on one node.
+  let secondaryChains: RpcChainObserver[] = [];
+  if (env.SOLANA_RPC_SECONDARY) {
+    const secondaryOrigin = new URL(env.SOLANA_RPC_SECONDARY).origin;
+    if (secondaryOrigin === primaryOrigin) logger.warn('secondary_rpc_not_independent', { origin: secondaryOrigin });
+    else secondaryChains = [new RpcChainObserver({ url: env.SOLANA_RPC_SECONDARY, allowedOrigins: [secondaryOrigin], label: 'secondary' })];
+  } else logger.warn('finality_single_view', { effect: 'cross-RPC divergence cannot be detected; set SOLANA_RPC_SECONDARY' });
   const simulation = new SimulationRpcClient({ url: env.SOLANA_RPC_SIMULATION, allowedOrigins: [simulationOrigin], label: 'simulation' });
   const custody = new RpcCustodyReader(rpc);
   const orders = new JupiterOrderHttpClient({ apiKey: env.JUPITER_API_KEY, clock });
@@ -142,6 +149,13 @@ async function main(): Promise<void> {
     },
     awaitFinalized,
     maxSkewMs: 5_000,
+    secondaryChains,
+    signatureGraceSlots: DEFAULT_CHAIN_HEALTH_POLICY.signatureGraceSlots,
+    persistFinality: async (u) => {
+      const r = await advanceAttemptFinality(sql, u);
+      await journal.append('RECONCILED_INTO_DB', u.intentId, { attemptId: r.attemptId, state: u.state, tracked: true, fillPromoted: r.fillPromoted });
+      if (!r.attemptId) logger.warn('finality_row_not_found', { intentId: u.intentId, state: u.state });
+    },
   });
 
   // §21.3: reconcile every signed or submitted attempt before accepting new work.
@@ -173,11 +187,29 @@ async function main(): Promise<void> {
   const b = await listen(outOfBand, oobSpec);
   logger.info('listening', { internal: a.url, outOfBand: b.url, wallet: signer.publicKey, journal: env.EXECUTOR_JOURNAL_PATH, holder });
 
+  // §14.7 staged finality: every open attempt is re-read from the chain views between submissions.
+  let tracking = false;
+  const track = async (): Promise<void> => {
+    if (tracking) return;
+    tracking = true;
+    try {
+      const updates = await pipeline.trackFinality();
+      if (updates.length) logger.info('finality_tracked', { updates, localPause: pipeline.localPause });
+    } catch (err) {
+      logger.error('finality_tracker_failed', { error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      tracking = false;
+    }
+  };
+  const finalityTimer = setInterval(() => void track(), env.FINALITY_TRACK_INTERVAL_MS);
+  logger.info('finality_tracker_starting', { intervalMs: env.FINALITY_TRACK_INTERVAL_MS, views: 1 + secondaryChains.length });
+
   let stopping = false;
   const stop = async (signal: string): Promise<void> => {
     if (stopping) return;
     stopping = true;
     logger.info('shutdown', { signal, at: clock.now() as Instant });
+    clearInterval(finalityTimer);
     await close(internal);
     await close(outOfBand);
     journal.release();

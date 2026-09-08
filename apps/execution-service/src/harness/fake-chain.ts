@@ -136,6 +136,10 @@ export class FakeChain implements SimulationReader, ChainObserver, CustodyReader
     return this.blockHeight_;
   }
 
+  async headSlot(): Promise<number> {
+    return this.slot;
+  }
+
   // --- Router --------------------------------------------------------------------------------
   quoteClient(): JupiterQuoteClient {
     const next = (request: QuoteRequest): { quote: Quote; route: QuoteRoutePlan } => {

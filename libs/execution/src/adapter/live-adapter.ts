@@ -225,11 +225,16 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     machine = must(attemptTransition(machine, { type: 'OBSERVED', at: confirmedAt, commitment: 'confirmed', slot: confirmedSlot }));
     times.confirmedAt = confirmedAt;
     const final = await this.opts.awaitFinalized(signature, built.lastValidBlockHeight);
+    // A fill exists from `confirmed` (provisional exposure, D49); it is promoted to `finalized` here when finality
+    // arrived within budget, otherwise by the executor's finality tracker later (INV-22).
     let fill: Fill | null = null;
-    if (final) {
-      const finalizedAt = this.opts.clock.now();
-      machine = must(attemptTransition(machine, { type: 'OBSERVED', at: finalizedAt, commitment: 'finalized', slot: final.slot }));
-      times.finalizedAt = finalizedAt;
+    {
+      let finalizedAt: Instant | null = null;
+      if (final) {
+        finalizedAt = this.opts.clock.now();
+        machine = must(attemptTransition(machine, { type: 'OBSERVED', at: finalizedAt, commitment: 'finalized', slot: final.slot }));
+        times.finalizedAt = finalizedAt;
+      }
       const inputAmount = (exec.inputAmountResult ?? built.quote.inputAmount) as Amount;
       const outputAmount = (exec.outputAmountResult ?? built.quote.minOutputAmount) as Amount;
       const expected = amountToBigInt(built.quote.expectedOutputAmount);
@@ -237,8 +242,8 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
         id: this.opts.newId(),
         orderAttemptId: attemptId,
         txSignature: signature,
-        commitment: 'finalized',
-        slot: final.slot,
+        commitment: final ? 'finalized' : 'confirmed',
+        slot: final ? final.slot : confirmedSlot,
         inputMint: authorized.inputMint,
         outputMint: authorized.outputMint,
         inputAmount,
@@ -247,7 +252,7 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
         executionShortfallBps: expected > 0n ? Number(((expected - amountToBigInt(outputAmount)) * 10_000n) / expected) : null,
         executionPath: request.executionPath,
         lotAllocations: intent.targetLotIds.map((lotId) => ({ lotId, quantity: inputAmount })),
-        filledAt: finalizedAt,
+        filledAt: finalizedAt ?? confirmedAt,
       };
     }
     return { result: this.result(intent.id, attemptId, request.executionPath, machine.state, built.quote, simulation, signedTxHash, signature, fill?.id ?? null, []), order, attempt: this.toAttempt(attemptId, order, machine, times, requestId, router), fill, decisionQuote: built.quote, outcome: null };

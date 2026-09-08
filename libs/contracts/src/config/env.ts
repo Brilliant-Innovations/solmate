@@ -131,6 +131,9 @@ export const WorkerEnv = Common.extend({
   JUPITER_REQUESTS_PER_SECOND: z.coerce.number().positive().max(100).default(1),
   /** Read-only Solana RPC for chain-truth reads (D45). The worker never signs; this is the only endpoint it may call. */
   SOLANA_RPC_URL: Url.optional(),
+  /** Second, independent read-only RPC view for chain-health divergence detection (§14.7). Optional; without it divergence cannot be observed. */
+  SOLANA_RPC_SECONDARY_URL: Url.optional(),
+  CHAIN_HEALTH_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   /** Helius Parsed Events for movement parsing (§3.2). Absent = signatures on the trading wallet cannot be explained and reconciliation pauses entries. */
   HELIUS_API_KEY: NonEmpty.optional(),
   /** Comma-separated worker roles to run; empty = start, report, exit (skeleton). */
@@ -281,6 +284,9 @@ export const ExecutionServiceEnv = Common.extend({
   EMERGENCY_OPERATOR_PUBLIC_KEYS: Csv(Ed25519PublicKeyHex),
   SOLANA_RPC_PRIMARY: Url,
   SOLANA_RPC_SIMULATION: Url,
+  /** Second independent RPC view for staged finality and REORG_PENDING detection (§14.7). Optional but expected in every live profile. */
+  SOLANA_RPC_SECONDARY: Url.optional(),
+  FINALITY_TRACK_INTERVAL_MS: z.coerce.number().int().min(1_000).max(120_000).default(5_000),
   SIGNER_BACKEND: z.enum(['SOFTWARE_DEV', 'TURNKEY']),
   TURNKEY_ORGANIZATION_ID: NonEmpty.optional(),
   TURNKEY_API_PUBLIC_KEY: NonEmpty.optional(),

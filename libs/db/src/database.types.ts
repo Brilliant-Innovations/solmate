@@ -1997,6 +1997,51 @@ export type Database = {
         }
         Relationships: []
       }
+      chain_health: {
+        Row: {
+          confirmed_finalized_lag_slots: number | null
+          created_at: string
+          effect_on_entries: string
+          head_slot: number | null
+          id: string
+          observed_at: string
+          policy_version: string
+          reasons: string[]
+          slot_advanced: boolean | null
+          state: string
+          view_divergence_slots: number | null
+          views: Json
+        }
+        Insert: {
+          confirmed_finalized_lag_slots?: number | null
+          created_at?: string
+          effect_on_entries: string
+          head_slot?: number | null
+          id?: string
+          observed_at: string
+          policy_version: string
+          reasons?: string[]
+          slot_advanced?: boolean | null
+          state: string
+          view_divergence_slots?: number | null
+          views: Json
+        }
+        Update: {
+          confirmed_finalized_lag_slots?: number | null
+          created_at?: string
+          effect_on_entries?: string
+          head_slot?: number | null
+          id?: string
+          observed_at?: string
+          policy_version?: string
+          reasons?: string[]
+          slot_advanced?: boolean | null
+          state?: string
+          view_divergence_slots?: number | null
+          views?: Json
+        }
+        Relationships: []
+      }
       control_requests: {
         Row: {
           created_at: string

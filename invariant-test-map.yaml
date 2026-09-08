@@ -467,8 +467,12 @@ invariants:
       - ALWAYS
     owner_modules:
       - libs/execution/src/state/order-attempt.ts
+      - libs/execution/src/adapter/live-adapter.ts
+      - apps/execution-service/src/pipeline/pipeline.ts
     tests:
       - libs/execution/src/state/order-attempt.spec.ts
+      - apps/execution-service/src/harness/finality.spec.ts
+      - libs/execution/src/chain/health.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -490,6 +494,8 @@ invariants:
       - apps/execution-service/src/pipeline/pipeline.ts
     tests:
       - libs/execution/src/state/order-attempt.spec.ts
+      - libs/execution/src/chain/quorum.spec.ts
+      - apps/execution-service/src/harness/finality.spec.ts
       - libs/execution/src/adapter/live-adapter.spec.ts
       - apps/execution-service/src/harness/harness.spec.ts
     evidence:

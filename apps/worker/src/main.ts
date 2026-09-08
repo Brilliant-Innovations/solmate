@@ -126,11 +126,16 @@ import {
   recordAutomationRun,
   spendWindow,
   type Sql,
+  insertChainHealth,
+  lastHeadAdvance,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient, NoRouteError, PaperExecutionAdapter } from '@sol-agent-trader/execution';
 import { LLM_STRATEGY_SPECS, llmStrategyVersion, llmStrategyVersions, s0StrategyVersion, s0TinyLiveVersion } from '@sol-agent-trader/strategies';
 import { armingPreconditions } from '@sol-agent-trader/risk';
 import type { CapitalAuthority, Instant } from '@sol-agent-trader/contracts';
+import { DEFAULT_CHAIN_HEALTH_POLICY } from '@sol-agent-trader/contracts';
+import type { PreviousHead } from '@sol-agent-trader/execution';
+import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
 import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
@@ -215,7 +220,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -304,6 +309,10 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('trading-actions')) loops.push(tradingActionsLoop(env, logger, shared));
   if (roles.has('intel-ingest')) loops.push(intelIngestLoop(env, logger, shared));
   if (roles.has('state-projector')) loops.push(stateProjectorLoop(env, logger, shared));
+  if (roles.has('chain-health')) {
+    if (!env.SOLANA_RPC_URL) noRpc('chain-health');
+    else loops.push(chainHealthLoop(env, logger, shared, env.SOLANA_RPC_URL));
+  }
   if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
@@ -1159,3 +1168,37 @@ main().catch((err: unknown) => {
   console.error(JSON.stringify({ level: 'fatal', service: SERVICE, event: 'startup_failed', error: String(err) }));
   process.exit(1);
 });
+
+async function chainHealthLoop(env: WorkerEnv, logger: Logger, shared: Shared, primaryUrl: string): Promise<void> {
+  const intervalMs = env.CHAIN_HEALTH_INTERVAL_MS;
+  const { sql } = shared;
+  const sampler = (url: string, label: string): ChainViewSampler => {
+    const origin = new URL(url).origin;
+    const confirmed = new SolanaRpcClient({ url, allowedOrigins: [origin], nowMs: () => systemClock.nowMs() });
+    const finalized = new SolanaRpcClient({ url, allowedOrigins: [origin], commitment: 'finalized', nowMs: () => systemClock.nowMs() });
+    return {
+      label,
+      async sample() {
+        const [slotConfirmed, slotFinalized, blockHeight] = await Promise.all([confirmed.getSlot(), finalized.getSlot(), confirmed.getBlockHeight()]);
+        return { slotConfirmed, slotFinalized, blockHeight };
+      },
+    };
+  };
+  const samplers = [sampler(primaryUrl, 'primary')];
+  if (env.SOLANA_RPC_SECONDARY_URL) {
+    if (new URL(env.SOLANA_RPC_SECONDARY_URL).origin === new URL(primaryUrl).origin) logger.warn('secondary_rpc_not_independent', { origin: new URL(primaryUrl).origin });
+    else samplers.push(sampler(env.SOLANA_RPC_SECONDARY_URL, 'secondary'));
+  } else logger.warn('chain_health_single_view', { effect: 'cross-RPC divergence cannot be detected; set SOLANA_RPC_SECONDARY_URL' });
+  const deps: ChainHealthDeps = {
+    samplers,
+    repo: { insert: (s) => insertChainHealth(sql, s), lastHeadAdvance: () => lastHeadAdvance(sql), upsertFeedHealth: (h) => upsertFeedHealth(sql, h) },
+    policy: DEFAULT_CHAIN_HEALTH_POLICY,
+    clock: systemClock,
+    logger,
+  };
+  let previous: PreviousHead | null = null;
+  logger.info('chain_health_starting', { intervalMs, policyVersion: DEFAULT_CHAIN_HEALTH_POLICY.version, views: samplers.map((s) => s.label), holder: shared.holder });
+  await loopUnderLease('chain-health', intervalMs, logger, shared, async () => {
+    previous = (await runChainHealthCycle(deps, previous)).previous;
+  });
+}

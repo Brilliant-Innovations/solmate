@@ -1,5 +1,5 @@
-import { amountToBigInt, instantToMs, mulDiv, type Amount, type Bps, type Clock, type EmergencyCommand, type EmergencyIssuer, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SignedEmergencyCommand, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { LiveExecutionAdapter, planEmergencyClose, proveDead, type ChainObserver, type CustodyReader, type DetailedExecution, type EmergencyCloseAction, type EmergencyClosePolicy, type EmergencyPlanRejection, type ExecutionBounds, type LiveAdapterOptions } from '@sol-agent-trader/execution';
+import { amountToBigInt, instantToMs, mulDiv, type Amount, type Slot, type TxSignature, type Bps, type Clock, type EmergencyCommand, type EmergencyIssuer, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SignedEmergencyCommand, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { LiveExecutionAdapter, attemptTransition, newOrderAttempt, planEmergencyClose, proveDead, proveDeadAcrossViews, quorumVerdict, readSignature, type OrderAttemptRecord, type QuorumObserver, type ChainObserver, type CustodyReader, type DetailedExecution, type EmergencyCloseAction, type EmergencyClosePolicy, type EmergencyPlanRejection, type ExecutionBounds, type LiveAdapterOptions } from '@sol-agent-trader/execution';
 import { verifyEmergencyCommand, type EmergencyCommandRejection } from '../emergency/command.js';
 import { verifyAuthority, type AuthorityRejection } from '../authority/verify.js';
 import { modeGate, type ModeFacts } from '../authority/mode-gate.js';
@@ -64,6 +64,32 @@ export interface PipelineDeps {
   maxSkewMs: number;
   signerRetries?: number;
   probe?: (boundary: Boundary) => void;
+  /** Additional independent RPC views for staged finality (§14.7); the primary `chain` is always the first view. */
+  secondaryChains?: readonly QuorumObserver[];
+  /** A missing view this far past the transaction's slot contradicts a landed view (chain-health policy). Default 64. */
+  signatureGraceSlots?: number;
+  /** Best-effort database reconciliation of a tracked finality change; the journal already holds the truth. */
+  persistFinality?: (u: FinalityPersist) => Promise<void>;
+}
+
+export interface FinalityPersist {
+  intentId: Uuid;
+  signature: string;
+  state: 'CONFIRMED_PROVISIONAL' | 'FINALIZED' | 'REORG_PENDING' | 'NOT_LANDED';
+  slot: number | null;
+  at: Instant;
+  reason: string | null;
+}
+
+export interface FinalityUpdate {
+  intentId: Uuid;
+  signature: string;
+  from: 'SUBMITTED' | 'CONFIRMED_PROVISIONAL' | 'REORG_PENDING';
+  to: 'SUBMITTED' | 'CONFIRMED_PROVISIONAL' | 'REORG_PENDING' | 'FINALIZED' | 'NOT_LANDED';
+  verdict: string;
+  slot: number | null;
+  views: number;
+  note?: string;
 }
 
 export interface SubmitInput {
@@ -334,8 +360,9 @@ export class ExecutorPipeline {
       return;
     }
     if (state === 'CONFIRMED_PROVISIONAL') {
-      // Exposure is real once confirmed; the lifecycle stays EXECUTING until finality (INV-22).
-      if (!exit) await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: authorized.maxInputAmount });
+      // Exposure is real once confirmed; the lifecycle stays EXECUTING until finality (INV-22). The observation is journaled so the finality tracker knows what was seen.
+      if (!exit) await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: fill?.inputAmount ?? authorized.maxInputAmount });
+      await this.deps.journal.append('ATTEMPT_OBSERVED', intentId, { intentId, idempotencyKey: key, commitment: 'confirmed', slot: fill?.slot ?? null, txSignature: signature, from: 'SUBMITTED', provisionalFillId: fill?.id ?? null });
       return;
     }
     if (state === 'SUBMITTED') return; // unresolved on purpose: recovery decides from chain truth
@@ -403,6 +430,144 @@ export class ExecutorPipeline {
       out.push({ correlationId: u.correlationId, resolution: 'STILL_LANDABLE', signature });
     }
     return out;
+  }
+
+  /**
+   * Staged finality over independent RPC views (§14.7, §40.3, D49; INV-22, INV-23; §24.4). Runs
+   * between submissions and after restart recovery for every attempt the journal still holds
+   * open: a consistent `finalized` promotes accounting; a confirmed transaction that goes
+   * missing or that the views contradict enters REORG_PENDING and pauses new entries locally; a
+   * REORG_PENDING or SUBMITTED transaction becomes NOT_LANDED only when every answering view
+   * proves it dead. The pause this tracker applied is released only once nothing is uncertain
+   * and wallet custody was re-read from chain.
+   */
+  async trackFinality(): Promise<FinalityUpdate[]> {
+    const out: FinalityUpdate[] = [];
+    const observers: QuorumObserver[] = [this.deps.chain, ...(this.deps.secondaryChains ?? [])];
+    const grace = this.deps.signatureGraceSlots ?? 64;
+    const all = this.deps.journal.all();
+    let uncertain = 0;
+    for (const u of this.deps.journal.unresolvedAttempts()) {
+      const mine = all.filter((e) => e.correlationId === u.correlationId);
+      const signed = [...mine].reverse().find((e) => e.kind === 'ATTEMPT_SIGNED');
+      const prepared = mine.find((e) => e.kind === 'ATTEMPT_PREPARED');
+      const key = ((signed?.payload['idempotencyKey'] as IdempotencyKey | undefined) ?? null);
+      const signature = u.expectedTxSignature ?? ((signed?.payload['expectedTxSignature'] as string | null | undefined) ?? null);
+      if (!signature || !key) continue;
+      const lastValid = (signed?.payload['lastValidBlockHeight'] as number | null | undefined) ?? null;
+      const observedEntry = [...mine].reverse().find((e) => e.kind === 'ATTEMPT_OBSERVED' || e.kind === 'ATTEMPT_REORG_PENDING');
+      const prior: 'SUBMITTED' | 'CONFIRMED_PROVISIONAL' | 'REORG_PENDING' = observedEntry?.kind === 'ATTEMPT_REORG_PENDING' ? 'REORG_PENDING' : observedEntry ? 'CONFIRMED_PROVISIONAL' : 'SUBMITTED';
+      const priorSlot = (observedEntry?.payload['slot'] as number | undefined) ?? null;
+      const intentId = u.correlationId as Uuid;
+      const emergency = prepared?.payload['emergency'] === true;
+      const notional = (prepared?.payload['maxInputAmount'] as Amount | undefined) ?? ('0' as Amount);
+      const readings = await readSignature(observers, signature);
+      const q = quorumVerdict(readings, grace);
+      const at = this.deps.clock.now();
+      const machine: OrderAttemptRecord = { ...newOrderAttempt(), state: prior, journaled: true, expectedTxSignature: signature as TxSignature, lastValidBlockHeight: lastValid, confirmedSlot: priorSlot as Slot | null };
+      const summary = readings.map((r) => ({ label: r.label, kind: r.kind, ...(r.kind === 'LANDED' || r.kind === 'FAILED' ? { slot: r.status.slot, commitment: r.status.confirmationStatus } : r.kind === 'MISSING' ? { headSlot: r.headSlot } : { error: r.error }) }));
+      const update = (to: FinalityUpdate['to'], extra: Partial<FinalityUpdate> = {}): FinalityUpdate => ({ intentId, signature, from: prior, to, verdict: q.verdict, slot: q.slot, views: q.answered, ...extra });
+      switch (q.verdict) {
+        case 'FINALIZED': {
+          const t = attemptTransition(machine, { type: 'OBSERVED', at, commitment: 'finalized', slot: q.slot as Slot });
+          if (!t.ok) break;
+          if (emergency) {
+            const mint = prepared?.payload['mint'] as MintAddress | undefined;
+            const held = (prepared?.payload['heldAmount'] as Amount | undefined) ?? notional;
+            if (mint) for (const o of this.ledger.openByMint(mint)) {
+              const released = amountToBigInt(held) > 0n ? mulDiv(o.exposure, amountToBigInt(notional), amountToBigInt(held), 'FLOOR') : o.exposure;
+              await this.ledgerEvent(o.intentId, { kind: 'EXIT_CONFIRMED', at, intentId: o.intentId, costReleased: released });
+            }
+          } else if (this.ledger.openIntents().includes(intentId)) await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: notional });
+          if (this.registry.state(key) === 'AUTHORIZED') this.registry.advance(key, 'EXECUTING');
+          if (this.registry.state(key) === 'EXECUTING') this.registry.advance(key, 'COMPLETED');
+          await this.deps.journal.append('ATTEMPT_RESULT', intentId, { intentId, idempotencyKey: key, state: 'FINALIZED', lifecycle: 'COMPLETED', txSignature: signature, finalizedSlot: q.slot, tracked: true, from: prior, views: summary });
+          await this.persistFinality({ intentId, signature, state: 'FINALIZED', slot: q.slot, at, reason: null });
+          out.push(update('FINALIZED'));
+          break;
+        }
+        case 'PROCESSED':
+          if (prior === 'REORG_PENDING') uncertain++; // telemetry only (D49): nothing changes until confirmed again
+          break;
+        case 'CONFIRMED': {
+          if (prior === 'CONFIRMED_PROVISIONAL') break;
+          const t = attemptTransition(machine, { type: 'OBSERVED', at, commitment: 'confirmed', slot: q.slot as Slot });
+          if (!t.ok) break;
+          if (!emergency && this.ledger.openIntents().includes(intentId)) await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: notional });
+          if (this.registry.state(key) === 'AUTHORIZED') this.registry.advance(key, 'EXECUTING');
+          await this.deps.journal.append('ATTEMPT_OBSERVED', intentId, { intentId, idempotencyKey: key, commitment: 'confirmed', slot: q.slot, txSignature: signature, from: prior, views: summary });
+          await this.persistFinality({ intentId, signature, state: 'CONFIRMED_PROVISIONAL', slot: q.slot, at, reason: null });
+          out.push(update('CONFIRMED_PROVISIONAL'));
+          break;
+        }
+        case 'MISSING':
+        case 'FAILED':
+        case 'DIVERGENT': {
+          if (prior === 'CONFIRMED_PROVISIONAL') {
+            const t = attemptTransition(machine, { type: 'MISSING_OR_CONFLICTING', at });
+            if (!t.ok || t.attempt.state !== 'REORG_PENDING') break;
+            await this.deps.journal.append('ATTEMPT_REORG_PENDING', intentId, { intentId, idempotencyKey: key, txSignature: signature, verdict: q.verdict, views: summary, at });
+            await this.applyLocalPause(`REORG_PENDING:${signature}`);
+            await this.persistFinality({ intentId, signature, state: 'REORG_PENDING', slot: null, at, reason: q.verdict });
+            uncertain++;
+            out.push(update('REORG_PENDING'));
+            break;
+          }
+          if (q.verdict === 'DIVERGENT') {
+            await this.applyLocalPause(`RPC_DIVERGENCE:${signature}`);
+            uncertain++;
+            out.push(update(prior, { note: 'views contradict; no state change' }));
+            break;
+          }
+          // SUBMITTED or REORG_PENDING: a failed transaction is consumed on chain; a missing one is dead only when every view proves it (INV-23).
+          let reason: string;
+          if (q.verdict === 'FAILED') reason = 'TX_FAILED_ON_CHAIN';
+          else {
+            const dead = await proveDeadAcrossViews(observers, signature, lastValid);
+            if (!dead) {
+              if (prior === 'REORG_PENDING') uncertain++;
+              out.push(update(prior, { note: 'still potentially landable' }));
+              break;
+            }
+            const t = attemptTransition(machine, { type: 'CONCLUSIVELY_DEAD', at, ...dead, reason: 'BLOCK_HEIGHT_EXPIRED' });
+            if (!t.ok) break;
+            reason = 'BLOCK_HEIGHT_EXPIRED';
+          }
+          if (!emergency && this.ledger.openIntents().includes(intentId)) await this.ledgerEvent(intentId, { kind: 'ENTRY_RELEASED', at, intentId, reason });
+          if (this.registry.state(key) === 'AUTHORIZED') this.registry.advance(key, 'EXECUTING');
+          if (this.registry.state(key) === 'EXECUTING') this.registry.advance(key, 'FAILED');
+          await this.deps.journal.append('ATTEMPT_RESULT', intentId, { intentId, idempotencyKey: key, state: 'NOT_LANDED', lifecycle: 'FAILED', txSignature: signature, reason, tracked: true, from: prior, views: summary });
+          await this.persistFinality({ intentId, signature, state: 'NOT_LANDED', slot: null, at, reason });
+          out.push(update('NOT_LANDED', { note: reason }));
+          break;
+        }
+        case 'UNAVAILABLE':
+          if (prior === 'REORG_PENDING') uncertain++;
+          out.push(update(prior, { note: 'no RPC view answered' }));
+          break;
+      }
+    }
+    const reason = this.localPause.reason ?? '';
+    if (this.localPause.active && uncertain === 0 && (reason.startsWith('REORG_PENDING:') || reason.startsWith('RPC_DIVERGENCE:'))) {
+      // §14.7: reconcile final chain balances before releasing the pause. A failed read keeps it.
+      try {
+        const h = await this.deps.custody.holdings(this.deps.guardrails.tradingWalletAddress);
+        await this.deps.journal.append('CUSTODY_RECONCILED', 'ops', { slot: h.slot, holdings: h.holdings.map((x) => ({ mint: x.mint, amount: x.amount.toString() })), releasing: reason, at: this.deps.clock.now() });
+        await this.clearLocalPause('finality-tracker:custody-reconciled');
+      } catch {
+        // stays paused until the next tick can read custody
+      }
+    }
+    return out;
+  }
+
+  private async persistFinality(u: FinalityPersist): Promise<void> {
+    if (!this.deps.persistFinality) return;
+    try {
+      await this.deps.persistFinality(u);
+    } catch {
+      // best effort after the journal holds the truth (§15.10); the row is reconciled later
+    }
   }
 
   /** Total open non-settlement exposure the ledger holds (for the harness and health surfaces). */
