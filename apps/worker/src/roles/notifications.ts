@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { addMs, type Clock, type Instant, type NotificationChannel, type NotificationPolicy, type Uuid, type WalletReservePolicy } from '@sol-agent-trader/contracts';
-import type { DeliveryRow, OpenNotificationRow } from '@sol-agent-trader/db/server';
+import { addMs, type Clock, type ControlRequestKind, type Instant, type NotificationChannel, type NotificationPolicy, type Uuid, type WalletReservePolicy } from '@sol-agent-trader/contracts';
+import type { DeliveryRow, OpenNotificationRow, PendingControlRequest } from '@sol-agent-trader/db/server';
 import type { Logger } from '@sol-agent-trader/observability';
 import { deadManDue, deriveAlerts, escalationDue, heartbeatDue, type AlertFacts, type DesiredAlert } from '@sol-agent-trader/risk';
 import type { NotificationSender, OutboundNotification } from '../notifications/channels.js';
@@ -25,6 +25,11 @@ export interface NotificationsRepo {
   escalate(id: Uuid, level: number): Promise<void>;
   applyDeadManPause(input: { notificationId: Uuid; alertClass: string; at: Instant; actorRef: string }): Promise<{ pausedSessions: Uuid[] }>;
   lastHeartbeatAt(): Promise<Instant | null>;
+  /** ACKNOWLEDGE_ALERT control requests from the alert center (§20.20): fast, no step-up (D41). */
+  listPending(kinds: ControlRequestKind[], limit: number): Promise<PendingControlRequest[]>;
+  operatorRole(userId: Uuid): Promise<'operator' | 'admin' | 'viewer' | null>;
+  acknowledge(notificationId: Uuid, by: Uuid, at: Instant): Promise<boolean>;
+  resolveRequest(id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant): Promise<boolean>;
 }
 
 export interface NotificationsDeps {
@@ -46,6 +51,7 @@ export interface NotificationsReport {
   deadManPaused: { alertClass: string; sessions: number }[];
   heartbeat: boolean;
   criticalUnderDelivered: string[];
+  acknowledged: number;
 }
 
 /** Classes this role owns end to end: raised from facts and resolved when the fact clears. Others are delivered and escalated only. */
@@ -54,7 +60,27 @@ const OWNED = new Set(['CUSTODY_RECONCILIATION_MISMATCH', 'RECONCILIATION_UNAVAI
 export async function runNotificationsCycle(deps: NotificationsDeps): Promise<NotificationsReport> {
   const now = deps.clock.now();
   const newId = deps.newId ?? (() => randomUUID() as Uuid);
-  const report: NotificationsReport = { raised: [], resolved: [], deliveries: { attempted: 0, confirmed: 0, failed: 0 }, escalated: [], deadManPaused: [], heartbeat: false, criticalUnderDelivered: [] };
+  const report: NotificationsReport = { raised: [], resolved: [], deliveries: { attempted: 0, confirmed: 0, failed: 0 }, escalated: [], deadManPaused: [], heartbeat: false, criticalUnderDelivered: [], acknowledged: 0 };
+  // 0. Acknowledgements from the alert center: any operator, no step-up, recorded with who and when.
+  for (const req of await deps.repo.listPending(['ACKNOWLEDGE_ALERT'], 50)) {
+    const notificationId = typeof req.payload['notificationId'] === 'string' ? (req.payload['notificationId'] as Uuid) : null;
+    const role = await deps.repo.operatorRole(req.requestedBy);
+    if (role !== 'operator' && role !== 'admin') {
+      await deps.repo.resolveRequest(req.id, 'REJECTED', { reason: 'NOT_AN_OPERATOR', role }, now);
+      continue;
+    }
+    if (!notificationId) {
+      await deps.repo.resolveRequest(req.id, 'REJECTED', { reason: 'MALFORMED_PAYLOAD' }, now);
+      continue;
+    }
+    const done = await deps.repo.acknowledge(notificationId, req.requestedBy, now);
+    await deps.repo.resolveRequest(req.id, done ? 'ACCEPTED' : 'REJECTED', done ? { notificationId, acknowledgedBy: req.requestedBy } : { reason: 'NOT_OPEN_OR_ALREADY_ACKNOWLEDGED', notificationId }, now);
+    if (done) {
+      report.acknowledged++;
+      deps.logger.info('alert_acknowledged', { notificationId, by: req.requestedBy });
+    }
+  }
+
   const facts = await deps.repo.facts();
   let open = await deps.repo.listOpen();
 
@@ -132,6 +158,6 @@ export async function runNotificationsCycle(deps: NotificationsDeps): Promise<No
       deps.logger.error('critical_alert_under_delivered', { notificationId: n.id, alertClass: n.alertClass, confirmedChannels: confirmed, required: deps.policy.criticalMinConfirmedChannels });
     }
   }
-  if (report.raised.length || report.resolved.length || report.escalated.length || report.deadManPaused.length || report.deliveries.attempted) deps.logger.info('notifications_cycle', { ...report });
+  if (report.raised.length || report.resolved.length || report.escalated.length || report.deadManPaused.length || report.deliveries.attempted || report.acknowledged) deps.logger.info('notifications_cycle', { ...report });
   return report;
 }

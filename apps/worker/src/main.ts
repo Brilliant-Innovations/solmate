@@ -130,6 +130,7 @@ import {
   lastHeadAdvance,
   auditHead,
   checkpointAuditChain,
+  acknowledgeNotification,
   listOpenNotifications,
   raiseNotification,
   resolveNotifications,
@@ -1483,6 +1484,13 @@ async function notificationsLoop(env: WorkerEnv, logger: Logger, shared: Shared)
       escalate: (id: Uuid, level: number) => escalateNotification(sql, id, level),
       applyDeadManPause: (input) => applyDeadManPause(sql, input),
       lastHeartbeatAt: () => lastHeartbeatAt(sql),
+      listPending: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
+      operatorRole: async (userId: Uuid) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      acknowledge: (id: Uuid, by: Uuid, at: Instant) => acknowledgeNotification(sql, id, by, at),
+      resolveRequest: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant) => resolveControlRequest(sql, id, state, resolution, at),
     },
     senders,
     policy: DEFAULT_NOTIFICATION_POLICY,

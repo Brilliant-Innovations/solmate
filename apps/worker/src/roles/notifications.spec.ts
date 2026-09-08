@@ -1,5 +1,5 @@
 import { addMs, DEFAULT_NOTIFICATION_POLICY, DEFAULT_WALLET_RESERVE_POLICY, fixedClock, fixtures, type Amount, type Instant, type Uuid } from '@sol-agent-trader/contracts';
-import type { DeliveryRow, OpenNotificationRow } from '@sol-agent-trader/db/server';
+import type { DeliveryRow, OpenNotificationRow, PendingControlRequest } from '@sol-agent-trader/db/server';
 import { createLogger } from '@sol-agent-trader/observability';
 import type { AlertFacts } from '@sol-agent-trader/risk';
 import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from '../notifications/channels.js';
@@ -39,6 +39,13 @@ class MemoryRepo implements NotificationsRepo {
   async escalate(id: Uuid, level: number) { const r = this.rows.find((x) => x.id === id)!; r.escalationLevel = level; r.lastEscalatedAt = null; }
   async applyDeadManPause(input: { notificationId: Uuid; alertClass: string }) { this.paused.push({ notificationId: input.notificationId, alertClass: input.alertClass }); const r = this.rows.find((x) => x.id === input.notificationId)!; r.deadManActionTaken = 'PAUSE_NEW_ENTRIES'; return { pausedSessions: ['s1' as Uuid] }; }
   async lastHeartbeatAt() { return this.heartbeatAt; }
+  pending: PendingControlRequest[] = [];
+  role: 'operator' | 'admin' | 'viewer' | null = 'operator';
+  resolutions: { id: Uuid; state: string; resolution: Record<string, unknown> }[] = [];
+  async listPending() { return this.pending; }
+  async operatorRole() { return this.role; }
+  async acknowledge(id: Uuid, by: Uuid, at: Instant) { const r = this.rows.find((x) => x.id === id && x.acknowledgedAt === null && !this.resolvedIds.includes(x.id)); if (!r) return false; r.acknowledgedAt = at; void by; return true; }
+  async resolveRequest(id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>) { this.resolutions.push({ id, state, resolution }); return true; }
 }
 let n = 0;
 const deps = (repo: MemoryRepo, over: Partial<NotificationsDeps> = {}): NotificationsDeps => ({ repo, senders: [inAppSender, unconfiguredSender('TELEGRAM'), unconfiguredSender('EMAIL')], policy, reservePolicy: DEFAULT_WALLET_RESERVE_POLICY, presenceTimeoutMs: 180_000, clock: fixedClock(T0), logger, newId: () => `${String(++n).padStart(8, '0')}-0000-4000-8000-0000000000ee` as Uuid, ...over });
@@ -114,5 +121,30 @@ describe('worker notifications role (§20.20, D35, D42)', () => {
     expect(await failing.send({ id: 'n', severity: 'HIGH', alertClass: 'CHAIN_ENTRIES_BLOCKED', summary: 's', escalationLevel: 0, raisedAt: T0 })).toEqual({ ok: false, error: 'telegram 429' });
     const apiNo = telegramSender({ botToken: 't', chatId: '1', fetchImpl: (async () => ({ ok: true, json: async () => ({ ok: false, description: 'chat not found' }) })) as unknown as typeof fetch });
     expect(await apiNo.send({ id: 'n', severity: 'HIGH', alertClass: 'CHAIN_ENTRIES_BLOCKED', summary: 's', escalationLevel: 0, raisedAt: T0 })).toEqual({ ok: false, error: 'telegram: chat not found' });
+  });
+});
+
+describe('acknowledgement through the alert center', () => {
+  it('an operator acknowledges an open alert once (who and when recorded), a viewer or a bad id is refused, and an acknowledged CRITICAL no longer escalates', async () => {
+    const repo = new MemoryRepo(quiet());
+    const id = 'aaaaaaaa-0000-4000-8000-000000000009' as Uuid;
+    repo.rows.push({ id, alertClass: 'UNABLE_TO_EXIT', severity: 'CRITICAL', summary: 'cannot exit', affected: {}, raisedAt: addMs(T0, -policy.escalationIntervalMs), acknowledgedAt: null, escalationLevel: 0, lastEscalatedAt: null, deadManActionTaken: null });
+    repo.pending = [
+      { id: 'bbbbbbbb-0000-4000-8000-000000000001' as Uuid, requestedBy: fixtures.IDS.operator as Uuid, kind: 'ACKNOWLEDGE_ALERT', payload: { notificationId: id }, createdAt: T0 },
+      { id: 'bbbbbbbb-0000-4000-8000-000000000002' as Uuid, requestedBy: fixtures.IDS.operator as Uuid, kind: 'ACKNOWLEDGE_ALERT', payload: {}, createdAt: T0 },
+    ];
+    const r = await runNotificationsCycle(deps(repo));
+    expect(r.acknowledged).toBe(1);
+    expect(r.escalated).toEqual([]); // acknowledged before the escalation check
+    expect(repo.resolutions.map((x) => [x.state, x.resolution['reason'] ?? 'ok'])).toEqual([['ACCEPTED', 'ok'], ['REJECTED', 'MALFORMED_PAYLOAD']]);
+    expect(repo.rows[0]?.acknowledgedAt).toBe(T0);
+    repo.pending = [{ id: 'bbbbbbbb-0000-4000-8000-000000000003' as Uuid, requestedBy: fixtures.IDS.operator as Uuid, kind: 'ACKNOWLEDGE_ALERT', payload: { notificationId: id }, createdAt: T0 }];
+    const again = await runNotificationsCycle(deps(repo));
+    expect(again.acknowledged).toBe(0);
+    expect(repo.resolutions.at(-1)).toMatchObject({ state: 'REJECTED', resolution: { reason: 'NOT_OPEN_OR_ALREADY_ACKNOWLEDGED' } });
+    repo.role = 'viewer';
+    repo.pending = [{ id: 'bbbbbbbb-0000-4000-8000-000000000004' as Uuid, requestedBy: fixtures.IDS.operator as Uuid, kind: 'ACKNOWLEDGE_ALERT', payload: { notificationId: id }, createdAt: T0 }];
+    await runNotificationsCycle(deps(repo));
+    expect(repo.resolutions.at(-1)).toMatchObject({ state: 'REJECTED', resolution: { reason: 'NOT_AN_OPERATOR' } });
   });
 });

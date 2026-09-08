@@ -115,3 +115,9 @@ export async function activeSessionCount(sql: Sql): Promise<number> {
   const [r] = await sql<{ n: number }[]>`select count(*)::int as n from ops.runtime_sessions where activity_state <> 'OFF'`;
   return r?.n ?? 0;
 }
+
+/** Operator acknowledgement (§20.20): recorded once, by whom and when; a resolved or already acknowledged alert is left alone. */
+export async function acknowledgeNotification(sql: Sql, id: Uuid, by: Uuid, at: Instant): Promise<boolean> {
+  const rows = await sql<{ id: string }[]>`update ops.notifications set acknowledged_at = ${at}, acknowledged_by = ${by} where id = ${id} and acknowledged_at is null and resolved_at is null returning id`;
+  return rows.length > 0;
+}

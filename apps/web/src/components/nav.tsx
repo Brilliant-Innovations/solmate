@@ -9,7 +9,7 @@ const SECTIONS: { title: string; items: { href: string; label: string; note?: st
   { title: 'Markets', items: [{ href: '/scanner', label: 'Scanner' }, { href: '/watchlist', label: 'Watchlist' }, { href: '/assets', label: 'Asset Workspace' }] },
   { title: 'Research', items: [{ href: '/history', label: 'Trade History' }, { href: '/strategy-lab', label: 'Strategy Lab' }, { href: '/replay', label: 'Replay Lab' }, { href: '/attribution', label: 'Attribution / Economics' }] },
   { title: 'Autonomy', items: [{ href: '/autonomy', label: 'Skill · Guidelines · Automations · Adversary' }] },
-  { title: 'System', items: [{ href: '/risk', label: 'Risk & Policy' }, { href: '/wallet', label: 'Wallet / Custody' }, { href: '/health', label: 'System Health' }, { href: '/readiness', label: 'Live Readiness' }, { href: '/releases', label: 'Releases' }, { href: '/audit', label: 'Audit Log' }, { href: '/settings', label: 'Settings' }] },
+  { title: 'System', items: [{ href: '/risk', label: 'Risk & Policy' }, { href: '/wallet', label: 'Wallet / Custody' }, { href: '/alerts', label: 'Alert Center' }, { href: '/health', label: 'System Health' }, { href: '/readiness', label: 'Live Readiness' }, { href: '/releases', label: 'Releases' }, { href: '/audit', label: 'Audit Log' }, { href: '/settings', label: 'Settings' }] },
 ];
 
 export function Nav() {
