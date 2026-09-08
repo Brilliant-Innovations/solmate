@@ -130,6 +130,13 @@ import {
   lastHeadAdvance,
   auditHead,
   checkpointAuditChain,
+  insertReadinessRow,
+  latestReadinessRows,
+  insertReadinessVerdict,
+  latestReadinessVerdict,
+  latestPresence,
+  latestChainHealth,
+  loadLatestProjection,
   FileCheckpointReplicator,
   verifyAgainstExternalCheckpoint,
   recoveryFacts,
@@ -148,6 +155,9 @@ import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from
 import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
+import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
+import { verdictPermits } from '@sol-agent-trader/risk';
+import { DEFAULT_READINESS_POLICY, DEFAULT_WALLET_RESERVE_POLICY, type ReadinessBinding } from '@sol-agent-trader/contracts';
 import type { Sha256Hex, StrategyVersion, VersionId } from '@sol-agent-trader/contracts';
 import { executeExit } from './roles/position-monitor.js';
 import { createReasoningModel } from '@sol-agent-trader/agents';
@@ -234,7 +244,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -357,6 +367,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
+  if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('audit-checkpoint')) {
     if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
     else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
@@ -1100,7 +1111,8 @@ async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
     authorizerKeys,
     signing,
     // Live Readiness (M8a) answers here; until it exists arming fails closed (§15.9).
-    readinessPermits: async () => false,
+    // Live Readiness (§29): the worker's readiness role computes READY_FOR_ATTENDED_TINY_LIVE; arming needs a fresh READY verdict for exactly this Release.
+    readinessPermits: async (releaseId: Uuid) => verdictPermits(await latestReadinessVerdict(sql, 'READY_FOR_ATTENDED_TINY_LIVE', env.DEPLOYMENT_PROFILE, 'DETERMINISTIC'), releaseId, systemClock.now(), DEFAULT_READINESS_POLICY),
     liveCapabilityEnabled: false,
     clock: systemClock,
     logger,
@@ -1177,7 +1189,8 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
         const release = await loadReleaseForStrategy(sql, s0TinyLiveVersion(env.GIT_SHA, now).versionId);
         const attestation = release ? await loadLatestAttestation(sql, release.id, 'ARM') : null;
         const facts = armingPreconditions({ requestedAuthority: authority, liveCapabilityEnabled: true, release, attestation, readinessPermits: true, stepUpVerified: true, now });
-        return { releaseAttested: facts.ok, readinessPermits: false };
+        const readinessPermits = release ? verdictPermits(await latestReadinessVerdict(sql, 'READY_FOR_ATTENDED_TINY_LIVE', env.DEPLOYMENT_PROFILE, 'DETERMINISTIC'), release.id, now, DEFAULT_READINESS_POLICY) : false;
+        return { releaseAttested: facts.ok, readinessPermits };
       },
     },
     clock: systemClock,
@@ -1313,5 +1326,86 @@ async function auditCheckpointLoop(env: WorkerEnv, logger: Logger, shared: Share
   logger.info('audit_checkpoint_starting', { intervalMs, replica: replicator.label, holder: shared.holder });
   await loopUnderLease('audit-checkpoint', intervalMs, logger, shared, async () => {
     await runAuditCheckpointCycle(deps);
+  });
+}
+
+async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.READINESS_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('readiness_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  // Profile 0/1 worker: the account is the paper account (ensurePaperAccount refuses anything else), so the LIVE-only rows fail by construction until Profile 2.
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
+  const activeFrom = systemClock.now();
+  // The verdict is computed for the tiny-live S0_SAFE Release (ADR-0004); its DRAFT row is registered by digest so evidence can bind to it.
+  const tiny = s0TinyLiveVersion(env.GIT_SHA, activeFrom);
+  await ensureStrategyVersion(sql, tiny);
+  const tinyRelease = await releaseFor(tiny, { contractSetDigest: (await getContractSetDigest()).digest, freshnessPolicyVersion: PROJECTION_FRESHNESS.version }, activeFrom);
+  const registered = await ensureRelease(sql, tinyRelease);
+  const binding: ReadinessBinding = {
+    gitSha: env.GIT_SHA,
+    imageDigest: null,
+    contractSetDigest: (await getContractSetDigest()).digest,
+    policyDigests: { risk: DEFAULT_RISK_POLICY.version, session: DEFAULT_SESSION_POLICY.version, chainHealth: DEFAULT_CHAIN_HEALTH_POLICY.version, readiness: DEFAULT_READINESS_POLICY.version, walletReserve: DEFAULT_WALLET_RESERVE_POLICY.version, freshness: PROJECTION_FRESHNESS.version },
+    tradingWallet: account.tradingWallet,
+    cluster: env.SOLANA_CLUSTER,
+    profile: env.DEPLOYMENT_PROFILE,
+    releaseId: registered.id,
+    releaseDigest: tinyRelease.digest,
+  };
+  const deps: ReadinessDeps = {
+    repo: {
+      facts: async () => {
+        const release = await loadReleaseForStrategy(sql, tiny.versionId);
+        const [recon, attestation, capital, projection, presence, chainHealth, conflicts] = await Promise.all([
+          latestReconciliation(sql, account.id),
+          release ? loadLatestAttestation(sql, release.id) : Promise.resolve(null),
+          latestCapitalAttestation(sql, account.id),
+          loadLatestProjection(sql, account.id),
+          latestPresence(sql, account.id),
+          latestChainHealth(sql),
+          sleeveConflicts(sql, account.id),
+        ]);
+        return {
+          accountMode: 'PAPER' as const,
+          reconciliation: recon ? { status: recon.status, evaluatedAt: recon.evaluatedAt } : null,
+          release,
+          attestation,
+          capital,
+          projection: projection?.envelope.payload ?? null,
+          presence: presence ? { attended: presence.attended, lastPresenceHeartbeatAt: presence.lastPresenceHeartbeatAt } : null,
+          chainHealth,
+          sleeveConflicts: conflicts,
+        };
+      },
+      latestRows: () => latestReadinessRows(sql, env.DEPLOYMENT_PROFILE, 'DETERMINISTIC'),
+      insertRow: (row) => insertReadinessRow(sql, row),
+      latestVerdict: () => latestReadinessVerdict(sql, 'READY_FOR_ATTENDED_TINY_LIVE', env.DEPLOYMENT_PROFILE, 'DETERMINISTIC'),
+      insertVerdict: (v) => insertReadinessVerdict(sql, v),
+      listPending: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
+      operatorRole: async (userId: Uuid) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      stepUpVerified: (id: Uuid, now: Instant) => stepUpVerifiedFor(sql, id, now),
+      resolve: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant) => resolveControlRequest(sql, id, state, resolution, at),
+    },
+    binding,
+    strategyClass: 'DETERMINISTIC',
+    // Provider protection is off until the Trigger lifecycle row is green (ADR-0004): the verdict states MONITORED_EXIT-only through TRIGGER_LIFECYCLE = NOT_APPLICABLE.
+    enabledCapabilities: ['LIVE_SIGNING'],
+    policy: DEFAULT_READINESS_POLICY,
+    reservePolicy: DEFAULT_WALLET_RESERVE_POLICY,
+    presenceTimeoutMs: DEFAULT_SESSION_POLICY.presenceTimeoutMs,
+    reconciliationMaxAgeMs: 5 * env.RECONCILIATION_INTERVAL_MS,
+    clock: systemClock,
+    logger,
+  };
+  logger.info('readiness_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, strategy: tiny.versionId, releaseId: registered.id, releaseOutcome: registered.outcome, policyVersion: DEFAULT_READINESS_POLICY.version, holder: shared.holder });
+  await loopUnderLease('readiness', intervalMs, logger, shared, async () => {
+    await runReadinessCycle(deps);
   });
 }

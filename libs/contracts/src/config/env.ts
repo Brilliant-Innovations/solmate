@@ -169,6 +169,8 @@ export const WorkerEnv = Common.extend({
   /** Where the worker replicates audit-ledger checkpoints outside Postgres (§20.25); the authorizer reads the same file. */
   AUDIT_CHECKPOINT_PATH: NonEmpty.optional(),
   AUDIT_CHECKPOINT_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+  /** Live Readiness rows and verdict recomputed this often (§29, ADR-0010). */
+  READINESS_INTERVAL_MS: z.coerce.number().int().min(15_000).max(600_000).default(60_000),
   /** Drain cadence for cleared discretionary position actions (trading-actions queue). */
   TRADING_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   // Intelligence providers (M6, §3.4–3.5). Absent key = that source is skipped; both absent = the intel-ingest role is disabled.

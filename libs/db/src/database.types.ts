@@ -2407,6 +2407,111 @@ export type Database = {
         }
         Relationships: []
       }
+      readiness_rows: {
+        Row: {
+          binding: Json
+          created_at: string
+          detail: Json
+          evaluated_at: string
+          evidence_ref: string | null
+          expires_at: string | null
+          id: string
+          kind: string
+          profile: Database["enums"]["Enums"]["deployment_profile"]
+          recorded_by: string
+          row_id: string
+          strategy_class: string
+          verdict: string
+        }
+        Insert: {
+          binding: Json
+          created_at?: string
+          detail?: Json
+          evaluated_at: string
+          evidence_ref?: string | null
+          expires_at?: string | null
+          id?: string
+          kind: string
+          profile: Database["enums"]["Enums"]["deployment_profile"]
+          recorded_by: string
+          row_id: string
+          strategy_class: string
+          verdict: string
+        }
+        Update: {
+          binding?: Json
+          created_at?: string
+          detail?: Json
+          evaluated_at?: string
+          evidence_ref?: string | null
+          expires_at?: string | null
+          id?: string
+          kind?: string
+          profile?: Database["enums"]["Enums"]["deployment_profile"]
+          recorded_by?: string
+          row_id?: string
+          strategy_class?: string
+          verdict?: string
+        }
+        Relationships: []
+      }
+      readiness_verdicts: {
+        Row: {
+          binding: Json
+          computed_at: string
+          created_at: string
+          enabled_capabilities: string[]
+          failed: string[]
+          id: string
+          missing: string[]
+          name: string
+          not_applicable: string[]
+          policy_version: string
+          profile: Database["enums"]["Enums"]["deployment_profile"]
+          release_id: string | null
+          rows: Json
+          stale: string[]
+          strategy_class: string
+          verdict: string
+        }
+        Insert: {
+          binding: Json
+          computed_at: string
+          created_at?: string
+          enabled_capabilities?: string[]
+          failed?: string[]
+          id?: string
+          missing?: string[]
+          name: string
+          not_applicable?: string[]
+          policy_version: string
+          profile: Database["enums"]["Enums"]["deployment_profile"]
+          release_id?: string | null
+          rows: Json
+          stale?: string[]
+          strategy_class: string
+          verdict: string
+        }
+        Update: {
+          binding?: Json
+          computed_at?: string
+          created_at?: string
+          enabled_capabilities?: string[]
+          failed?: string[]
+          id?: string
+          missing?: string[]
+          name?: string
+          not_applicable?: string[]
+          policy_version?: string
+          profile?: Database["enums"]["Enums"]["deployment_profile"]
+          release_id?: string | null
+          rows?: Json
+          stale?: string[]
+          strategy_class?: string
+          verdict?: string
+        }
+        Relationships: []
+      }
       retention_policies: {
         Row: {
           resolution: Database["enums"]["Enums"]["candle_resolution"]

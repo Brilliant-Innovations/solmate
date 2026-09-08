@@ -11,3 +11,4 @@ export * from './cohorts/exposure.js';
 export * from './projection/build.js';
 export * from './approvals/grant.js';
 export * from './release/lifecycle.js';
+export * from './readiness/verdict.js';
