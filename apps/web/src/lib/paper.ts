@@ -23,6 +23,7 @@ export interface SnapshotRow {
   exposure_base_units: string;
   exposure_fraction: number;
   drawdown: { dailyFraction?: number; rollingFraction?: number } | null;
+  per_cohort?: { cohortId: string; exposureFraction: number }[] | null;
 }
 
 export interface SessionView {
@@ -82,8 +83,8 @@ export async function loadEquity(accountId: string): Promise<{ latest: SnapshotR
   if (!supabase) return { latest: null, dayStart: null };
   const dayStartIso = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
   const [latest, dayStart] = await Promise.all([
-    supabase.schema('trading').from('portfolio_snapshots').select('as_of, equity_base_units, exposure_base_units, exposure_fraction, drawdown').eq('account_id', accountId).order('as_of', { ascending: false }).limit(1).maybeSingle(),
-    supabase.schema('trading').from('portfolio_snapshots').select('as_of, equity_base_units, exposure_base_units, exposure_fraction, drawdown').eq('account_id', accountId).gte('as_of', dayStartIso).order('as_of', { ascending: true }).limit(1).maybeSingle(),
+    supabase.schema('trading').from('portfolio_snapshots').select('as_of, equity_base_units, exposure_base_units, exposure_fraction, drawdown, per_cohort').eq('account_id', accountId).order('as_of', { ascending: false }).limit(1).maybeSingle(),
+    supabase.schema('trading').from('portfolio_snapshots').select('as_of, equity_base_units, exposure_base_units, exposure_fraction, drawdown, per_cohort').eq('account_id', accountId).gte('as_of', dayStartIso).order('as_of', { ascending: true }).limit(1).maybeSingle(),
   ]);
   return { latest: (latest.data as SnapshotRow | null) ?? null, dayStart: (dayStart.data as SnapshotRow | null) ?? null };
 }

@@ -3,6 +3,7 @@ import { requestEndSession, requestPauseNewEntries } from '../app/(app)/actions'
 import { activityTone, alertsLabel, authorityTone, entriesLabel, freshnessLabel, healthTone, valueOrMissing, worstHealth, type Tone } from '../lib/status';
 import { baseToUsd, loadEquity, loadPaperAccount } from '../lib/paper';
 import { createSupabaseServerClient } from '../lib/supabase/server';
+import { PauseControl } from './pause-control';
 import { ScopeSelector } from './scope-selector';
 
 /**
@@ -103,11 +104,7 @@ export async function StatusBar() {
       <Chip k="alerts" v={alerts.text} tone={alerts.tone} />
       <span className="spacer" />
       <ScopeSelector current="LIVE" />
-      <form action={requestPauseNewEntries}>
-        <button className="btn danger" type="submit" disabled={!s.canControl} title="Requests PAUSE_NEW_ENTRIES; exits and protection are never paused">
-          PAUSE
-        </button>
-      </form>
+      <PauseControl action={requestPauseNewEntries} disabled={!s.canControl} />
       <form action={requestEndSession}>
         <button className="btn" type="submit" disabled={!s.canControl} title="Transitions to WIND_DOWN, never straight to OFF (D61)">
           END SESSION

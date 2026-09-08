@@ -262,6 +262,12 @@ a:focus-visible {
   color: var(--failed);
 }
 
+.btn.pause-hold {
+  background-repeat: no-repeat;
+  transition: background-image 0s;
+  min-width: 5.5rem;
+}
+
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
