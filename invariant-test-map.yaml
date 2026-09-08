@@ -55,6 +55,7 @@ invariants:
     tests:
       - libs/risk/src/sizing/size.spec.ts
       - libs/risk/src/rules/entry.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -75,6 +76,7 @@ invariants:
       - libs/risk/src/policy/eligibility-gate.spec.ts
       - libs/risk/src/eligibility/engine.spec.ts
       - apps/worker/src/roles/candidates.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -150,9 +152,12 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/risk-authorizer/src/projection
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - apps/risk-authorizer/src/projection/verify.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-08
     statement: "Executor absolute cap cannot be exceeded by database policy; aggregate exposure enforcement continues from the local ExecutorExposureLedger when DB market projections are unavailable."
@@ -281,6 +286,7 @@ invariants:
       - apps/risk-authorizer/src/authorize
     tests:
       - libs/agents/src/action-cycle/action-cycle.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -331,9 +337,11 @@ invariants:
     owner_modules:
       - libs/strategies/src/release-binding
       - apps/risk-authorizer/src/release
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - apps/risk-authorizer/src/release/verify.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-18
     statement: "The risk-authorizer cannot sign against an unattested or mismatched Release digest."
@@ -348,9 +356,12 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/risk-authorizer/src/release
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - apps/risk-authorizer/src/release/verify.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-19
     statement: "A proposal under cutoff v1 cannot be adversarially cleared under cutoff v2 without proposer revision."
@@ -527,6 +538,9 @@ invariants:
     owner_modules:
       - libs/risk/src/policy/capital-attestation.ts
       - apps/risk-authorizer/src/authorize
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - libs/risk/src/policy/capital-attestation.spec.ts
+      - apps/risk-authorizer/src/authorize/authorize.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped

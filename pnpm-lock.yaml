@@ -168,6 +168,9 @@ importers:
       '@sol-agent-trader/observability':
         specifier: workspace:*
         version: link:../../libs/observability
+      '@sol-agent-trader/risk':
+        specifier: workspace:*
+        version: link:../../libs/risk
 
   apps/web:
     dependencies:

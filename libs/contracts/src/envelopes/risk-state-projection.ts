@@ -25,6 +25,8 @@ export const OpenLotSummary = z.strictObject({
   assetId: Uuid,
   mint: MintAddress,
   quantity: Amount,
+  /** Settlement base units paid for the lot: per-asset exposure for the risk-authorizer's token cap (§13.1). */
+  costBasisBaseUnits: Amount,
   protectionMode: ProtectionMode,
   providerProtectionActive: z.boolean(),
 });
