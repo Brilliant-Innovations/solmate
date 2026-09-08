@@ -37,6 +37,8 @@ class MemoryRepo implements PaperEntryRepo {
   bookState: PaperBook = { settlementBalance: '10000000000' as Amount, exposureAtCost: '0' as Amount, markValue: '0' as Amount, realizedBySleeve: {}, openPositions: [], pendingExposure: '0' as Amount, inFlightIncreasing: 0, sleeves: [sleeve], feesLamports: '0' as Amount, consecutiveLosses: 0, dayStartEquity: null, rollingHighEquity: null };
   healthState = { feedsBlockEntries: false, entriesPaused: false, sessionAllowsEntries: true };
   async listAwaiting() { return this.rows.filter((r) => !this.evaluations.some((e) => e.actionCycleId === r.cycle.id)); }
+  cohortState = { memberships: [] as never[], clusterSet: null };
+  async cohorts() { return this.cohortState; }
   async book() { return this.bookState; }
   async health() { return this.healthState; }
   async recordRiskEvaluation(e: RiskEvaluation) { if (this.evaluations.some((x) => x.actionCycleId === e.actionCycleId)) throw new Error('already evaluated'); this.evaluations.push(e); }

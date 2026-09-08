@@ -133,6 +133,8 @@ export const WorkerEnv = Common.extend({
   RECONCILIATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(60_000),
   /** Feature-snapshot cadence (§6.8); one snapshot per tracked asset per closed minute at most. */
   FEATURES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  /** Rolling correlation clusters are recomputed on this cadence (windows end on the hour; a repeat inside the hour stores nothing). */
+  COHORTS_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(3_600_000),
   /** Candidate scan cadence (§9.1, §9.7). */
   CANDIDATES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Paper book (§17): the account's wallet identifier (quotes and attribution only, never custody), starting settlement capital, entry cadence. */

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_COHORT_TAXONOMY, DEFAULT_CORRELATION_CLUSTER_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
   applyExit,
   coldStartFacts,
@@ -56,6 +56,11 @@ import {
   latestEligibility,
   latestMarketSnapshotId,
   listAssetsForFeatures,
+  installTaxonomy,
+  insertClusterSet,
+  latestClusterSet,
+  listActiveMemberships,
+  listAssetsWithCandles,
   listTrackedWallets,
   loadProviderSpend,
   walletCursor,
@@ -91,6 +96,7 @@ import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
 import { runFeaturesCycle } from './roles/features.js';
+import { installCohortTaxonomy, runCohortsCycle } from './roles/cohorts.js';
 import { runCandidatesCycle } from './roles/candidates.js';
 import { runS0Cycle } from './roles/s0.js';
 import { runPaperEntryCycle } from './roles/paper-entry.js';
@@ -149,7 +155,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -231,6 +237,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
   if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
   if (roles.has('paper-entry')) loops.push(paperEntryLoop(env, logger, shared));
+  if (roles.has('cohorts')) loops.push(cohortsLoop(env, logger, shared));
   if (roles.has('position-monitor')) loops.push(positionMonitorLoop(env, logger, shared));
   if (roles.has('session')) loops.push(sessionLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
@@ -431,6 +438,29 @@ async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pro
   });
 }
 
+async function cohortsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.COHORTS_INTERVAL_MS;
+  const { sql } = shared;
+  const deps = {
+    repo: {
+      installTaxonomy: (t: Parameters<typeof installTaxonomy>[1]) => installTaxonomy(sql, t),
+      listAssetsWithCandles: (from: Parameters<typeof listAssetsWithCandles>[1], to: Parameters<typeof listAssetsWithCandles>[2], limit: number) => listAssetsWithCandles(sql, from, to, limit),
+      loadCandles: (assetId: Parameters<typeof loadCandles>[1], resolution: '1m', from: Parameters<typeof loadCandles>[3], to: Parameters<typeof loadCandles>[4]) => loadCandles(sql, assetId, resolution, from, to),
+      insertClusterSet: (set: Parameters<typeof insertClusterSet>[1]) => insertClusterSet(sql, set),
+    },
+    clock: systemClock,
+    logger,
+    taxonomy: DEFAULT_COHORT_TAXONOMY,
+    clusterPolicy: DEFAULT_CORRELATION_CLUSTER_POLICY,
+    config: { maxAssets: 200 },
+  };
+  logger.info('cohorts_starting', { intervalMs, taxonomy: DEFAULT_COHORT_TAXONOMY.version, clusters: DEFAULT_CORRELATION_CLUSTER_POLICY.version, holder: shared.holder });
+  await installCohortTaxonomy(deps);
+  await loopUnderLease('cohorts', intervalMs, logger, shared, async () => {
+    await runCohortsCycle(deps);
+  });
+}
+
 async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
   const intervalMs = env.CANDIDATES_INTERVAL_MS;
   const { sql } = shared;
@@ -535,6 +565,7 @@ async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
     repo: {
       listAwaiting: (ids: Parameters<typeof listCyclesAwaitingEntry>[1], limit: number) => listCyclesAwaitingEntry(sql, ids, limit),
       book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
+      cohorts: async (now: Parameters<typeof latestClusterSet>[1]) => ({ memberships: await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version), clusterSet: await latestClusterSet(sql, now, 2 * DEFAULT_CORRELATION_CLUSTER_POLICY.windowMs) }),
       health: async () => {
         const h = await entryHealth(sql);
         const gate = await sessionEntryGate(sql, account.id);
@@ -610,6 +641,7 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
       finishAttempt: (order: Parameters<typeof finishAttempt>[1], attempt: Parameters<typeof finishAttempt>[2], fill: Parameters<typeof finishAttempt>[3]) => finishAttempt(sql, order, attempt, fill),
       applyExit: (x: Parameters<typeof applyExit>[1]) => applyExit(sql, x),
       book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
+      cohorts: async (now: Parameters<typeof latestClusterSet>[1]) => ({ memberships: await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version), clusterSet: await latestClusterSet(sql, now, 2 * DEFAULT_CORRELATION_CLUSTER_POLICY.windowMs) }),
       writeSnapshot: (s: Parameters<typeof insertPortfolioSnapshot>[1]) => insertPortfolioSnapshot(sql, s),
       sessionActivity: async () => (await sessionEntryGate(sql, account.id))?.activity ?? null,
       captureQuotes: async (probes: Parameters<typeof insertQuoteProbes>[1]) => {

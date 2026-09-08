@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { addAmounts, addMs, amountToBigInt, compareAmounts, instantToMs, quoteProbeOf, subAmounts, type Amount, type Bps, type Clock, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Position, type PositionLot, type Quote, type QuoteProbe, type RiskEvaluation, type RiskPolicy, type StrategySleeve, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
+import { addAmounts, addMs, amountToBigInt, compareAmounts, instantToMs, quoteProbeOf, subAmounts, type Amount, type Bps, type Clock, type CorrelationClusterSet, type ExecutionRequest, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Position, type PositionLot, type Quote, type QuoteProbe, type RiskEvaluation, type RiskPolicy, type StrategySleeve, type StrategyVersion, type TradeIntent, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
 import type { EntryCandidateRow, PaperBook, TradeIntentState } from '@sol-agent-trader/db/server';
 import { impliedPrice, type DetailedExecution } from '@sol-agent-trader/execution';
 import type { Logger } from '@sol-agent-trader/observability';
-import { evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
+import { clusterForAsset, cohortForAsset, evaluateEntry, type ActiveMembership, type PortfolioState } from '@sol-agent-trader/risk';
 
 /**
  * Worker role `paper-entry` (blueprint §13, §17, §6.11–6.20; execution plan M5a "first paper
@@ -17,9 +17,16 @@ import { evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
  * the isolated authorizer (M7); this role never runs under a live capital authority.
  */
 
+export interface CohortContext {
+  memberships: ActiveMembership[];
+  clusterSet: CorrelationClusterSet | null;
+}
+
 export interface PaperEntryRepo {
   listAwaiting(strategyVersionIds: VersionId[], limit: number): Promise<EntryCandidateRow[]>;
   book(now: Instant): Promise<PaperBook>;
+  /** ACTIVE taxonomy memberships and the newest fresh correlation cluster set (§6.3); empty/null reads as unknown capacity. */
+  cohorts(now: Instant): Promise<CohortContext>;
   health(): Promise<{ feedsBlockEntries: boolean; entriesPaused: boolean; sessionAllowsEntries: boolean }>;
   recordRiskEvaluation(e: RiskEvaluation): Promise<void>;
   createIntent(intent: TradeIntent, lifecycle: 'AUTHORIZED'): Promise<void>;
@@ -69,11 +76,11 @@ export async function runPaperEntryCycle(deps: PaperEntryDeps): Promise<PaperEnt
   for (const row of awaiting) {
     try {
       // Fresh book per cycle: the previous fill in this loop is already pending or committed exposure.
-      const [book, health] = await Promise.all([deps.repo.book(now), deps.repo.health()]);
+      const [book, health, cohorts] = await Promise.all([deps.repo.book(now), deps.repo.health(), deps.repo.cohorts(now)]);
       const strategy = deps.strategies[row.cycle.strategyVersionId];
       const sleeve = deps.sleeves[row.cycle.strategyVersionId];
       if (!strategy || !sleeve) throw new Error(`no strategy/sleeve for ${row.cycle.strategyVersionId}`);
-      const state = portfolioState(deps, book, health, sleeve, row.asset.id);
+      const state = portfolioState(deps, book, health, sleeve, row.asset.id, cohorts);
       const f = row.snapshot.features;
       const num = (n: string) => (typeof f[n] === 'number' ? (f[n] as number) : null);
       const referenceSize = minAmount(deps.policy.maxPositionValueBaseUnits, book.settlementBalance);
@@ -234,8 +241,9 @@ export function equityOf(book: PaperBook): Amount {
   return addAmounts(book.settlementBalance, book.markValue);
 }
 
-function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBlockEntries: boolean; entriesPaused: boolean; sessionAllowsEntries: boolean }, sleeve: StrategySleeve, assetId: Uuid): PortfolioState {
+function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBlockEntries: boolean; entriesPaused: boolean; sessionAllowsEntries: boolean }, sleeve: StrategySleeve, assetId: Uuid, cohorts: CohortContext): PortfolioState {
   const equity = equityOf(book);
+  const open = book.openPositions.map((p) => ({ assetId: p.assetId, costBasis: p.costBasis }));
   const assetExposure = book.openPositions.filter((p) => p.assetId === assetId).reduce((acc, p) => addAmounts(acc, p.costBasis), '0' as Amount);
   const gas = compareAmounts(deps.account.virtualSolLamports, book.feesLamports) > 0 ? subAmounts(deps.account.virtualSolLamports, book.feesLamports) : ('0' as Amount);
   const fraction = (from: Amount | null): number => (from && amountToBigInt(from) > 0n ? Math.max(0, Number(amountToBigInt(from) - amountToBigInt(equity)) / Number(amountToBigInt(from))) : 0);
@@ -256,8 +264,8 @@ function portfolioState(deps: PaperEntryDeps, book: PaperBook, health: { feedsBl
       capRemainingBaseUnits: compareAmounts(sleeve.capitalCapBaseUnits, sleeve.committedBaseUnits) > 0 ? subAmounts(sleeve.capitalCapBaseUnits, sleeve.committedBaseUnits) : ('0' as Amount),
       riskRemainingBaseUnits: compareAmounts(sleeve.riskBudgetBaseUnits, sleeve.riskUsedBaseUnits) > 0 ? subAmounts(sleeve.riskBudgetBaseUnits, sleeve.riskUsedBaseUnits) : ('0' as Amount),
     },
-    cohort: null,
-    cluster: null,
+    cohort: cohortForAsset(assetId, open, cohorts.memberships, equity),
+    cluster: clusterForAsset(assetId, open, cohorts.clusterSet, equity),
     drawdown: { dailyFraction: fraction(book.dayStartEquity), rollingFraction: fraction(book.rollingHighEquity), consecutiveLosses: book.consecutiveLosses, circuitBreakerTripped: false, breakerTrippedAt: null },
     health: {
       feedsBlockEntries: health.feedsBlockEntries,

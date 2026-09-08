@@ -6,3 +6,5 @@ export * from './safety/index.js';
 export * from './sizing/size.js';
 export * from './rules/entry.js';
 export * from './exits/policy.js';
+export * from './cohorts/clusters.js';
+export * from './cohorts/exposure.js';
