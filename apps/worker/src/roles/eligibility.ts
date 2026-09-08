@@ -74,6 +74,18 @@ export function initialEligibilityHealthState(): EligibilityHealthState {
   return { lastSuccess: {}, lastError: {}, lastLatencyMs: {} };
 }
 
+/** Seeds the in-process state from persisted feed-health rows so a restart does not forget the last success (review 2026-09-08). */
+export function restoredEligibilityHealthState(rows: readonly { provider: string; lastSuccessAt: ReturnType<Clock['now']> | null; latencyMs: number | null; lastError: string | null }[]): EligibilityHealthState {
+  const state = initialEligibilityHealthState();
+  for (const r of rows) {
+    const cls = r.provider.includes(':') ? r.provider.slice(r.provider.indexOf(':') + 1) : r.provider;
+    if (r.lastSuccessAt) state.lastSuccess[cls] = r.lastSuccessAt;
+    if (r.latencyMs !== null) state.lastLatencyMs[cls] = r.latencyMs;
+    if (r.lastError && !r.lastError.startsWith('NO_DEMAND')) state.lastError[cls] = r.lastError;
+  }
+  return state;
+}
+
 export type EligibilityStep = 'CHAIN' | 'SECURITY' | 'OVERVIEW' | 'PROBES' | 'EMERGENCY_ROUTE' | 'PERSIST';
 
 export interface EligibilityCycleReport {
@@ -91,14 +103,18 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
   const due = await deps.repo.listAssetsForEvaluation({ limit: deps.config.batchSize, reevaluateAfter: addMs(now, -deps.config.reevaluateAfterMs), blockedReevaluateAfter: addMs(now, -deps.config.blockedReevaluateAfterMs) });
   report.considered = due.length;
   const fail = (assetId: Uuid, step: EligibilityStep, err: unknown) => report.errors.push({ assetId, step, error: err instanceof Error ? err.message : String(err) });
+  const called = new Set<string>();
   const feedOk = (cls: string, latencyMs: number) => {
     if (!deps.health) return;
+    called.add(cls);
     deps.health.state.lastSuccess[cls] = deps.clock.now();
     deps.health.state.lastLatencyMs[cls] = latencyMs;
     delete deps.health.state.lastError[cls];
   };
   const feedFail = (cls: string, err: unknown) => {
-    if (deps.health) deps.health.state.lastError[cls] = (err instanceof Error ? err.message : String(err)).slice(0, 512);
+    if (!deps.health) return;
+    called.add(cls);
+    deps.health.state.lastError[cls] = (err instanceof Error ? err.message : String(err)).slice(0, 512);
   };
 
   for (const asset of due) {
@@ -234,11 +250,13 @@ export async function runEligibilityCycle(deps: EligibilityDeps): Promise<Eligib
   if (deps.health) {
     for (const c of deps.health.contracts) {
       const health = evaluateFreshness(c, { lastSuccessAt: deps.health.state.lastSuccess[c.dataClass] ?? null, now: deps.clock.now(), latencyMs: deps.health.state.lastLatencyMs[c.dataClass] ?? null, lastError: deps.health.state.lastError[c.dataClass] ?? null });
-      // Nothing was due this cycle: the row reflects the scheduler, not the provider, so it carries no effect.
-      if (report.considered === 0) {
+      // No call this cycle and nothing known from before (this process or the persisted row): the row reflects the
+      // scheduler, not the provider, so it carries no effect. A known class ages honestly from its last success.
+      const known = deps.health.state.lastSuccess[c.dataClass] !== undefined || deps.health.state.lastError[c.dataClass] !== undefined;
+      if (!called.has(c.dataClass) && !known) {
         health.effectOnEntries = 'NONE';
         health.effectOnExits = 'NONE';
-        health.lastError = health.lastError ?? 'NO_DEMAND: no asset was due for evaluation this cycle';
+        health.lastError = health.lastError ?? 'NO_DEMAND: no asset needed this class since the worker started';
       }
       await deps.health.upsert(health);
     }

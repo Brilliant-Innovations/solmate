@@ -3,7 +3,7 @@ import { NoRouteError } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { BIRDEYE_TIERS, BirdeyeClient, defaultFreshnessContracts, type HttpResponse, type HttpTransport } from '@sol-agent-trader/market';
 import { base58Decode, SolanaRpcClient, TOKEN_PROGRAM_ID, type RpcTransport } from '@sol-agent-trader/solana-hard-state';
-import { initialEligibilityHealthState, runEligibilityCycle, type EligibilityRepo } from './eligibility.js';
+import { initialEligibilityHealthState, restoredEligibilityHealthState, runEligibilityCycle, type EligibilityRepo } from './eligibility.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 7, 12, 0, 0));
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -154,5 +154,22 @@ describe('eligibility role (P2: chain truth first, analytics corroborates, route
     expect(published.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ state: 'FAILED', effectOnEntries: 'BLOCK', lastError: expect.stringContaining('401') });
     expect(published.get('BIRDEYE:TOKEN_OVERVIEW')).toMatchObject({ state: 'HEALTHY', effectOnEntries: 'NONE', lastSuccessAt: NOW });
     expect(published.size).toBe(2);
+  });
+
+  it('a cycle that never calls a class (only a missing mint was due) publishes NO_DEMAND with no effect, unless the class is known from a restored row, which then ages honestly (review 2026-09-08)', async () => {
+    const missing = new SolanaRpcClient({ url: 'https://rpc.example.test', allowedOrigins: ['https://rpc.example.test'], transport: async (req) => ({ status: 200, body: JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(req.body).id, result: { context: { slot: 1 }, value: null } }) }), requestsPerSecond: 1000 });
+    const contracts = defaultFreshnessContracts().filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW');
+    const fresh = new Map<string, FeedHealth>();
+    await runEligibilityCycle({ ...deps(new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]), missing, birdeyeFor({}), jupiterFor()), health: { contracts, state: initialEligibilityHealthState(), upsert: async (h: FeedHealth) => void fresh.set(h.provider, h) } });
+    expect(fresh.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ effectOnEntries: 'NONE', lastError: expect.stringContaining('NO_DEMAND') });
+    expect(fresh.get('BIRDEYE:TOKEN_OVERVIEW')).toMatchObject({ effectOnEntries: 'NONE' });
+
+    const restored = new Map<string, FeedHealth>();
+    const state = restoredEligibilityHealthState([{ provider: 'BIRDEYE:TOKEN_SECURITY', lastSuccessAt: NOW, latencyMs: 40, lastError: null }, { provider: 'BIRDEYE:TOKEN_OVERVIEW', lastSuccessAt: null, latencyMs: null, lastError: 'NO_DEMAND: earlier' }]);
+    expect(state.lastSuccess['TOKEN_SECURITY']).toBe(NOW);
+    expect(state.lastError['TOKEN_OVERVIEW']).toBeUndefined();
+    await runEligibilityCycle({ ...deps(new MemoryRepo([{ id: ASSET, mintAddress: MINT, status: 'DISCOVERED' }]), missing, birdeyeFor({}), jupiterFor()), health: { contracts, state, upsert: async (h: FeedHealth) => void restored.set(h.provider, h) } });
+    expect(restored.get('BIRDEYE:TOKEN_SECURITY')).toMatchObject({ state: 'HEALTHY', lastSuccessAt: NOW });
+    expect(restored.get('BIRDEYE:TOKEN_OVERVIEW')).toMatchObject({ effectOnEntries: 'NONE' });
   });
 });

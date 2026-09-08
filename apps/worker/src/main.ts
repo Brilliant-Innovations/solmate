@@ -17,6 +17,7 @@ import {
   journalAttempt,
   listCyclesAwaitingEntry,
   listOpenPositionsForAccount,
+  loadFeedHealth,
   listPendingControlRequests,
   loadSession,
   openPosition,
@@ -82,7 +83,7 @@ import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
-import { initialEligibilityHealthState, runEligibilityCycle } from './roles/eligibility.js';
+import { restoredEligibilityHealthState, runEligibilityCycle } from './roles/eligibility.js';
 import { runHeldAssetSafetyCycle } from './roles/held-asset-safety.js';
 import { runReconciliationCycle } from './roles/reconciliation.js';
 import { runTrackedWalletsCycle } from './roles/tracked-wallets.js';
@@ -316,7 +317,7 @@ async function eligibilityLoop(env: WorkerEnv, logger: Logger, shared: SharedWit
     config: { batchSize: 5, reevaluateAfterMs: env.ELIGIBILITY_REEVALUATE_AFTER_MS, blockedReevaluateAfterMs: env.ELIGIBILITY_BLOCKED_REEVALUATE_AFTER_MS },
     health: {
       contracts: defaultFreshnessContracts(DEFAULT_FRESHNESS_REQUIREMENTS).filter((c) => c.dataClass === 'TOKEN_SECURITY' || c.dataClass === 'TOKEN_OVERVIEW'),
-      state: initialEligibilityHealthState(),
+      state: restoredEligibilityHealthState(await loadFeedHealth(sql, ['BIRDEYE:TOKEN_SECURITY', 'BIRDEYE:TOKEN_OVERVIEW'])),
       upsert: (h: Parameters<typeof upsertFeedHealth>[1]) => upsertFeedHealth(sql, h),
     },
   };

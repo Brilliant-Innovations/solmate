@@ -163,6 +163,13 @@ export async function upsertFeedHealth(sql: Sql, h: FeedHealth): Promise<void> {
           last_error = excluded.last_error, updated_at = excluded.updated_at`;
 }
 
+/** Persisted feed-health rows for these providers (`BIRDEYE:TOKEN_SECURITY`, …), for restoring in-process state after a restart. */
+export async function loadFeedHealth(sql: Sql, providers: readonly string[]): Promise<{ provider: string; lastSuccessAt: Instant | null; latencyMs: number | null; lastError: string | null }[]> {
+  const rows = await sql<{ provider: string; last_success_at: string | null; latency_ms: number | null; last_error: string | null }[]>`
+    select provider, last_success_at, latency_ms, last_error from ops.provider_health where provider = any(${[...providers]}::text[])`;
+  return rows.map((r) => ({ provider: r.provider, lastSuccessAt: r.last_success_at ? (new Date(r.last_success_at).toISOString() as Instant) : null, latencyMs: r.latency_ms, lastError: r.last_error }));
+}
+
 /** Assets the ingestion loop keeps continuous: newest discovered first, capped. */
 export async function listTrackedAssets(sql: Sql, limit: number): Promise<AssetRef[]> {
   const rows = await sql<{ id: string; mint_address: string; held: boolean }[]>`
