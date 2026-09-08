@@ -97,6 +97,12 @@ describe('per-service environment schemas fail closed (§26.1, GUARDRAILS Part 4
     expect(parseExecutionServiceEnv(ok).EXECUTOR_GUARDRAILS_JSON.hardMaxSlippageBps).toBe(300);
     const live = JSON.stringify({ ...guardrails, liveCapabilityEnabled: true, cluster: 'mainnet-beta' });
     expect(() => parseExecutionServiceEnv({ ...ok, EXECUTOR_GUARDRAILS_JSON: live })).toThrow(/SOFTWARE_DEV signer cannot be combined/);
+    // the development signer key is the executor's alone: accepted here, refused by every other service
+    const withSigner = parseExecutionServiceEnv({ ...ok, SOFTWARE_SIGNER_KEY_PKCS8: PKCS8, INTERNAL_API_LISTEN: '127.0.0.1:8791', OUT_OF_BAND_LISTEN: '0.0.0.0:8792' });
+    expect(withSigner.SOFTWARE_SIGNER_KEY_PKCS8).toBe(PKCS8);
+    expect(withSigner.INTERNAL_API_LISTEN).toBe('127.0.0.1:8791');
+    expect(parseExecutionServiceEnv(ok).OUT_OF_BAND_LISTEN).toBe('127.0.0.1:8792');
+    expect(() => parseExecutionServiceEnv({ ...ok, INTERNAL_API_LISTEN: 'no-port' })).toThrow();
     expect(() => parseExecutionServiceEnv({ ...ok, EXECUTOR_GUARDRAILS_JSON: live, SIGNER_BACKEND: 'TURNKEY' })).toThrow(/TURNKEY signer requires/);
     expect(() => parseExecutionServiceEnv({ ...ok, RISK_AUTHORIZATION_KEY_PKCS8: PKCS8 })).toThrow(/must never hold RISK_AUTHORIZATION_KEY_PKCS8/);
     expect(() => parseExecutionServiceEnv({ ...ok, EXECUTOR_GUARDRAILS_JSON: '{"nope":true}' })).toThrow(/EXECUTOR_GUARDRAILS_JSON invalid/);

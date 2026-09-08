@@ -249,11 +249,11 @@ export const ExecutionServiceEnv = Common.extend({
   EXECUTOR_JOURNAL_PATH: NonEmpty,
   SENTRY_DSN_EXECUTION_SERVICE: Url.optional(),
   /** host:port for the worker-facing internal API (§15.8). Loopback or private network only. */
-  INTERNAL_API_LISTEN: z.string().regex(/^.*:d{1,5}$/).default('127.0.0.1:8791'),
+  INTERNAL_API_LISTEN: z.string().regex(/^.*:\d{1,5}$/).default('127.0.0.1:8791'),
   /** Shared HMAC secrets (hex, ≥32 bytes each) accepted on the internal API; several allow rotation. Required to serve. */
   INTERNAL_API_SECRETS: Csv(z.string().regex(/^[0-9a-f]{64,}$/)).optional(),
   /** host:port for the out-of-band operator endpoint (D25 plane 1); a separate listener from the internal API. */
-  OUT_OF_BAND_LISTEN: z.string().regex(/^.*:d{1,5}$/).default('127.0.0.1:8792'),
+  OUT_OF_BAND_LISTEN: z.string().regex(/^.*:\d{1,5}$/).default('127.0.0.1:8792'),
   /** Required when SIGNER_BACKEND=SOFTWARE_DEV; refused elsewhere. */
   SOFTWARE_SIGNER_KEY_PKCS8: Pkcs8Hex.optional(),
   JUPITER_API_KEY: NonEmpty.optional(),
@@ -278,7 +278,6 @@ export function parseExecutionServiceEnv(env: Record<string, string | undefined>
       EXCLUSIVE_CREDENTIALS.projectionSigningKey,
       EXCLUSIVE_CREDENTIALS.riskAuthorizationKey,
       EXCLUSIVE_CREDENTIALS.emergencyOperatorPrivateKey,
-      EXCLUSIVE_CREDENTIALS.softwareSignerKey,
       'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY',
       'LUNARCRUSH_API_KEY',

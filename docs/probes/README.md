@@ -54,3 +54,4 @@ Live-evidence walks of an exit gate, gathered by the authoring session and refer
 | --- | --- |
 | M4 | `m4-exit-gate-2026-09-07.md` — gate items with hosted-stack evidence; one item blocked by the Birdeye tier |
 | M5a | `m5a-pipeline-evidence-2026-09-08.md` — every package running against the hosted project, session ACTIVE, STARTING warm-up proven, no paper trade yet; gate open |
+| M3 | `m3-exit-gate-evidence-2026-09-08.md` — every exit-gate item mapped to its enforcing module and tests; both financial services started in Profile 0 (fenced journal, recovery, authenticated planes, signed pause via `traderctl`); Turnkey adapter and review #1 still owed |
