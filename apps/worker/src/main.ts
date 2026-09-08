@@ -180,6 +180,10 @@ import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
 import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
 import { runShadowSyncCycle, type ShadowSyncDeps, type ShadowSyncState } from './roles/shadow-sync.js';
 import { runJournalImportCycle, type JournalImportDeps } from './roles/journal-import.js';
+import { runEmergencyDryRunCycle, type EmergencyDryRunDeps } from './roles/emergency-dry-run.js';
+import { SimulationRpcClient } from '@sol-agent-trader/execution';
+import { DEFAULT_EMERGENCY_ROUTE_POLICY } from '@sol-agent-trader/contracts';
+import { dryRunTargets, latestEmergencySnapshots } from '@sol-agent-trader/db/server';
 import { FileShadowJournal } from './shadow/journal.js';
 import { impliedPrice } from '@sol-agent-trader/execution';
 import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from './notifications/channels.js';
@@ -272,7 +276,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -399,6 +403,11 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
   if (roles.has('journal-import')) loops.push(journalImportLoop(env, logger, shared));
+  if (roles.has('emergency-dry-run')) {
+    if (!env.SOLANA_RPC_URL) noRpc('emergency-dry-run');
+    else if (!rpc) noRpc('emergency-dry-run');
+    else loops.push(emergencyDryRunLoop(env, logger, shared, rpc, env.SOLANA_RPC_URL));
+  }
   if (roles.has('audit-checkpoint')) {
     if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
     else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
@@ -1601,5 +1610,48 @@ async function journalImportLoop(env: WorkerEnv, logger: Logger, shared: Shared)
   logger.info('journal_import_starting', { intervalMs, holder: shared.holder });
   await loopUnderLease('journal-import', intervalMs, logger, shared, async () => {
     await runJournalImportCycle(deps);
+  });
+}
+
+/** Role emergency-dry-run (§14.6, D33): unsigned build+simulate of each held / eligible asset's direct-pool exit; appends the verdict to its snapshot. */
+async function emergencyDryRunLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpc: SolanaRpcClient, rpcUrl: string): Promise<void> {
+  const intervalMs = env.EMERGENCY_DRY_RUN_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.warn('roles_disabled', { roles: ['emergency-dry-run'], reason: 'PAPER_TRADING_WALLET not set' });
+    return;
+  }
+  const { account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, env.POSITION_MONITOR_INTERVAL_MS);
+  const { sql } = shared;
+  const reader = new SimulationRpcClient({ url: rpcUrl, allowedOrigins: [new URL(rpcUrl).origin], label: 'worker-dry-run', timeoutMs: 20_000 });
+  const deps: EmergencyDryRunDeps = {
+    repo: {
+      targets: (limit) => dryRunTargets(sql, account.id, limit),
+      latestSnapshots: (ids) => latestEmergencySnapshots(sql, ids),
+      insertSnapshot: (snapshot) => insertEmergencyRouteSnapshot(sql, snapshot),
+    },
+    reader,
+    tradingWallet: env.PAPER_TRADING_WALLET,
+    // §14.6 dry-run for an asset the wallet does not hold: simulate as the mint's largest holder with SOL for fees.
+    standInPayer: async (mint) => {
+      const largest = await rpc.getTokenLargestAccounts(mint);
+      const addresses = largest.value.slice(0, 5).map((a) => a.address);
+      if (addresses.length === 0) return null;
+      const parsed = await rpc.getMultipleAccountsParsed(addresses);
+      for (const acc of parsed.value) {
+        const info = (acc?.data as { parsed?: { info?: { owner?: string } } } | undefined)?.parsed?.info;
+        if (!info?.owner) continue;
+        const balance = await rpc.getBalance(info.owner);
+        if (balance.value >= 10_000_000) return info.owner;
+      }
+      return null;
+    },
+    policy: DEFAULT_EMERGENCY_ROUTE_POLICY,
+    clock: systemClock,
+    logger,
+    config: {},
+  };
+  logger.info('emergency_dry_run_starting', { intervalMs, accountId: account.id, policyVersion: DEFAULT_EMERGENCY_ROUTE_POLICY.version, supported: DEFAULT_EMERGENCY_ROUTE_POLICY.supportedPrograms, rpcOrigin: new URL(rpcUrl).origin, holder: shared.holder });
+  await loopUnderLease('emergency-dry-run', intervalMs, logger, shared, async () => {
+    await runEmergencyDryRunCycle(deps);
   });
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { latestEmergencySnapshot } from '@sol-agent-trader/db/server';
 import { ClearedTransitionSummary, DEFAULT_RISK_POLICY, getContractSetDigest, importSigningKeyPair, importVerificationKey, parseRiskAuthorizerEnv, systemClock, type Amount, type Bps, type Instant, type MintAddress, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
 import { auditEventAt, auditHead, FileCheckpointReplicator, verifyAgainstExternalCheckpoint, createSql, listOpenAuthorizations, loadAccount, loadActionCycle, loadCandidateAsset, loadCustodyAccounts, loadLatestAttestation, loadLatestProjection, loadProposal, loadReleaseForStrategy, recordAuthorization, recordDenial, sessionEntryGate, type Sql } from '@sol-agent-trader/db/server';
 import { redact, type Logger } from '@sol-agent-trader/observability';
@@ -94,6 +95,7 @@ async function main(): Promise<void> {
       openAuthorizations: () => listOpenAuthorizations(sql),
       persistAuthorization: (input) => recordAuthorization(sql, input),
       persistDenial: (denial) => recordDenial(sql, denial, actorRef),
+      emergencyRoute: (assetId) => latestEmergencySnapshot(sql, assetId),
       auditEvidence: async (cycle) => {
         const ref = cycle.clearedAudit ?? null;
         const row = ref ? await auditEventAt(sql, ref.sequence) : null;

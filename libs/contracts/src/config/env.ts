@@ -177,6 +177,7 @@ export const WorkerEnv = Common.extend({
   SHADOW_JOURNAL_PATH: NonEmpty.optional(),
   SHADOW_SYNC_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   JOURNAL_IMPORT_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+  EMERGENCY_DRY_RUN_INTERVAL_MS: z.coerce.number().int().min(60_000).max(21_600_000).default(900_000),
   /** Out-of-app channel: Telegram Bot API. Both must be set for the channel to count as configured. */
   TELEGRAM_BOT_TOKEN: NonEmpty.optional(),
   TELEGRAM_CHAT_ID: NonEmpty.optional(),

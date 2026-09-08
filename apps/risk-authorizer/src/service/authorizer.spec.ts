@@ -73,6 +73,7 @@ async function stub(over: { mode?: 'LIVE' | 'PAPER'; chainFails?: boolean; pause
     openAuthorizations: async () => over.open ?? [],
     persistAuthorization: async (input) => { persisted.push(input); },
     persistDenial: async (d) => { denials.push(d); },
+    emergencyRoute: async () => null,
     auditEvidence: async (c) => ({ event: { sequence: 7, hash: AUDIT_HASH, actionClass: 'ACTION_CYCLE_CLEARED', entityId: c.id, summary: { cycleId: c.id, proposalId: proposal.id, proposalHash: await canonicalHash(proposal.proposal), cutoffVersion: 1, verdict: 'CONFIRM', strategyVersionId: c.strategyVersionId, releaseDigest: release.digest, positionId: null, lotIds: [] } }, chain: { ok: true, checkpointSequence: 7 } }),
   };
   return { sources, signing, projector, persisted, denials, cycle };

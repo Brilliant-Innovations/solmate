@@ -52,6 +52,7 @@ async function harness(over: { authority?: 'PAPER' | 'LIVE_APPROVAL' | 'LIVE_AUT
     release, attestation, projection: await signPayload(projection, projector, NOW), chain,
     mint: over.mint === undefined ? { isInitialized: true, mintAuthority: 'NONE', freezeAuthority: 'NONE', readSlot: projection.chainSlot + 2 } : over.mint,
     sessionAllowsEntries: true,
+    emergencyRoute: { readiness: 'READY', reason: null, dryRunAgeMs: 60_000 },
     audit,
     account: { id: fixtures.IDS.account as Uuid, cluster: 'mainnet-beta', capitalAuthority: authority, settlementDecimals: 6 },
     policy: DEFAULT_RISK_POLICY,
@@ -129,6 +130,19 @@ describe('risk-authorizer entry authorization (D21, D45, D52, §13.7, §15.5)', 
     const closed = await harness();
     closed.input.sessionAllowsEntries = false;
     expect((await authorizeEntry(closed.input)) as never).toMatchObject({ kind: 'DENIED', denial: { reasonCodes: ['SESSION_NOT_ACTIVE'] } });
+  });
+
+  it('§14.6: a LIVE_AUTO entry is denied unless the asset has a fresh, successful emergency-route dry-run; LIVE_APPROVAL is not gated by it', async () => {
+    const stale = await harness({ authority: 'LIVE_AUTO' });
+    stale.input.emergencyRoute = { readiness: 'STALE', reason: 'dry-run 400 min old', dryRunAgeMs: 24_000_000 };
+    expect((await authorizeEntry(stale.input)) as never).toMatchObject({ kind: 'DENIED', denial: { reasonCodes: ['EMERGENCY_ROUTE_NOT_READY'], detail: 'STALE: dry-run 400 min old' } });
+    const unknown = await harness({ authority: 'LIVE_AUTO' });
+    unknown.input.emergencyRoute = null;
+    expect((await authorizeEntry(unknown.input)) as never).toMatchObject({ kind: 'DENIED', denial: { reasonCodes: ['EMERGENCY_ROUTE_UNKNOWN'] } });
+    const approval = await harness({ authority: 'LIVE_APPROVAL' });
+    approval.input.emergencyRoute = { readiness: 'MISSING', reason: 'no emergency route snapshot', dryRunAgeMs: null };
+    const r = await authorizeEntry(approval.input);
+    if (r.kind === 'DENIED') expect(r.denial.reasonCodes).not.toContain('EMERGENCY_ROUTE_NOT_READY');
   });
 
   it('ADR-0009 P1: the authorizer counts its own unconsumed authorizations as spent, so a second cycle cannot take the same capital and a third waits for the first to finish', async () => {

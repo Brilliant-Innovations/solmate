@@ -1,5 +1,5 @@
 import { addMs, canonicalHash, compareAmounts, instantToMs, signPayload, subAmounts, type ActionCycle, type ClearedTransitionSummary, type Amount, type AuthorizationDenial, type Bps, type CapitalAuthority, type Instant, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskAuthorizedIntent, type RiskEvaluation, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaCluster, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { capitalAttestationVerdict, evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
+import { capitalAttestationVerdict, emergencyRoutePermitsEntry, evaluateEntry, type EmergencyRouteVerdict, type PortfolioState } from '@sol-agent-trader/risk';
 import { verifyProjection, type IndependentChainReads } from '../projection/verify.js';
 import { verifyRelease } from '../release/verify.js';
 import type { AuthorizationLedger } from './ledger.js';
@@ -40,6 +40,8 @@ export interface AuthorizeEntryInput {
   mint: MintHardState | null;
   /** The authorizer's own read of the runtime session gate (D60), never the worker's claim. */
   sessionAllowsEntries: boolean;
+  /** Readiness of the asset's provider-independent exit (§14.6): LIVE_AUTO entry needs READY; null when the source could not be read. */
+  emergencyRoute: EmergencyRouteVerdict | null;
   audit: ClearanceAuditEvidence;
   account: { id: Uuid; cluster: SolanaCluster; capitalAuthority: CapitalAuthority; settlementDecimals: number };
   policy: RiskPolicy;
@@ -122,6 +124,14 @@ export async function authorizeEntry(input: AuthorizeEntryInput): Promise<Author
     if (!m.isInitialized) return deny(['CHAIN_MINT_NOT_INITIALIZED']);
     if (m.mintAuthority !== 'NONE') return deny([m.mintAuthority === 'PRESENT' ? 'CHAIN_MINT_AUTHORITY_PRESENT' : 'CHAIN_MINT_AUTHORITY_UNKNOWN']);
     if (m.freezeAuthority !== 'NONE') return deny([m.freezeAuthority === 'PRESENT' ? 'CHAIN_FREEZE_AUTHORITY_PRESENT' : 'CHAIN_FREEZE_AUTHORITY_UNKNOWN']);
+  }
+
+  // 5b. Provider-independent exit readiness (§14.6, D33): a LIVE_AUTO entry needs a fresh, successful
+  // dry-run of the asset's direct-pool emergency route; stale, failed, unsupported or missing all deny.
+  if (input.account.capitalAuthority === 'LIVE_AUTO') {
+    const er = input.emergencyRoute;
+    if (!er) return deny(['EMERGENCY_ROUTE_UNKNOWN']);
+    if (!emergencyRoutePermitsEntry(er, 'LIVE_AUTO')) return deny(['EMERGENCY_ROUTE_NOT_READY'], `${er.readiness}${er.reason ? `: ${er.reason}` : ''}`);
   }
 
   // 6. Deterministic risk evaluation from the verified projection and the authorizer's own ledger (INV-02, P1).

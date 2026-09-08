@@ -80,6 +80,7 @@ export const DirectPoolHop = z.object({
   inputMint: MintAddress,
   outputMint: MintAddress,
 });
+export type DirectPoolHop = z.infer<typeof DirectPoolHop>;
 
 /** §6.2 / §14.6: persisted provider-independent exit path. Discovered at eligibility time, never during a panic. */
 export const EmergencyExitRouteSnapshot = z.object({
