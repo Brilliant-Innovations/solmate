@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { addMs, instantToMs, type AssetEligibility, type Candle, type Clock, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type MarketRegime, type MarketRegimePolicy, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, instantToMs, type AssetEligibility, type Candle, type Clock, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type MarketRegime, type MarketRegimePolicy, type SelfInfluencePolicy, type Uuid } from '@sol-agent-trader/contracts';
 import type { Logger } from '@sol-agent-trader/observability';
-import { classifyRegime, computeFeatures, marketSessionsAt, relativeStrength, type UniverseAsset } from '@sol-agent-trader/signals';
+import { activeSuppression, classifyRegime, computeFeatures, marketSessionsAt, relativeStrength, suppressionWindow, type OwnFill, type UniverseAsset } from '@sol-agent-trader/signals';
 
 /**
  * Worker role `features` (blueprint §6.8, §8.1–8.3, D62, D63; execution plan M5a). For every
@@ -23,6 +23,8 @@ export interface FeaturesRepo {
   listActiveMemberships(): Promise<{ assetId: Uuid; cohortName: string }[]>;
   /** SOL reference 1h return at or shortly before asOf (§8.4); null when the reference series is cold. */
   solReferenceReturn1h(asOf: Instant): Promise<number | null>;
+  /** Our own LIVE fills in the asset inside the suppression horizon (§8.6, D26); paper fills never touch the chain and are excluded. */
+  recentOwnFills(assetId: Uuid, since: Instant): Promise<OwnFill[]>;
 }
 
 export interface FeaturesDeps {
@@ -31,6 +33,7 @@ export interface FeaturesDeps {
   logger: Logger;
   spec: FeatureEngineSpec;
   regimePolicy: MarketRegimePolicy;
+  selfInfluence: SelfInfluencePolicy;
   config: { batchSize: number };
 }
 
@@ -71,7 +74,9 @@ export async function runFeaturesCycle(deps: FeaturesDeps): Promise<FeaturesCycl
         report.cold++;
         continue;
       }
-      const [eligibility, marketSnapshotId] = await Promise.all([deps.repo.latestEligibility(asset.id), deps.repo.latestMarketSnapshotId(asset.id, asOf)]);
+      const [eligibility, marketSnapshotId, ownFills] = await Promise.all([deps.repo.latestEligibility(asset.id), deps.repo.latestMarketSnapshotId(asset.id, asOf), deps.repo.recentOwnFills(asset.id, addMs(asOf, -deps.selfInfluence.maxWindowMs))]);
+      // §8.6: inside the window after our own fill the vector is flagged; the gate refuses confirmation on it.
+      const suppressed = activeSuppression(ownFills.map((f) => suppressionWindow(deps.selfInfluence, f)), asset.id, asOf) !== null;
       const { snapshot, warmup } = computeFeatures({
         id: randomUUID() as Uuid,
         assetId: asset.id,
@@ -82,7 +87,7 @@ export async function runFeaturesCycle(deps: FeaturesDeps): Promise<FeaturesCycl
         eligibility,
         marketSnapshotId,
         marketSessions: marketSessionsAt(asOf),
-        selfInfluenceSuppressed: false,
+        selfInfluenceSuppressed: suppressed,
         spec: deps.spec,
       });
       pending.push({ snapshot, warm: warmup.ready });

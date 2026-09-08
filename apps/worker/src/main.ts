@@ -429,11 +429,13 @@ async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pro
       insertFeatureSnapshot: (snapshot: Parameters<typeof insertFeatureSnapshot>[1]) => insertFeatureSnapshot(sql, snapshot),
       listActiveMemberships: async () => (await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version)).map((m) => ({ assetId: m.assetId, cohortName: m.cohortName })),
       solReferenceReturn1h: (asOf: Parameters<typeof latestFeatureValueByMint>[4]) => latestFeatureValueByMint(sql, WSOL_MINT, 'ret_1h', 10 * 60_000, asOf),
+      recentOwnFills: (assetId: Parameters<typeof listRecentOwnFills>[1], since: Parameters<typeof listRecentOwnFills>[2]) => listRecentOwnFills(sql, assetId, since).then((fills) => fills.map((f) => ({ ...f, signature: f.signature as never, estimatedImpactBps: f.estimatedImpactBps as never }))),
     },
     clock: systemClock,
     logger,
     spec: FEATURE_ENGINE_V2,
     regimePolicy: DEFAULT_MARKET_REGIME_POLICY,
+    selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY,
     config: { batchSize: 200 },
   };
   logger.info('features_starting', { intervalMs, engine: FEATURE_ENGINE_V2.version, regime: DEFAULT_MARKET_REGIME_POLICY.version, holder: shared.holder });

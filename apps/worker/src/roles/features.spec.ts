@@ -1,5 +1,6 @@
-import { addMs, DEFAULT_MARKET_REGIME_POLICY, FEATURE_ENGINE_V2, fixedClock, toInstant, type AssetEligibility, type Candle, type FeatureSnapshot, type Instant, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, DEFAULT_MARKET_REGIME_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, FEATURE_ENGINE_V2, fixedClock, toInstant, type AssetEligibility, type Candle, type FeatureSnapshot, type Instant, type Uuid } from '@sol-agent-trader/contracts';
 import { createLogger } from '@sol-agent-trader/observability';
+import type { OwnFill } from '@sol-agent-trader/signals';
 import { featureAsOf, runFeaturesCycle, type FeaturesRepo } from './features.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 8, 12, 0, 37));
@@ -45,8 +46,12 @@ class MemoryRepo implements FeaturesRepo {
   async solReferenceReturn1h() {
     return this.solReturn;
   }
+  ownFills: OwnFill[] = [];
+  async recentOwnFills() {
+    return this.ownFills;
+  }
 }
-const deps = (repo: MemoryRepo) => ({ repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V2, regimePolicy: DEFAULT_MARKET_REGIME_POLICY, config: { batchSize: 100 } });
+const deps = (repo: MemoryRepo) => ({ repo, clock: fixedClock(NOW), logger: createLogger({ service: 'worker', sink: () => undefined }), spec: FEATURE_ENGINE_V2, regimePolicy: DEFAULT_MARKET_REGIME_POLICY, selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY, config: { batchSize: 100 } });
 
 describe('features role (§6.8, D62, D63)', () => {
   it('computes one point-in-time vector per asset at the closed-minute boundary, links the market snapshot and labels sessions; warm and cold are counted', async () => {
@@ -79,5 +84,18 @@ describe('features role (§6.8, D62, D63)', () => {
     const r2 = await runFeaturesCycle(deps(failing));
     expect(r2.errors).toEqual([{ assetId: A, error: 'boom' }]);
     expect(r2.computed).toBe(1);
+  });
+});
+
+describe('features role: self-influence suppression flag (§8.6, D26)', () => {
+  it('a vector computed inside the window after our own fill is flagged suppressed; outside the window it is not', async () => {
+    const repo = new MemoryRepo([{ id: A, mintAddress: 'a', lastFeatureAsOf: null }], { [A]: candles(A, 300) }, { [A]: { liquidityUsd: 1_000_000, priceImpactProbes: [], settlementRouteConfirmed: true } });
+    repo.ownFills = [{ assetId: A, signature: 'sig' as never, filledAt: addMs(ASOF, -60_000), estimatedImpactBps: 40 as never }];
+    await runFeaturesCycle(deps(repo));
+    expect(repo.snapshots[0]!.selfInfluenceSuppressed).toBe(true);
+    const later = new MemoryRepo([{ id: A, mintAddress: 'a', lastFeatureAsOf: null }], { [A]: candles(A, 300) }, { [A]: { liquidityUsd: 1_000_000, priceImpactProbes: [], settlementRouteConfirmed: true } });
+    later.ownFills = [{ assetId: A, signature: 'sig' as never, filledAt: addMs(ASOF, -6 * 3_600_000), estimatedImpactBps: 40 as never }];
+    await runFeaturesCycle(deps(later));
+    expect(later.snapshots[0]!.selfInfluenceSuppressed).toBe(false);
   });
 });

@@ -54,4 +54,5 @@ Live-evidence walks of an exit gate, gathered by the authoring session and refer
 | --- | --- |
 | M4 | `m4-exit-gate-2026-09-07.md` — gate items with hosted-stack evidence; one item blocked by the Birdeye tier |
 | M5a | `m5a-pipeline-evidence-2026-09-08.md` — every package running against the hosted project; first paper trade 03:33 UTC (S0_RAW took STONK, S0_SAFE rejected it on OVEREXTENDED_1H), reconstruction re-run on the real decision; gate met |
+| M5b | `m5b-evidence-2026-09-08.md` — P3 deliverables and acceptance mapped to code, tests and the hosted worker (regime, cohorts/clusters, two deterministic trigger families, self-influence flag, D32 expiry); gate met |
 | M3 | `m3-exit-gate-evidence-2026-09-08.md` — every exit-gate item mapped to its enforcing module and tests; both financial services started in Profile 0 (fenced journal, recovery, authenticated planes, signed pause via `traderctl`); Turnkey adapter and review #1 still owed |
