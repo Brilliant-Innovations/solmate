@@ -94,3 +94,11 @@ export async function fingerprint(s: string): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+/** The signed-in operator's non-revoked passkeys, for the step-up ceremony's allowCredentials. */
+export async function loadMyPasskeys(userId: string | null): Promise<{ credential_id: string; transports: string[] }[]> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase || !userId) return [];
+  const { data } = await supabase.schema('ops').from('operator_passkeys').select('credential_id, transports').eq('user_id', userId).is('revoked_at', null);
+  return ((data as { credential_id: string; transports: string[] | null }[] | null) ?? []).map((p) => ({ credential_id: p.credential_id, transports: p.transports ?? [] }));
+}

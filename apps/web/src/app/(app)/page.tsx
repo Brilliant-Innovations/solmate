@@ -4,6 +4,8 @@ import { loadAgentNow, loadDrawdown, loadHealthSummary, loadOpportunityQueue, lo
 import { stageLabel } from '../../lib/cycles';
 import { lamportsToSol, loadWalletView, reserveStatus } from '../../lib/wallet';
 import { createSupabaseServerClient, getOperatorSession } from '../../lib/supabase/server';
+import { StepUpRequest } from '../../components/step-up-request';
+import { loadMyPasskeys } from '../../lib/settings';
 import { requestStartSession } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +25,7 @@ export default async function ControlRoom() {
   const operator = await getOperatorSession();
   const canControl = operator?.role === 'operator' || operator?.role === 'admin';
   const account = await loadPaperAccount();
+  const passkeys = await loadMyPasskeys(operator?.userId ?? null);
   const [session, equity, positions, alerts] = account
     ? await Promise.all([loadSessionView(account.id), loadEquity(account.id), loadPositions(account.id, { includeClosed: false, limit: 20 }), loadOpenAlerts(10)])
     : [null, { latest: null, dayStart: null }, [], await loadOpenAlerts(10)];
@@ -124,6 +127,12 @@ export default async function ControlRoom() {
               <p className="muted mono" style={{ fontSize: '0.8rem' }}>
                 {session.transitions.slice(-5).map((t, i) => <span key={i}>{t.from}→{t.to} by {t.actor} {ago(t.at, now)}{i < Math.min(5, session.transitions.length) - 1 ? ' · ' : ''}</span>)}
               </p>
+            )}
+            {session.paused?.active && (
+              <div style={{ marginTop: '0.4rem' }}>
+                <div className="muted mono">Resume clears the pause and every sticky entry pause (REQUIRED step-up, D41)</div>
+                <StepUpRequest kind="RESUME_NEW_ENTRIES" payload={{ source: 'control-room' }} label="RESUME NEW ENTRIES" passkeys={passkeys} rpId={process.env['NEXT_PUBLIC_WEBAUTHN_RP_ID'] ?? null} disabled={!canControl || operator?.aal !== 'aal2'} confirm="RESUME" />
+              </div>
             )}
             {session.activity_state === 'OFF' && (
               <form action={requestStartSession}><button className="btn" type="submit" disabled={!canControl}>START SESSION</button></form>

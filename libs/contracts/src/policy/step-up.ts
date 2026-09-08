@@ -45,6 +45,8 @@ export const STEP_UP_POLICY: Readonly<Record<ControlRequestKind, StepUpRequireme
   WATCH_ASSET: 'FAST',
   UNWATCH_ASSET: 'FAST',
   REQUEST_RESEARCH_REFRESH: 'FAST',
+  // §20.29: retiring a Release is a live-configuration change (admin, step-up), never a casual toggle.
+  RETIRE_RELEASE: 'REQUIRED',
 };
 
 /** Zod mirror of the table so the digest changes when a classification changes (D50). */

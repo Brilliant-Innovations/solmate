@@ -57,15 +57,16 @@ export interface ApprovalsReport {
   cancelled: number;
   promoted: number;
   armed: number;
+  retired: number;
   refused: Record<string, number>;
   errors: { requestId: Uuid; error: string }[];
 }
 
-const KINDS: ControlRequestKind[] = ['APPROVE_AUTHORIZATION', 'REJECT_AUTHORIZATION', 'PROMOTE_RELEASE', 'ARM_RELEASE'];
+const KINDS: ControlRequestKind[] = ['APPROVE_AUTHORIZATION', 'REJECT_AUTHORIZATION', 'PROMOTE_RELEASE', 'ARM_RELEASE', 'RETIRE_RELEASE'];
 
 export async function runApprovalsCycle(deps: ApprovalsDeps): Promise<ApprovalsReport> {
   const now = deps.clock.now();
-  const report: ApprovalsReport = { requests: 0, granted: 0, rejected: 0, cancelled: 0, promoted: 0, armed: 0, refused: {}, errors: [] };
+  const report: ApprovalsReport = { requests: 0, granted: 0, rejected: 0, cancelled: 0, promoted: 0, armed: 0, retired: 0, refused: {}, errors: [] };
   const requests = await deps.repo.listPending(KINDS, deps.config.batchSize);
   report.requests = requests.length;
   for (const req of requests) {
@@ -83,6 +84,9 @@ export async function runApprovalsCycle(deps: ApprovalsDeps): Promise<ApprovalsR
         case 'PROMOTE_RELEASE':
         case 'ARM_RELEASE':
           await handleRelease(deps, report, req, now, refuse);
+          break;
+        case 'RETIRE_RELEASE':
+          await handleRetire(deps, report, req, now, refuse);
           break;
         default:
           await refuse('UNSUPPORTED_KIND');
@@ -168,4 +172,22 @@ async function handleRelease(deps: ApprovalsDeps, report: ApprovalsReport, req: 
   report.armed++;
   await deps.repo.resolve(req.id, 'ACCEPTED', { releaseId, status: 'ARMED', attestationId: made.attestation.id, capitalCeilingUsd: ceilingUsd, recognizedUsd: recognized }, now);
   deps.logger.info('release_armed', { requestId: req.id, releaseId, digest: release.digest, attestationId: made.attestation.id, capitalCeilingUsd: ceilingUsd, recognizedUsd: recognized, by: req.requestedBy });
+}
+
+/** §20.29 Retire: admin with a verified step-up; the Release becomes RETIRED and can never be re-armed. Live artifacts are never edited in place. */
+async function handleRetire(deps: ApprovalsDeps, report: ApprovalsReport, req: PendingControlRequest, now: Instant, refuse: Refuse): Promise<void> {
+  const releaseId = typeof req.payload['releaseId'] === 'string' ? (req.payload['releaseId'] as Uuid) : null;
+  if (!releaseId) return refuse('MALFORMED_PAYLOAD');
+  const role = await deps.repo.approverRole(req.requestedBy);
+  if (role !== 'admin') return refuse('ROLE_NOT_ADMIN');
+  const release = await deps.repo.loadRelease(releaseId);
+  if (!release) return refuse('RELEASE_NOT_FOUND');
+  if (release.status === 'RETIRED') return refuse('ALREADY_RETIRED');
+  if (!(await deps.repo.stepUpVerified(req.id, now))) return refuse('STEP_UP_REQUIRED');
+  const retired = releaseTransition(release, { type: 'RETIRE', at: now });
+  if (!retired.ok) return refuse(retired.rejection.code, { detail: retired.rejection });
+  if (!(await deps.repo.applyReleaseStatus(release, retired.release))) return refuse('RELEASE_CHANGED_UNDERNEATH');
+  report.retired++;
+  await deps.repo.resolve(req.id, 'ACCEPTED', { releaseId, status: 'RETIRED', previousStatus: release.status }, now);
+  deps.logger.info('release_retired', { requestId: req.id, releaseId, digest: release.digest, previousStatus: release.status, by: req.requestedBy });
 }

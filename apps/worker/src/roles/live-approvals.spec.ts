@@ -89,6 +89,48 @@ describe('worker role approvals (§15.6, D41; INV-10)', () => {
   });
 });
 
+describe('worker role approvals: RETIRE_RELEASE (§20.29)', () => {
+  const release = { id: IDS.release as Uuid, digest: ('ab'.repeat(32)) as never, binding: {} as never, status: 'ARMED' as const, createdAt: T0, promotedAt: T0, retiredAt: null };
+  function repo(over: { role?: 'admin' | 'operator'; stepUp?: boolean; status?: 'ARMED' | 'RETIRED' }) {
+    const applied: { from: string; to: string }[] = [];
+    const resolutions: { state: string; resolution: Record<string, unknown> }[] = [];
+    const r: ApprovalsRepo = {
+      async listPending() { return [{ id: IDS.message as Uuid, requestedBy: IDS.operator as Uuid, kind: 'RETIRE_RELEASE', payload: { releaseId: IDS.release }, createdAt: T0 } satisfies PendingControlRequest]; },
+      async stepUpVerified() { return over.stepUp ?? true; },
+      async loadAuthorization() { return null; },
+      async insertApproval() { throw new Error('not used'); },
+      async setIntentState() { throw new Error('not used'); },
+      async resolve(_id, state, resolution) { resolutions.push({ state, resolution }); return true; },
+      async approverRole() { return over.role ?? 'admin'; },
+      async stepUpEvidence() { return null; },
+      async loadRelease() { return { ...release, status: over.status ?? 'ARMED' } as never; },
+      async applyReleaseStatus(from, to) { applied.push({ from: from.status, to: to.status }); return true; },
+      async insertAttestation() { throw new Error('not used'); },
+      async insertCapitalAttestation() { throw new Error('not used'); },
+      async paperEvidence() { return { paperCycles: 0, reconciliationClean: true }; },
+      async recognizedUsd() { return null; },
+      async sleeveConflicts() { return []; },
+    };
+    return { r, applied, resolutions };
+  }
+  async function deps(r: ApprovalsRepo): Promise<ApprovalsDeps> {
+    return { repo: r, authorizerKeys: [], signing: await generateSigningKeyPair(), clock: fixedClock(addMs(T0, 1_000)), logger, readinessPermits: async () => false, liveCapabilityEnabled: false, config: { batchSize: 10, maxValidityMs: 60_000, attestationValidityMs: 60_000, minPaperCycles: 1 } };
+  }
+  it('retires an armed Release for an admin with verified step-up; refuses without step-up, for non-admins and when already retired', async () => {
+    const ok = repo({});
+    const report = await runApprovalsCycle(await deps(ok.r));
+    expect(report.retired).toBe(1);
+    expect(ok.applied).toEqual([{ from: 'ARMED', to: 'RETIRED' }]);
+    expect(ok.resolutions[0]).toMatchObject({ state: 'ACCEPTED', resolution: { status: 'RETIRED', previousStatus: 'ARMED' } });
+    for (const [over, reason] of [[{ stepUp: false }, 'STEP_UP_REQUIRED'], [{ role: 'operator' as const }, 'ROLE_NOT_ADMIN'], [{ status: 'RETIRED' as const }, 'ALREADY_RETIRED']] as const) {
+      const h = repo(over);
+      const r = await runApprovalsCycle(await deps(h.r));
+      expect(r.refused).toEqual({ [reason]: 1 });
+      expect(h.applied).toEqual([]);
+    }
+  });
+});
+
 describe('worker role live-entry (§15.3–15.6, D38; ADR-0009 P3)', () => {
   function repo(over: Partial<LiveEntryRepo> & { gate?: { activity: ActivityState; paused: boolean; authority: CapitalAuthority } | null; pending?: AuthorizedIntentRow[]; approval?: SignedApprovalGrant | null }) {
     const states: { intentId: Uuid; state: TradeIntentState }[] = [];

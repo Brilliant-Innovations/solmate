@@ -153,7 +153,7 @@ export async function loadApprovalQueue(): Promise<PendingApprovalView[]> {
 export interface ReleaseView {
   id: string;
   digest: string;
-  binding: { strategyVersionId?: string; skillVersionId?: string | null; riskPolicyVersion?: string; contractSetDigest?: string };
+  binding: { strategyVersionId?: string; skillVersionId?: string | null; guidelineVersionId?: string | null; automationSetVersionId?: string | null; proposerModelPolicyVersion?: string | null; adversaryModelPolicyVersion?: string; riskPolicyVersion?: string; cohortPolicyVersion?: string; freshnessPolicyVersion?: string; executorPolicyRef?: string; contractSetDigest?: string };
   status: string;
   created_at: string;
   promoted_at: string | null;
@@ -202,4 +202,20 @@ export function remaining(iso: string, now = Date.now()): { text: string; expire
   if (!Number.isFinite(ms)) return { text: 'unknown', expired: true };
   if (ms <= 0) return { text: 'expired', expired: true };
   return { text: ms < 60_000 ? `${Math.ceil(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`, expired: false };
+}
+
+/** §20.28: distinct READY FOR LIVE_APPROVAL / LIVE_AUTO verdicts. Latest verdict per name, for the newest profile/strategy class each was computed for. */
+export async function loadReadinessVerdicts(): Promise<ReadinessVerdictView[]> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return [];
+  const { data } = await supabase.schema('ops').from('readiness_verdicts').select('*').order('computed_at', { ascending: false }).limit(60);
+  const seen = new Set<string>();
+  const out: ReadinessVerdictView[] = [];
+  for (const v of (data as unknown as ReadinessVerdictView[] | null) ?? []) {
+    const key = `${v.name}:${v.strategy_class}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
 }
