@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, FEATURE_ENGINE_V1, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type Uuid } from '@sol-agent-trader/contracts';
 import {
   applyExit,
   coldStartFacts,
@@ -16,8 +16,10 @@ import {
   insertPortfolioSnapshot,
   insertQuoteProbes,
   journalAttempt,
+  latestFeatureValueByMint,
   listCyclesAwaitingEntry,
   listOpenPositionsForAccount,
+  listRecentOwnFills,
   loadFeedHealth,
   listPendingControlRequests,
   loadSession,
@@ -271,7 +273,7 @@ async function marketIngestLoop(env: WorkerEnv, logger: Logger, shared: SharedWi
   const { sql } = shared;
   const jupiter = new JupiterPriceClient({ transport: fetchTransport, clock: systemClock, apiKey: env.JUPITER_API_KEY, requestsPerSecond: env.JUPITER_REQUESTS_PER_SECOND });
   const repo: MarketRepo = {
-    listTrackedAssets: (limit) => listTrackedAssets(sql, limit),
+    listTrackedAssets: (limit) => listTrackedAssets(sql, limit, REFERENCE_SERIES_MINTS),
     heldBucketTimes: (assetId, resolution, from, to) => heldBucketTimes(sql, assetId, resolution, from, to),
     writeCandles: (candles) => writeCandles(sql, candles),
     loadCandles: (assetId, resolution, from, to) => loadCandles(sql, assetId, resolution, from, to),
@@ -412,7 +414,7 @@ async function featuresLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pro
   const { sql } = shared;
   const deps = {
     repo: {
-      listAssetsForFeatures: (limit: number) => listAssetsForFeatures(sql, limit),
+      listAssetsForFeatures: (limit: number) => listAssetsForFeatures(sql, limit, REFERENCE_SERIES_MINTS),
       loadCandles: (assetId: Parameters<typeof loadCandles>[1], resolution: '1m', from: Parameters<typeof loadCandles>[3], to: Parameters<typeof loadCandles>[4]) => loadCandles(sql, assetId, resolution, from, to),
       latestEligibility: (assetId: Parameters<typeof latestEligibility>[1]) => latestEligibility(sql, assetId),
       latestMarketSnapshotId: (assetId: Parameters<typeof latestMarketSnapshotId>[1], asOf: Parameters<typeof latestMarketSnapshotId>[2]) => latestMarketSnapshotId(sql, assetId, asOf),
@@ -440,11 +442,11 @@ async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
       lastTerminalCandidateAt: (assetId: Parameters<typeof lastTerminalCandidateAt>[1], family: Parameters<typeof lastTerminalCandidateAt>[2]) => lastTerminalCandidateAt(sql, assetId, family),
       insertCandidate: (candidate: Parameters<typeof insertCandidate>[1]) => insertCandidate(sql, candidate),
       expireCandidates: (now: Parameters<typeof expireCandidates>[1]) => expireCandidates(sql, now),
-      // No fills exist before the paper adapter lands; the guard still runs with an empty set.
-      recentOwnFills: async () => [],
+      // LIVE fills only: paper fills never reach the chain, so they cannot be self-influence (§8.6, INV-11).
+      recentOwnFills: (assetId: Parameters<typeof listRecentOwnFills>[1], since: Parameters<typeof listRecentOwnFills>[2]) => listRecentOwnFills(sql, assetId, since).then((fills) => fills.map((f) => ({ ...f, signature: f.signature as never, estimatedImpactBps: f.estimatedImpactBps as never }))),
       listOwnedAddresses: () => listOwnedAddresses(sql),
-      // SOL relative strength waits on a tracked SOL series (wSOL is BLOCKED by SUPPLY_ZERO today); null = no evidence either way.
-      solReturn1h: async () => null,
+      // SOL 1h return from the wrapped-SOL reference series (tracked and featured whatever its eligibility); null = no fresh evidence.
+      solReturn1h: (asOf: Parameters<typeof latestFeatureValueByMint>[4]) => latestFeatureValueByMint(sql, WSOL_MINT, 'ret_1h', 10 * 60_000, asOf),
     },
     clock: systemClock,
     logger,

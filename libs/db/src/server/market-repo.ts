@@ -171,13 +171,15 @@ export async function loadFeedHealth(sql: Sql, providers: readonly string[]): Pr
 }
 
 /** Assets the ingestion loop keeps continuous: newest discovered first, capped. */
-export async function listTrackedAssets(sql: Sql, limit: number): Promise<AssetRef[]> {
+export async function listTrackedAssets(sql: Sql, limit: number, referenceMints: readonly string[] = []): Promise<AssetRef[]> {
+  const refs = [...referenceMints];
   const rows = await sql<{ id: string; mint_address: string; held: boolean }[]>`
     select a.id, a.mint_address, exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED') as held
     from core.assets a
-    where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
-    -- held first, then ELIGIBLE (the strategies' universe), then the rest newest first: a capped list never drops an eligible asset for a fresh discovery
-    order by held desc, (a.status = 'ELIGIBLE') desc, a.first_observed_at desc
+    where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') or a.mint_address = any(${refs}::text[]) or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
+    -- held first, then ELIGIBLE and reference series (the strategies' universe and its context), then the rest newest first:
+    -- a capped list never drops an eligible asset for a fresh discovery
+    order by held desc, (a.status = 'ELIGIBLE' or a.mint_address = any(${refs}::text[])) desc, a.first_observed_at desc
     limit ${limit}`;
   return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address, priority: r.held ? 'POSITION' : 'WATCH' }));
 }

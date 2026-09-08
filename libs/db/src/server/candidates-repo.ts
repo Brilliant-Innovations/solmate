@@ -63,6 +63,23 @@ export async function expireCandidates(sql: Sql, now: Instant): Promise<number> 
   return rows.length;
 }
 
+/**
+ * Our own finalized fills for an asset since `since`, LIVE accounts only (§8.6, D26, INV-11): paper fills never touch the
+ * chain, so they cannot influence anyone's momentum evidence and are deliberately excluded. Impact is the measured
+ * execution shortfall, floored at zero.
+ */
+export async function listRecentOwnFills(sql: Sql, assetId: Uuid, since: Instant): Promise<{ assetId: Uuid; signature: string; filledAt: Instant; estimatedImpactBps: number }[]> {
+  const rows = await sql<{ tx_signature: string; filled_at: string; execution_shortfall_bps: number | null }[]>`
+    select f.tx_signature, f.filled_at, f.execution_shortfall_bps
+    from trading.fills f
+    join trading.order_attempts oa on oa.id = f.order_attempt_id
+    join trading.intents i on i.id = oa.intent_id
+    join trading.accounts acc on acc.id = i.account_id
+    where i.asset_id = ${assetId} and acc.mode = 'LIVE' and f.commitment = 'finalized' and f.filled_at >= ${since}
+    order by f.filled_at desc`;
+  return rows.map((r) => ({ assetId, signature: r.tx_signature, filledAt: new Date(r.filled_at).toISOString() as Instant, estimatedImpactBps: Math.max(0, r.execution_shortfall_bps ?? 0) }));
+}
+
 export async function rejectCandidate(sql: Sql, id: Uuid, reason: ReasonCode): Promise<void> {
   await sql`update signals.candidates set status = 'REJECTED', deterministic_rejection_reason = ${reason} where id = ${id} and status in ('DETECTED', 'ENRICHING', 'AGENT_REVIEW')`;
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WSOL_MINT } from './eligibility.js';
 import { Bps, Milliseconds, UsdValue, VersionId } from '../primitives.js';
 
 /**
@@ -36,6 +37,12 @@ export const MomentumTriggerPolicy = z.strictObject({
   candidateTtlMs: Milliseconds,
 });
 export type MomentumTriggerPolicy = z.infer<typeof MomentumTriggerPolicy>;
+
+/**
+ * Reference series (§9.1 relative strength, §12.1 SOL-relative features): mints whose candles and features are kept
+ * warm as market context whatever their eligibility. Being a reference never makes a mint tradable; eligibility does.
+ */
+export const REFERENCE_SERIES_MINTS: readonly string[] = [WSOL_MINT];
 
 export const DEFAULT_MOMENTUM_TRIGGER_POLICY: MomentumTriggerPolicy = {
   version: 'momentum-v1' as VersionId,
