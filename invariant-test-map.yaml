@@ -344,9 +344,11 @@ invariants:
       - LLM_STRATEGY
     owner_modules:
       - libs/skills/src/tool-manifest
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - libs/skills/src/tool-manifest/tool-manifest.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-17
     statement: "No LIVE_AUTO strategy can run with a mutable or unversioned skill, guideline or automation set."

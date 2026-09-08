@@ -12,3 +12,4 @@ export * from './session.js';
 export * from './cohorts.js';
 export * from './regime.js';
 export * from './intelligence.js';
+export * from './skills.js';
