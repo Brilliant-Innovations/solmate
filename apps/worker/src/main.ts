@@ -253,22 +253,50 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** Runs `cycle` every `intervalMs` under the named lease until stop or fencing. */
+const LEASE_RETRY_MIN_MS = 15_000;
+const LEASE_RETRY_MAX_MS = 120_000;
+
+/**
+ * Runs `cycle` every `intervalMs` under the named lease until stop. A fenced lease (a failed
+ * heartbeat, typically a network fault) stops the role immediately, as the lease contract requires,
+ * and the role then tries to re-acquire with bounded backoff instead of leaving the process to drain:
+ * an attended paper run must survive a transient outage without an operator restart.
+ */
 async function loopUnderLease(role: string, intervalMs: number, logger: Logger, shared: Shared, cycle: () => Promise<void>): Promise<void> {
-  const ran = await runWithLease(shared.leases, { role, ttlSeconds: 90, heartbeatIntervalMs: 30_000 }, async (isFenced) => {
-    while (!shared.stopping() && !isFenced()) {
-      const started = systemClock.nowMs();
-      try {
-        await cycle();
-      } catch (err) {
-        logger.error(`${role.replace('-', '_')}_cycle_failed`, { error: err instanceof Error ? err.message : String(err) });
-      }
-      const deadline = started + intervalMs;
-      while (!shared.stopping() && !isFenced() && systemClock.nowMs() < deadline) await sleep(Math.min(5_000, deadline - systemClock.nowMs()));
+  const tag = role.replace('-', '_');
+  let backoffMs = LEASE_RETRY_MIN_MS;
+  while (!shared.stopping()) {
+    let ran = false;
+    let wasFenced = false;
+    try {
+      ran = await runWithLease(shared.leases, { role, ttlSeconds: 90, heartbeatIntervalMs: 30_000 }, async (isFenced) => {
+        backoffMs = LEASE_RETRY_MIN_MS;
+        while (!shared.stopping() && !isFenced()) {
+          const started = systemClock.nowMs();
+          try {
+            await cycle();
+          } catch (err) {
+            logger.error(`${tag}_cycle_failed`, { error: err instanceof Error ? err.message : String(err) });
+          }
+          const deadline = started + intervalMs;
+          while (!shared.stopping() && !isFenced() && systemClock.nowMs() < deadline) await sleep(Math.min(5_000, deadline - systemClock.nowMs()));
+        }
+        wasFenced = isFenced();
+        logger.info(`${tag}_stopped`, { stopping: shared.stopping(), fenced: wasFenced });
+      });
+    } catch (err) {
+      // acquire/release failed (database unreachable): treat like a fenced lease and retry
+      wasFenced = true;
+      logger.error(`${tag}_lease_failed`, { error: err instanceof Error ? err.message : String(err) });
     }
-    logger.info(`${role.replace('-', '_')}_stopped`, { stopping: shared.stopping(), fenced: isFenced() });
-  });
-  if (!ran) logger.warn(`${role.replace('-', '_')}_lease_unavailable`, { holder: shared.holder });
+    if (shared.stopping()) return;
+    if (!ran) logger.warn(`${tag}_lease_unavailable`, { holder: shared.holder, retryInMs: backoffMs });
+    else if (wasFenced) logger.warn(`${tag}_lease_retry`, { holder: shared.holder, retryInMs: backoffMs });
+    else return;
+    const until = systemClock.nowMs() + backoffMs;
+    while (!shared.stopping() && systemClock.nowMs() < until) await sleep(Math.min(5_000, until - systemClock.nowMs()));
+    backoffMs = Math.min(LEASE_RETRY_MAX_MS, backoffMs * 2);
+  }
 }
 
 type SharedWithBirdeye = Shared & { birdeye: BirdeyeClient };
