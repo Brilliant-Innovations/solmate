@@ -15,3 +15,4 @@ export * from './intelligence.js';
 export * from './skills.js';
 export * from './automations.js';
 export * from './s1.js';
+export * from './event-window.js';

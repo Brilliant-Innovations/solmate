@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AdversaryVerdict, CatalystNovelty, ProtectionMode, TradingActionType, Urgency } from '../enums.js';
 import { Fraction, Instant, Uuid, VersionId } from '../primitives.js';
 import { ReasonCode } from '../entities/common.js';
+import { EventWindowRequest } from '../policy/event-window.js';
 
 // §11.6 Trading action contract -----------------------------------------------------------------
 
@@ -41,6 +42,8 @@ export const TradingActionProposal = z.strictObject({
   expiresAt: Instant,
   reasoningSummary: z.string().min(1).max(4096),
   evidenceCutoffVersion: z.number().int().positive(),
+  /** §12.3A: the skill may propose a bounded catalyst window; deterministic policy caps it (agents/event-window). */
+  eventWindowRequest: EventWindowRequest.nullable().optional(),
 });
 export type TradingActionProposal = z.infer<typeof TradingActionProposal>;
 

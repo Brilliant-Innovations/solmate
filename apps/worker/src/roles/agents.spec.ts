@@ -40,10 +40,11 @@ function model(provider: 'anthropic' | 'openai', script: (ctx: TradingSkillConte
 const proposalFor = (ctx: TradingSkillContext, action: TradingActionProposal['actionType']): TradingActionProposal => ({ ...fixtures.tradingActionProposal(), actionType: action, candidateId: ctx.candidateId, positionId: ctx.positionId, strategyVersionId: ctx.strategyVersionId, skillVersionId: ctx.skillVersionId, triggerId: ctx.triggerId, supportingEvidenceIds: ctx.evidence.map((e) => e.id), contradictingEvidenceIds: [], expiresAt: addMs(ctx.cutoffAt, 600_000), evidenceCutoffVersion: ctx.cutoffVersion });
 const confirm = (input: AdversarialReviewInput) => ({ ...fixtures.adversarialReviewOutput(), verdict: 'CONFIRM', objections: [], counterEvidenceIds: [], evidenceCutoffVersion: input.context.cutoffVersion });
 
-function fakeRepo(opts: { candidates?: Candidate[]; positions?: PositionTargetRow[]; paused?: boolean; session?: boolean; history?: { lastFiredAt: Instant | null } } = {}) {
+function fakeRepo(opts: { candidates?: Candidate[]; positions?: PositionTargetRow[]; paused?: boolean; session?: boolean; history?: { lastFiredAt: Instant | null }; catalyst?: { sourceTime: Instant | null; sourceTimeConfidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'ABSENT'; relation: 'NEW' | 'DUPLICATE' | 'CORROBORATION' } } = {}) {
   const persisted: { outcome: DiscretionaryOutcome; extra: { positionReview?: PositionReviewWrite; outbox?: unknown } }[] = [];
   const runs: AutomationRun[] = [];
   const charges: unknown[] = [];
+  const windows: { endsAt: Instant; cycleId: Uuid }[] = [];
   const repo: AgentsRepo = {
     async listCandidateTargets() { return opts.candidates ?? []; },
     async listPositionTargets() { return opts.positions ?? []; },
@@ -53,8 +54,10 @@ function fakeRepo(opts: { candidates?: Candidate[]; positions?: PositionTargetRo
     async chargeSpend(ids, _now, delta) { charges.push({ ids, delta }); },
     async persist(outcome, extra) { persisted.push({ outcome, extra }); },
     async sessionFacts() { return opts.session === false ? null : { activity: 'ACTIVE', authority: 'PAPER', paused: false }; },
+    async catalystTiming(evidenceId) { return opts.catalyst ? { ...opts.catalyst, evidenceId } : null; },
+    async openEventWindow(window, cycleId) { windows.push({ endsAt: window.endsAt, cycleId }); },
   };
-  return { repo, persisted, runs, charges };
+  return { repo, persisted, runs, charges, windows };
 }
 
 function deps(repo: AgentsRepo, proposerScript: (ctx: TradingSkillContext) => unknown, adversaryScript: (input: AdversarialReviewInput) => unknown = confirm): AgentsDeps {
@@ -109,6 +112,21 @@ describe('worker role agents (§11.7–11.9, D39, D43)', () => {
     expect(f.persisted[0]?.outcome.cycle).toMatchObject({ state: 'CLEARED', proposedAction: 'EXIT' });
     expect(f.persisted[0]?.extra.positionReview).toMatchObject({ reviewState: 'REVIEWED' });
     expect(f.persisted[0]?.extra.outbox).toMatchObject({ queue: 'trading-actions', kind: 'action_cycle.cleared', correlationId: f.persisted[0]?.outcome.cycle.id, payload: { action: 'EXIT', positionId: IDS.position } });
+  });
+
+  it('a cleared ENTER with an event-window request opens a capped window only for a fresh, trusted, NEW catalyst the run was shown', async () => {
+    const request = { catalystEvidenceId: IDS.candidate as Uuid, expectedHalfLifeMinutes: 120, requestedDurationMinutes: 600 };
+    const fresh = fakeRepo({ candidates: [candidate], catalyst: { sourceTime: addMs(T0, -20 * 60_000), sourceTimeConfidence: 'HIGH', relation: 'NEW' } });
+    await runAgentsCycle(deps(fresh.repo, (ctx) => ({ ...proposalFor(ctx, 'ENTER'), eventWindowRequest: request })));
+    expect(fresh.windows).toEqual([{ endsAt: addMs(T0, -20 * 60_000 + 4 * 3_600_000), cycleId: fresh.persisted[0]?.outcome.cycle.id }]);
+    const stale = fakeRepo({ candidates: [candidate], catalyst: { sourceTime: addMs(T0, -7 * 3_600_000), sourceTimeConfidence: 'HIGH', relation: 'NEW' } });
+    await runAgentsCycle(deps(stale.repo, (ctx) => ({ ...proposalFor(ctx, 'ENTER'), eventWindowRequest: request })));
+    expect(stale.windows).toEqual([]);
+    expect(stale.persisted[0]?.outcome.cycle.state).toBe('CLEARED'); // the entry itself is unaffected by the window refusal
+    const unseen = fakeRepo({ candidates: [candidate], catalyst: { sourceTime: addMs(T0, -20 * 60_000), sourceTimeConfidence: 'HIGH', relation: 'NEW' } });
+    await runAgentsCycle(deps(unseen.repo, (ctx) => ({ ...proposalFor(ctx, 'ENTER'), eventWindowRequest: { ...request, catalystEvidenceId: uuid(77) } })));
+    expect(unseen.persisted[0]?.outcome.cycle).toMatchObject({ state: 'UNRESOLVED', unresolvedReason: 'MALFORMED_OUTPUT' }); // a window on evidence the run never saw is a malformed proposal
+    expect(unseen.windows).toEqual([]);
   });
 
   it('a failing persist is reported per target and does not stop the tick', async () => {

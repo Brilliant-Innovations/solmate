@@ -1,7 +1,10 @@
-import { addMs, instantToMs, type Candidate, type CandidateLifecyclePolicy, type EarlyAccelerationTriggerPolicy, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type MomentumTriggerPolicy, type ReasonCode, type TriggerFamily, type Uuid } from '@sol-agent-trader/contracts';
+import { type CatalystTriggerPolicy, type SmartMoneyTriggerPolicy, type HybridTriggerPolicy, addMs, instantToMs, type Candidate, type CandidateLifecyclePolicy, type EarlyAccelerationTriggerPolicy, type FeatureEngineSpec, type FeatureSnapshot, type Instant, type MomentumTriggerPolicy, type ReasonCode, type TriggerFamily, type Uuid } from '@sol-agent-trader/contracts';
 import { selfInfluenceCheck, type SelfInfluenceContext } from '../self-influence/guard.js';
 import { evaluateMomentumTrigger, type MomentumEvaluation } from '../triggers/momentum.js';
 import { evaluateEarlyAccelerationTrigger, type EarlyAccelerationEvaluation } from '../triggers/early-acceleration.js';
+import { evaluateCatalystTrigger, type CatalystEvaluation, type CatalystEvidence } from '../triggers/catalyst.js';
+import { evaluateSmartMoneyTrigger, type SmartMoneyEvaluation, type SmartMoneyFlowFacts } from '../triggers/smart-money.js';
+import { evaluateHybridTrigger, type FamilySignal, type HybridEvaluation } from '../triggers/hybrid.js';
 
 /**
  * Candidate detection (blueprint §6.9, §9.1, §9.2, §9.7, §8.6, D63, ADR-0007). Pure decision over
@@ -45,7 +48,24 @@ export interface EarlyAccelerationDetectorInput extends DetectorContext {
   policy: EarlyAccelerationTriggerPolicy;
 }
 
-export type TriggerEvaluation = MomentumEvaluation | EarlyAccelerationEvaluation;
+export interface CatalystDetectorInput extends DetectorContext {
+  policy: CatalystTriggerPolicy;
+  /** Events visible at `now` for this asset (first seen at or before now), as the intelligence layer stored them. */
+  events: readonly CatalystEvidence[];
+}
+
+export interface SmartMoneyDetectorInput extends DetectorContext {
+  policy: SmartMoneyTriggerPolicy;
+  flow: SmartMoneyFlowFacts;
+}
+
+export interface HybridDetectorInput extends DetectorContext {
+  policy: HybridTriggerPolicy;
+  /** Other families' recent verdicts on this asset (detected candidates and this tick's detections). */
+  signals: readonly FamilySignal[];
+}
+
+export type TriggerEvaluation = MomentumEvaluation | EarlyAccelerationEvaluation | CatalystEvaluation | SmartMoneyEvaluation | HybridEvaluation;
 
 export type DetectorDecision =
   | { kind: 'CANDIDATE'; candidate: Candidate; evaluation: TriggerEvaluation }
@@ -105,6 +125,31 @@ export function detectMomentumCandidate(input: DetectorInput): DetectorDecision 
   const evaluation = evaluateMomentumTrigger(input.snapshot, input.policy, input.solRelativeReturn1h);
   if (!evaluation.fires) return { kind: 'SKIP', reason: 'NO_TRIGGER', detail: evaluation.failed.map((f) => `${f.condition}:${f.reason}`).join(',') || `score ${evaluation.score} < ${input.policy.minScannerScore}` };
   return completeDetection(input, 'MOMENTUM_CONTINUATION', input.policy, evaluation);
+}
+
+/** §9.4: the catalyst must be fresh, trusted and novel, and the market must confirm; the catalyst id is recorded on the candidate. */
+export function detectCatalystCandidate(input: CatalystDetectorInput): DetectorDecision {
+  const evaluation = evaluateCatalystTrigger(input.events, input.snapshot, input.policy, input.now);
+  if (!evaluation.fires) return { kind: 'SKIP', reason: 'NO_TRIGGER', detail: evaluation.failed.map((f) => `${f.condition}:${f.reason}`).join(',') || `score ${evaluation.score} < ${input.policy.minScannerScore}` };
+  const decision = completeDetection(input, 'CATALYST_RESPONSE', input.policy, evaluation);
+  if (decision.kind === 'SKIP') return decision;
+  return { ...decision, candidate: { ...decision.candidate, triggerDetails: { ...decision.candidate.triggerDetails, catalystEvidenceId: evaluation.catalystEvidenceId } } };
+}
+
+/** §9.3: independent tracked buyers accumulating with structure confirming; owned wallets were excluded upstream (INV-11). */
+export function detectSmartMoneyCandidate(input: SmartMoneyDetectorInput): DetectorDecision {
+  const evaluation = evaluateSmartMoneyTrigger(input.flow, input.snapshot, input.policy);
+  if (!evaluation.fires) return { kind: 'SKIP', reason: 'NO_TRIGGER', detail: evaluation.failed.map((f) => `${f.condition}:${f.reason}`).join(',') || `score ${evaluation.score} < ${input.policy.minScannerScore}` };
+  return completeDetection(input, 'SMART_MONEY_ACCUMULATION', input.policy, evaluation);
+}
+
+/** §12.1 S4: two independent families aligned inside the window; the hybrid never dedupes against the families it is built from. */
+export function detectHybridCandidate(input: HybridDetectorInput): DetectorDecision {
+  const evaluation = evaluateHybridTrigger(input.signals, input.policy, input.now);
+  if (!evaluation.fires) return { kind: 'SKIP', reason: 'NO_TRIGGER', detail: evaluation.failed.map((f) => `${f.condition}:${f.reason}`).join(',') || `score ${evaluation.score} < ${input.policy.minScannerScore}` };
+  const decision = completeDetection({ ...input, openCandidates: input.openCandidates.filter((c) => c.dedupeKey.includes(':HYBRID') || c.dedupeKey.includes(':' + 'HOLDER_LIQUIDITY_EXPANSION')) }, 'HOLDER_LIQUIDITY_EXPANSION', input.policy, evaluation);
+  if (decision.kind === 'SKIP') return decision;
+  return { ...decision, candidate: { ...decision.candidate, triggerDetails: { ...decision.candidate.triggerDetails, families: evaluation.families } } };
 }
 
 export function detectEarlyAccelerationCandidate(input: EarlyAccelerationDetectorInput): DetectorDecision {

@@ -84,6 +84,9 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  listEventsVisibleAt,
+  listRecentCandidateSignals,
+  onchainFlowAt,
   listAssetEntities,
   listEventsForClustering,
   upsertEvent,
@@ -105,7 +108,7 @@ import {
   type Sql,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient, NoRouteError, PaperExecutionAdapter } from '@sol-agent-trader/execution';
-import { s0StrategyVersion, s1StrategyVersion } from '@sol-agent-trader/strategies';
+import { LLM_STRATEGY_SPECS, llmStrategyVersion, llmStrategyVersions, s0StrategyVersion } from '@sol-agent-trader/strategies';
 import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
@@ -114,7 +117,7 @@ import { executeClearedExit, type PositionMonitorDeps } from './roles/position-m
 import { runTradingActionsCycle } from './roles/trading-actions.js';
 import { runIntelIngestCycle } from './roles/intel-ingest.js';
 import { CryptoPanicClient, LunarCrushClient } from '@sol-agent-trader/intelligence';
-import { DEFAULT_NORMALIZATION_POLICY } from '@sol-agent-trader/contracts';
+import { DEFAULT_CATALYST_TRIGGER_POLICY, DEFAULT_HYBRID_TRIGGER_POLICY, DEFAULT_NORMALIZATION_POLICY, DEFAULT_SMART_MONEY_TRIGGER_POLICY } from '@sol-agent-trader/contracts';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
@@ -542,12 +545,24 @@ async function candidatesLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
       listOwnedAddresses: () => listOwnedAddresses(sql),
       // SOL 1h return from the wrapped-SOL reference series (tracked and featured whatever its eligibility); null = no fresh evidence.
       solReturn1h: (asOf: Parameters<typeof latestFeatureValueByMint>[4]) => latestFeatureValueByMint(sql, WSOL_MINT, 'ret_1h', 10 * 60_000, asOf),
+      visibleEvents: async (assetId: Uuid, now: Parameters<typeof listEventsVisibleAt>[2], limit: number) => (await listEventsVisibleAt(sql, assetId, now, limit)).map((e) => ({ id: e.id, kind: e.kind, sourceQuality: e.sourceQuality, sourceTimeConfidence: e.sourceTimeConfidence, sourcePublishedAt: e.sourcePublishedAt, firstSeenAt: e.firstSeenAt, noveltyScore: e.noveltyScore, clusterId: e.clusterId, corroboratesEventId: e.corroboratesEventId })),
+      smartMoneyFlow: async (assetId: Uuid, now: Parameters<typeof onchainFlowAt>[3]) => {
+        const [a] = await sql<{ mint_address: string }[]>`select mint_address from core.assets where id = ${assetId}`;
+        if (!a) return null;
+        const flow = await onchainFlowAt(sql, assetId, a.mint_address, now);
+        const usd = (v: string) => Number(BigInt(v)) / 1_000_000; // settlement USDC base units
+        return { netFlowUsd: { h1: usd(flow.netQuoteFlow.h1), h4: usd(flow.netQuoteFlow.h4), h24: usd(flow.netQuoteFlow.h24) }, distinctBuyers: flow.buyers, distinctSellers: flow.sellers, topBuyerShare: null, ownWalletActivityExcluded: true as const };
+      },
+      recentFamilySignals: (assetId: Uuid, since: Parameters<typeof listRecentCandidateSignals>[2]) => listRecentCandidateSignals(sql, assetId, since).then((rows) => rows.filter((r) => r.family !== 'MANUAL_WATCH').map((r) => ({ family: r.family as Exclude<typeof r.family, 'MANUAL_WATCH'>, firedAt: r.firedAt, score: r.score }))),
     },
     clock: systemClock,
     logger,
     spec: FEATURE_ENGINE_V2,
     trigger: DEFAULT_MOMENTUM_TRIGGER_POLICY,
     earlyAcceleration: DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY,
+    catalyst: DEFAULT_CATALYST_TRIGGER_POLICY,
+    smartMoney: DEFAULT_SMART_MONEY_TRIGGER_POLICY,
+    hybrid: DEFAULT_HYBRID_TRIGGER_POLICY,
     eligibility: DEFAULT_ELIGIBILITY_POLICY,
     selfInfluence: DEFAULT_SELF_INFLUENCE_POLICY,
     config: { batchSize: 200 },
@@ -599,7 +614,7 @@ async function paperEntryLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
   const activeFrom = systemClock.now();
   // S1 is registered here too so its sleeve exists and a CLEARED S1 ENTER is paper-filled exactly like an S0 decision (§32: the baseline and the LLM strategy share one execution path).
-  const versions = [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), s1StrategyVersion(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })];
+  const versions = [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), ...llmStrategyVersions(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })];
   const strategies: Record<string, (typeof versions)[number]> = {};
   const sleeves: Record<string, Awaited<ReturnType<typeof ensureSleeve>>> = {};
   for (const v of versions) {
@@ -714,16 +729,13 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
   const activeFrom = systemClock.now();
   const skill = tradingSkillVersion(env.GIT_SHA, activeFrom);
   logger.info('skill_version', { versionId: skill.versionId, outcome: await ensureSkillVersion(sql, skill), toolManifest: skill.toolManifestVersion, guidelines: skill.guidelineVersion });
-  const strategy = s1StrategyVersion(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL });
-  logger.info('strategy_version', { versionId: strategy.versionId, outcome: await ensureStrategyVersion(sql, strategy), gitSha: strategy.gitSha, models: strategy.modelSelections });
-  const automationIds = await installAutomationSet(sql, DEFAULT_AUTOMATION_SET, { strategyVersionId: strategy.versionId, skillVersionId: skill.versionId });
-  const budgets: SpendBudget[] = [
+  const models = { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL };
+  const providers = [proposer.model.identity().provider, adversary.model.identity().provider].filter((p, i, all) => all.indexOf(p) === i);
+  const platformBudgets: SpendBudget[] = [
     { id: randomUUID() as Uuid, versionId: 'budget-model-v1' as SpendBudget['versionId'], scope: 'PLATFORM', scopeId: null, limits: { ...DEFAULT_SPEND_LIMITS.platform }, active: true, createdAt: activeFrom },
-    { id: randomUUID() as Uuid, versionId: 'budget-cycles-v1' as SpendBudget['versionId'], scope: 'STRATEGY', scopeId: strategy.strategyId, limits: { cyclesPerHour: DEFAULT_SPEND_LIMITS.strategy.cyclesPerHour, modelUsdPerDay: null, providerRequestsPerMinute: null }, active: true, createdAt: activeFrom },
-    { id: randomUUID() as Uuid, versionId: 'budget-model-v1' as SpendBudget['versionId'], scope: 'STRATEGY', scopeId: strategy.strategyId, limits: { cyclesPerHour: null, modelUsdPerDay: DEFAULT_SPEND_LIMITS.strategy.modelUsdPerDay, providerRequestsPerMinute: null }, active: true, createdAt: activeFrom },
-    ...[proposer.model.identity().provider, adversary.model.identity().provider].filter((p, i, all) => all.indexOf(p) === i).map((p) => ({ id: randomUUID() as Uuid, versionId: 'budget-provider-v1' as SpendBudget['versionId'], scope: 'PROVIDER' as const, scopeId: p, limits: { ...DEFAULT_SPEND_LIMITS.provider }, active: true, createdAt: activeFrom })),
+    ...providers.map((p) => ({ id: randomUUID() as Uuid, versionId: 'budget-provider-v1' as SpendBudget['versionId'], scope: 'PROVIDER' as const, scopeId: p, limits: { ...DEFAULT_SPEND_LIMITS.provider }, active: true, createdAt: activeFrom })),
   ];
-  for (const b of budgets) await ensureSpendBudget(sql, b);
+  for (const b of platformBudgets) await ensureSpendBudget(sql, b);
   await primeContractDigest();
   const sources = createRepoContextSources({
     sql,
@@ -739,42 +751,48 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
       return r ? (r.mint_address as MintAddress) : null;
     },
   });
-  const deps: AgentsDeps = {
-    repo: {
-      listCandidateTargets: (versionId, now, maxAgeMs, limit, families) => listCandidateTargets(sql, versionId, now, maxAgeMs, limit, families),
-      listPositionTargets: (versionId, limit) => listPositionTargets(sql, versionId, limit),
-      automationHistory: (targetId) => automationHistory(sql, targetId),
-      recordAutomationRun: (run) => recordAutomationRun(sql, run),
-      spendState: async (now) => {
-        const active = await listActiveSpendBudgets(sql);
-        return { budgets: active, usage: await listSpendUsageAt(sql, active.map((b) => b.id), now) };
-      },
-      chargeSpend: async (budgetIds, now, delta) => {
-        const active = await listActiveSpendBudgets(sql);
-        for (const b of active.filter((x) => budgetIds.includes(x.id))) await chargeSpendUsage(sql, b.id, spendWindow(now, spendWindowUnit(b)), delta);
-      },
-      persist: (outcome, extra) => persistDiscretionaryOutcome(sql, outcome, extra),
-      sessionFacts: async () => {
-        const g = await sessionEntryGate(sql, account.id);
-        return g ? { activity: g.activity, authority: g.authority, paused: g.paused } : null;
-      },
+  const repo = {
+    listCandidateTargets: (versionId: Parameters<typeof listCandidateTargets>[1], now: Parameters<typeof listCandidateTargets>[2], maxAgeMs: number, limit: number, families: readonly string[]) => listCandidateTargets(sql, versionId, now, maxAgeMs, limit, families),
+    listPositionTargets: (versionId: Parameters<typeof listPositionTargets>[1], limit: number) => listPositionTargets(sql, versionId, limit),
+    automationHistory: (targetId: Uuid) => automationHistory(sql, targetId),
+    recordAutomationRun: (run: Parameters<typeof recordAutomationRun>[1]) => recordAutomationRun(sql, run),
+    spendState: async (now: Parameters<typeof listSpendUsageAt>[2]) => {
+      const active = await listActiveSpendBudgets(sql);
+      return { budgets: active, usage: await listSpendUsageAt(sql, active.map((b) => b.id), now) };
     },
-    sources,
-    proposer: proposer.model,
-    adversary: adversary.model,
-    clock: systemClock,
-    logger,
-    strategy,
-    skill,
-    automations: DEFAULT_AUTOMATION_SET,
-    automationIds,
-    cyclePolicy: DEFAULT_DISCRETIONARY_CYCLE_POLICY,
-    accountId: account.id,
-    config: { batchSize: env.AGENTS_BATCH_SIZE, families: ['MOMENTUM_CONTINUATION'], producer: shared.holder },
+    chargeSpend: async (budgetIds: readonly Uuid[], now: Parameters<typeof spendWindow>[0], delta: { cycles: number; modelUsd: number; providerRequests: number }) => {
+      const active = await listActiveSpendBudgets(sql);
+      for (const b of active.filter((x) => budgetIds.includes(x.id))) await chargeSpendUsage(sql, b.id, spendWindow(now, spendWindowUnit(b)), delta);
+    },
+    persist: (outcome: Parameters<typeof persistDiscretionaryOutcome>[1], extra: Parameters<typeof persistDiscretionaryOutcome>[2]) => persistDiscretionaryOutcome(sql, outcome, extra),
+    sessionFacts: async () => {
+      const g = await sessionEntryGate(sql, account.id);
+      return g ? { activity: g.activity, authority: g.authority, paused: g.paused } : null;
+    },
+    catalystTiming: async (evidenceId: Uuid) => {
+      const [e] = await sql<{ source_published_at: string | null; source_time_confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'ABSENT'; corroborates_event_id: string | null }[]>`select source_published_at, source_time_confidence, corroborates_event_id from intelligence.events where id = ${evidenceId}`;
+      if (!e) return null;
+      return { evidenceId, sourceTime: e.source_published_at ? (new Date(e.source_published_at).toISOString() as Parameters<typeof spendWindow>[0]) : null, sourceTimeConfidence: e.source_time_confidence, relation: e.corroborates_event_id === null ? ('NEW' as const) : ('CORROBORATION' as const) };
+    },
+    // Activation through the session machine (OPEN_EVENT_WINDOW) lands with the S2 paper run; the capped window is recorded for the Inspector now.
+    openEventWindow: async (window: { t0: string; endsAt: string; cadenceMs: number; extensionsRemaining: number }, cycleId: Uuid) => {
+      logger.info('event_window_capped', { cycleId, t0: window.t0, endsAt: window.endsAt, cadenceMs: window.cadenceMs, extensionsRemaining: window.extensionsRemaining });
+    },
   };
-  logger.info('agents_starting', { intervalMs, strategy: strategy.versionId, skill: skill.versionId, proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL, automations: DEFAULT_AUTOMATION_SET.version, cyclePolicy: DEFAULT_DISCRETIONARY_CYCLE_POLICY.version, holder: shared.holder });
+  const strategiesDeps: AgentsDeps[] = [];
+  for (const spec of LLM_STRATEGY_SPECS) {
+    const strategy = llmStrategyVersion(spec, env.GIT_SHA, activeFrom, models);
+    logger.info('strategy_version', { versionId: strategy.versionId, outcome: await ensureStrategyVersion(sql, strategy), gitSha: strategy.gitSha, models: strategy.modelSelections, families: spec.families });
+    const automationIds = await installAutomationSet(sql, DEFAULT_AUTOMATION_SET, { strategyVersionId: strategy.versionId, skillVersionId: skill.versionId });
+    for (const b of [
+      { id: randomUUID() as Uuid, versionId: 'budget-cycles-v1' as SpendBudget['versionId'], scope: 'STRATEGY' as const, scopeId: strategy.strategyId, limits: { cyclesPerHour: DEFAULT_SPEND_LIMITS.strategy.cyclesPerHour, modelUsdPerDay: null, providerRequestsPerMinute: null }, active: true, createdAt: activeFrom },
+      { id: randomUUID() as Uuid, versionId: 'budget-model-v1' as SpendBudget['versionId'], scope: 'STRATEGY' as const, scopeId: strategy.strategyId, limits: { cyclesPerHour: null, modelUsdPerDay: DEFAULT_SPEND_LIMITS.strategy.modelUsdPerDay, providerRequestsPerMinute: null }, active: true, createdAt: activeFrom },
+    ]) await ensureSpendBudget(sql, b);
+    strategiesDeps.push({ repo, sources, proposer: proposer.model, adversary: adversary.model, clock: systemClock, logger, strategy, skill, automations: DEFAULT_AUTOMATION_SET, automationIds, cyclePolicy: DEFAULT_DISCRETIONARY_CYCLE_POLICY, accountId: account.id, config: { batchSize: env.AGENTS_BATCH_SIZE, families: [...spec.families], producer: shared.holder } });
+  }
+  logger.info('agents_starting', { intervalMs, strategies: strategiesDeps.map((d) => d.strategy.versionId), skill: skill.versionId, proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL, automations: DEFAULT_AUTOMATION_SET.version, cyclePolicy: DEFAULT_DISCRETIONARY_CYCLE_POLICY.version, holder: shared.holder });
   await loopUnderLease('agents', intervalMs, logger, shared, async () => {
-    await runAgentsCycle(deps);
+    for (const d of strategiesDeps) await runAgentsCycle(d);
   });
 }
 
@@ -786,7 +804,7 @@ async function positionMonitorDeps(env: WorkerEnv, logger: Logger, shared: Share
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
   const activeFrom = systemClock.now();
   const strategies: Record<string, ReturnType<typeof s0StrategyVersion>> = {};
-  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), s1StrategyVersion(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })]) strategies[v.versionId] = v;
+  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), ...llmStrategyVersions(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })]) strategies[v.versionId] = v;
   const adapter = new PaperExecutionAdapter({
     quotes: shared.jupiter,
     clock: systemClock,

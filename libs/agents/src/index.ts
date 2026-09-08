@@ -6,3 +6,4 @@ export * from './automations/engine.js';
 export * from './gateway/transport.js';
 export * from './gateway/prompts.js';
 export * from './gateway/providers.js';
+export * from './event-window/cap.js';

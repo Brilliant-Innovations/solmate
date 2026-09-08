@@ -7,3 +7,6 @@ export * from './triggers/momentum.js';
 export * from './candidates/detector.js';
 export * from './features/regime.js';
 export * from './triggers/early-acceleration.js';
+export * from './triggers/catalyst.js';
+export * from './triggers/smart-money.js';
+export * from './triggers/hybrid.js';

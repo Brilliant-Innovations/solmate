@@ -81,5 +81,10 @@ export function checkProposal(p: TradingActionProposal, scope: ToolScope, ledger
   if (unknown.length > 0) return { reason: 'UNKNOWN_EVIDENCE_ID', detail: `evidence not shown to this run: ${unknown.slice(0, 5).join(',')}` };
   const both = p.supportingEvidenceIds.filter((id) => p.contradictingEvidenceIds.includes(id));
   if (both.length > 0) return { reason: 'PROPOSAL_INCONSISTENT', detail: 'evidence cited as both supporting and contradicting' };
+  if (p.eventWindowRequest) {
+    // §12.3A: a window request rests on a catalyst the run was shown, and only an ENTER on a candidate may ask for one.
+    if (p.actionType !== 'ENTER') return { reason: 'PROPOSAL_INCONSISTENT', detail: 'eventWindowRequest is only valid with ENTER' };
+    if (!ledger.seenEvidenceIds.has(p.eventWindowRequest.catalystEvidenceId)) return { reason: 'UNKNOWN_EVIDENCE_ID', detail: `event-window catalyst not shown to this run: ${p.eventWindowRequest.catalystEvidenceId}` };
+  }
   return null;
 }

@@ -1,6 +1,7 @@
+import { SourceQualityClass, SourceTimeConfidence } from '../enums.js';
 import { z } from 'zod';
 import { WSOL_MINT } from './eligibility.js';
-import { Bps, Milliseconds, UsdValue, VersionId } from '../primitives.js';
+import { Fraction, Bps, Milliseconds, UsdValue, VersionId } from '../primitives.js';
 
 /**
  * Momentum-continuation trigger and candidate lifecycle policy (blueprint §9.1, §9.7, §6.9).
@@ -114,4 +115,102 @@ export const DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY: EarlyAccelerationTrigger
   dedupeWindowMs: 15 * 60_000,
   cooldownMs: 30 * 60_000,
   candidateTtlMs: 10 * 60_000,
+};
+
+/**
+ * Catalyst-response trigger (§9.4, §10.3, D64): a fresh, trustworthy-timed, novel catalyst for an
+ * eligible asset with market confirmation. Social-only evidence never qualifies (§9.5).
+ */
+export const CatalystTriggerPolicy = z.strictObject({
+  version: VersionId,
+  /** Source quality floor for the catalyst (§10.4 classes). */
+  minSourceQuality: SourceQualityClass,
+  minSourceTimeConfidence: SourceTimeConfidence,
+  /** Catalyst age from trustworthy source time above which it is not fresh (D64). */
+  maxCatalystAgeMs: Milliseconds,
+  /** Dedupe novelty at or above this: a syndicated copy is not a new catalyst. */
+  minNoveltyScore: Fraction,
+  /** Market confirmation. */
+  minReturn15m: z.number().min(0),
+  minRelativeVolume60: z.number().min(0),
+  minLiquidityUsd: UsdValue,
+  minScannerScore: z.number().min(0).max(100),
+  dedupeWindowMs: Milliseconds,
+  cooldownMs: Milliseconds,
+  candidateTtlMs: Milliseconds,
+});
+export type CatalystTriggerPolicy = z.infer<typeof CatalystTriggerPolicy>;
+
+export const DEFAULT_CATALYST_TRIGGER_POLICY: CatalystTriggerPolicy = {
+  version: 'catalyst-v1' as VersionId,
+  minSourceQuality: 'IDENTIFIED_CREATOR',
+  minSourceTimeConfidence: 'HIGH',
+  maxCatalystAgeMs: 6 * 3_600_000,
+  minNoveltyScore: 0.5,
+  minReturn15m: 0.01,
+  minRelativeVolume60: 1.3,
+  minLiquidityUsd: 250_000,
+  minScannerScore: 50,
+  dedupeWindowMs: 60 * 60_000,
+  cooldownMs: 60 * 60_000,
+  candidateTtlMs: 30 * 60_000,
+};
+
+/**
+ * Smart-money accumulation trigger (§9.3, §18.3, D26): several independently high-quality wallets
+ * buying over 4h, not dominated by one, with market structure confirming. Owned wallets never count.
+ */
+export const SmartMoneyTriggerPolicy = z.strictObject({
+  version: VersionId,
+  minDistinctBuyers4h: z.number().int().positive(),
+  minNetFlowUsd4h: UsdValue,
+  /** Share of 4h buy flow from the largest single buyer at or below this. */
+  maxTopBuyerShare: Fraction,
+  /** Buyers must exceed sellers by this ratio. */
+  minBuyerSellerRatio: z.number().positive(),
+  minEma9Over21: z.number(),
+  minLiquidityUsd: UsdValue,
+  minScannerScore: z.number().min(0).max(100),
+  dedupeWindowMs: Milliseconds,
+  cooldownMs: Milliseconds,
+  candidateTtlMs: Milliseconds,
+});
+export type SmartMoneyTriggerPolicy = z.infer<typeof SmartMoneyTriggerPolicy>;
+
+export const DEFAULT_SMART_MONEY_TRIGGER_POLICY: SmartMoneyTriggerPolicy = {
+  version: 'smart-money-v1' as VersionId,
+  minDistinctBuyers4h: 3,
+  minNetFlowUsd4h: 5_000,
+  maxTopBuyerShare: 0.6,
+  minBuyerSellerRatio: 1.5,
+  minEma9Over21: 0,
+  minLiquidityUsd: 250_000,
+  minScannerScore: 50,
+  dedupeWindowMs: 60 * 60_000,
+  cooldownMs: 2 * 3_600_000,
+  candidateTtlMs: 30 * 60_000,
+};
+
+/** Hybrid ensemble (§12.1 S4): aligned evidence across at least two independent families inside a window. */
+export const HybridTriggerPolicy = z.strictObject({
+  version: VersionId,
+  minFamilies: z.number().int().min(2),
+  alignmentWindowMs: Milliseconds,
+  minFamilyScore: z.number().min(0).max(100),
+  minScannerScore: z.number().min(0).max(100),
+  dedupeWindowMs: Milliseconds,
+  cooldownMs: Milliseconds,
+  candidateTtlMs: Milliseconds,
+});
+export type HybridTriggerPolicy = z.infer<typeof HybridTriggerPolicy>;
+
+export const DEFAULT_HYBRID_TRIGGER_POLICY: HybridTriggerPolicy = {
+  version: 'hybrid-v1' as VersionId,
+  minFamilies: 2,
+  alignmentWindowMs: 30 * 60_000,
+  minFamilyScore: 50,
+  minScannerScore: 55,
+  dedupeWindowMs: 30 * 60_000,
+  cooldownMs: 60 * 60_000,
+  candidateTtlMs: 20 * 60_000,
 };

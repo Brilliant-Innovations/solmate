@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { decideAutomation, evaluatePositionTriggers, evaluateSpendGate, pickTrigger, runDiscretionaryCycle, allowedActions, canAuthorize, type AutomationDecision, type BuiltContext, type CycleRunOutcome, type ReasoningModel, type TriggerEvent } from '@sol-agent-trader/agents';
-import { addMs, getContractSetDigest, type ActionCycle, type ActivityState, type AutomationRun, type AutomationSet, type AutomationTriggerType, type Candidate, type CapitalAuthority, type Clock, type DiscretionaryCyclePolicy, type Instant, type QueueMessageEnvelope, type SkillVersion, type SpendBudget, type SpendUsage, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
+import { capEventWindow, decideAutomation, evaluatePositionTriggers, evaluateSpendGate, pickTrigger, runDiscretionaryCycle, allowedActions, canAuthorize, type AutomationDecision, type BuiltContext, type CatalystTiming, type CycleRunOutcome, type EventWindow, type ReasoningModel, type TriggerEvent } from '@sol-agent-trader/agents';
+import { DEFAULT_EVENT_WINDOW_CAP_POLICY, addMs, getContractSetDigest, type ActionCycle, type ActivityState, type AutomationRun, type AutomationSet, type AutomationTriggerType, type Candidate, type CapitalAuthority, type Clock, type DiscretionaryCyclePolicy, type Instant, type QueueMessageEnvelope, type SkillVersion, type SpendBudget, type SpendUsage, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
 import type { AutomationHistoryRow, DiscretionaryOutcome, PositionReviewWrite, PositionTargetRow } from '@sol-agent-trader/db/server';
 import { discretionaryActionsAllowed, initialPositionReview, reviewTransition, type PositionReview } from '@sol-agent-trader/execution';
 import type { Logger } from '@sol-agent-trader/observability';
@@ -24,6 +24,10 @@ export interface AgentsRepo {
   chargeSpend(budgetIds: readonly Uuid[], now: Instant, delta: { cycles: number; modelUsd: number; providerRequests: number }): Promise<void>;
   persist(outcome: DiscretionaryOutcome, extra: { positionReview?: PositionReviewWrite; outbox?: QueueMessageEnvelope }): Promise<void>;
   sessionFacts(): Promise<{ activity: ActivityState; authority: CapitalAuthority; paused: boolean } | null>;
+  /** The catalyst's recorded timing for an event-window request (§12.3A); null when the evidence is not an intelligence event. */
+  catalystTiming(evidenceId: Uuid): Promise<CatalystTiming | null>;
+  /** Hands a deterministically capped window to the runtime (the session role opens EVENT_WINDOW); recorded for the Inspector either way. */
+  openEventWindow(window: EventWindow, cycleId: Uuid): Promise<void>;
 }
 
 export interface AgentsDeps {
@@ -125,11 +129,35 @@ async function handleTarget(deps: AgentsDeps, report: AgentsReport, event: Trigg
       await deps.repo.recordAutomationRun({ id: randomUUID() as Uuid, automationId, automationVersionId: deps.automations.version, triggerEvent: { ...event }, cutoffVersion: outcome.cycle.cutoffs.at(-1)?.version ?? 1, cutoffAt: outcome.cycle.cutoffs.at(-1)?.at ?? now, skillInvocationRunId: outcome.runs[0]?.id ?? null, actionCycleId: outcome.cycle.id, disposition: 'INVOKED', createdAt: now });
     }
     await deps.repo.chargeSpend(chargeable, now, { cycles: 1, modelUsd, providerRequests: outcome.runs.length });
+    await handleEventWindowRequest(deps, outcome, now);
     deps.logger.info('agents_cycle_done', { cycleId: outcome.cycle.id, target: target.kind, targetId: event.targetId, trigger: event.type, state: outcome.cycle.state, action: outcome.cycle.proposedAction, verdict: outcome.cycle.verdict, unresolvedReason: outcome.cycle.unresolvedReason, revisionRound: outcome.cycle.revisionRound, runs: outcome.runs.length, modelUsd: Number(modelUsd.toFixed(4)), notes: outcome.notes, review: extra.positionReview?.reviewState ?? null });
   } catch (err) {
     report.errors.push({ targetId: event.targetId, error: err instanceof Error ? err.message : String(err) });
     deps.logger.error('agents_target_failed', { target: target.kind, targetId: event.targetId, trigger: event.type, error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/**
+ * §12.3A: the skill may ask for a catalyst window on a cleared ENTER; the deterministic cap decides.
+ * The request never changes the entry itself (size, risk and execution are unchanged); it only asks the
+ * runtime for a bounded faster cadence, and only a fresh, trusted, NEW catalyst can open one.
+ */
+async function handleEventWindowRequest(deps: AgentsDeps, outcome: CycleRunOutcome, now: Instant): Promise<void> {
+  const proposal = outcome.proposals.at(-1);
+  const request = proposal?.proposal.eventWindowRequest ?? null;
+  if (!request || !canAuthorize(outcome.cycle) || outcome.cycle.proposedAction !== 'ENTER') return;
+  const timing = await deps.repo.catalystTiming(request.catalystEvidenceId);
+  if (!timing) {
+    deps.logger.info('agents_event_window', { cycleId: outcome.cycle.id, allowed: false, reason: 'EVIDENCE_NOT_A_CATALYST', catalystEvidenceId: request.catalystEvidenceId });
+    return;
+  }
+  const decision = capEventWindow(request, timing, DEFAULT_EVENT_WINDOW_CAP_POLICY, now);
+  if (!decision.allowed) {
+    deps.logger.info('agents_event_window', { cycleId: outcome.cycle.id, allowed: false, reason: decision.reason, catalystEvidenceId: request.catalystEvidenceId, requested: request });
+    return;
+  }
+  await deps.repo.openEventWindow(decision.window, outcome.cycle.id);
+  deps.logger.info('agents_event_window', { cycleId: outcome.cycle.id, allowed: true, t0: decision.window.t0, endsAt: decision.window.endsAt, cappedByPolicy: decision.window.cappedByPolicy, cadenceMs: decision.window.cadenceMs, extensionsRemaining: decision.window.extensionsRemaining, requested: request });
 }
 
 /**

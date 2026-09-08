@@ -83,3 +83,12 @@ export async function listRecentOwnFills(sql: Sql, assetId: Uuid, since: Instant
 export async function rejectCandidate(sql: Sql, id: Uuid, reason: ReasonCode): Promise<void> {
   await sql`update signals.candidates set status = 'REJECTED', deterministic_rejection_reason = ${reason} where id = ${id} and status in ('DETECTED', 'ENRICHING', 'AGENT_REVIEW')`;
 }
+
+/** Other families' detections on an asset since `since` (the hybrid family's alignment input; §12.1 S4). Terminal REJECTED/EXPIRED rows do not count. */
+export async function listRecentCandidateSignals(sql: Sql, assetId: Uuid, since: Instant): Promise<{ family: TriggerFamily; firedAt: Instant; score: number }[]> {
+  const rows = await sql<{ trigger_family: TriggerFamily; discovered_at: string; scanner_score: number }[]>`
+    select trigger_family, discovered_at, scanner_score from signals.candidates
+    where asset_id = ${assetId} and discovered_at >= ${since} and status in ('DETECTED', 'ENRICHING', 'AGENT_REVIEW', 'QUALIFIED') and trigger_family <> 'HOLDER_LIQUIDITY_EXPANSION'
+    order by discovered_at desc`;
+  return rows.map((r) => ({ family: r.trigger_family, firedAt: new Date(r.discovered_at).toISOString() as Instant, score: Number(r.scanner_score) }));
+}

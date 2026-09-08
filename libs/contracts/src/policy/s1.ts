@@ -8,6 +8,13 @@ import type { Uuid, VersionId } from '../primitives.js';
 export const S1_STRATEGY_VERSION_ID = 'S1@1.0.0' as VersionId;
 export const S1_STRATEGY_VERSION_UUID = '51000000-0000-4000-8000-000000000001' as Uuid;
 
+export const S2_STRATEGY_VERSION_ID = 'S2@1.0.0' as VersionId;
+export const S2_STRATEGY_VERSION_UUID = '52000000-0000-4000-8000-000000000001' as Uuid;
+export const S3_STRATEGY_VERSION_ID = 'S3@1.0.0' as VersionId;
+export const S3_STRATEGY_VERSION_UUID = '53000000-0000-4000-8000-000000000001' as Uuid;
+export const S4_STRATEGY_VERSION_ID = 'S4@1.0.0' as VersionId;
+export const S4_STRATEGY_VERSION_UUID = '54000000-0000-4000-8000-000000000001' as Uuid;
+
 export const TRADING_SKILL_ID = 'trading-skill';
 export const TRADING_SKILL_VERSION_ID = 'trading-skill@1.0.0' as VersionId;
 export const TRADING_SKILL_VERSION_UUID = '5c000000-0000-4000-8000-000000000001' as Uuid;
