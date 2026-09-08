@@ -1,4 +1,4 @@
-import { DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_MOMENTUM_TRIGGER_POLICY, S0_TRIGGER_FAMILIES, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, FEATURE_ENGINE_V2, S0_STRATEGY_VERSION_IDS, type GitSha, type Instant, type S0Variant, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_MOMENTUM_TRIGGER_POLICY, S0_TRIGGER_FAMILIES, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, FEATURE_ENGINE_V2, S0_STRATEGY_VERSION_IDS, S0_TINY_LIVE_VERSION_ID, type GitSha, type Instant, type S0Variant, type StrategyVersion, type Uuid } from '@sol-agent-trader/contracts';
 
 /**
  * The two S0 strategy versions (blueprint §12.1, §6.21; D7 immutable). Parameters are the
@@ -49,5 +49,28 @@ export function s0StrategyVersion(variant: S0Variant, gitSha: string, activeFrom
     status: 'PAPER',
     activeFrom,
     activeTo: null,
+  };
+}
+
+export const S0_TINY_LIVE_VERSION_UUID = '50000000-0000-4000-8000-000000000007' as Uuid;
+
+/**
+ * ADR-0004 tiny-live variant: the same deterministic rule and the same deterministic second-look
+ * gate as S0_SAFE, with a T1 tier and a live intent expiry above `humanReactionFloorMs`, so it can
+ * bind to a LIVE_APPROVAL Release. LIVE_AUTO is not among its authorities (Profile 2 is attended).
+ */
+export function s0TinyLiveVersion(gitSha: string, activeFrom: Instant): StrategyVersion {
+  const safe = s0StrategyVersion('SAFE', gitSha, activeFrom);
+  return {
+    ...safe,
+    id: S0_TINY_LIVE_VERSION_UUID,
+    versionId: S0_TINY_LIVE_VERSION_ID,
+    variant: 'tiny-live',
+    speedTier: 'T1_MOMENTUM',
+    maxDecisionLatencyMs: 60_000,
+    humanReactionFloorMs: 30_000,
+    liveIntentExpiryMs: 120_000,
+    attendedPresenceRequiredProfiles: ['P1A', 'P2'],
+    eligibleCapitalAuthorities: ['OBSERVE', 'PAPER', 'LIVE_APPROVAL'],
   };
 }

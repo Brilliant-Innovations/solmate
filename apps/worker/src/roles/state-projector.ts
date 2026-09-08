@@ -22,6 +22,8 @@ export interface StateProjectorRepo {
   cohorts(now: Instant): Promise<{ memberships: ActiveMembership[]; clusterSet: CorrelationClusterSet | null }>;
   nextSequence(): Promise<Sequence>;
   insert(envelope: SignedRiskStateProjection): Promise<void>;
+  /** D56: the attested ceiling for the account when live arming recorded one; null on a paper account. */
+  capitalCeilingUsd(): Promise<number | null>;
 }
 
 export interface StateProjectorDeps {
@@ -52,7 +54,7 @@ export interface StateProjectorReport {
 
 export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<StateProjectorReport> {
   const now = deps.clock.now();
-  const [book, sleeves, lots, recon, eligibility, feeds, cohorts, sequence] = await Promise.all([
+  const [book, sleeves, lots, recon, eligibility, feeds, cohorts, sequence, attestedCeiling] = await Promise.all([
     deps.repo.book(now),
     deps.repo.sleeves(),
     deps.repo.openLots(),
@@ -61,6 +63,7 @@ export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<
     deps.repo.feedHealth(),
     deps.repo.cohorts(now),
     deps.repo.nextSequence(),
+    deps.repo.capitalCeilingUsd(),
   ]);
   const reconAgeMs = recon ? Math.max(0, instantToMs(now) - instantToMs(recon.evaluatedAt)) : null;
   const reconFresh = recon !== null && reconAgeMs !== null && reconAgeMs <= deps.config.reconciliationMaxAgeMs && recon.status !== 'UNAVAILABLE';
@@ -95,7 +98,7 @@ export async function runStateProjectorCycle(deps: StateProjectorDeps): Promise<
     policy: deps.policy,
     eligibility,
     freshness: freshnessSummaryFrom(feeds, deps.freshness, deps.providerFor, now),
-    capital: { ceilingUsd: usd(deps.account.startingCapital), recognizedUsd: usd(equity) },
+    capital: { ceilingUsd: attestedCeiling ?? usd(deps.account.startingCapital), recognizedUsd: usd(equity) },
   });
   const envelope = await signProjection(projection, deps.key, now);
   await deps.repo.insert(envelope);

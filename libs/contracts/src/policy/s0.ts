@@ -14,6 +14,9 @@ export const S0_STRATEGY_VERSION_IDS = {
   SAFE: 'S0_SAFE@1.2.0' as VersionId,
 } as const;
 
+/** ADR-0004: the Profile 2 tiny-live variant of S0_SAFE, same rule and gate, tier and expiry above the human-reaction floor. */
+export const S0_TINY_LIVE_VERSION_ID = 'S0_SAFE@1.2.0+tiny-live' as VersionId;
+
 /** The deterministic trigger families S0 paper-trades (plan M5b "S0 paper continues across the full trigger set"). */
 export const S0_TRIGGER_FAMILIES = ['MOMENTUM_CONTINUATION', 'EARLY_ACCELERATION'] as const;
 

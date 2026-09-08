@@ -28,3 +28,4 @@ export * from './context-repo.js';
 export * from './automations-repo.js';
 export * from './projection-repo.js';
 export * from './live-repo.js';
+export * from './release-repo.js';

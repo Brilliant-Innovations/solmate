@@ -84,6 +84,14 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  applyReleaseStatus,
+  insertAttestation,
+  insertCapitalAttestation,
+  latestCapitalAttestation,
+  loadLatestAttestation,
+  loadRelease,
+  loadReleaseForStrategy,
+  stepUpEvidenceFor,
   insertApproval,
   listAuthorizedIntentsAwaitingExecution,
   listLiveAccounts,
@@ -120,7 +128,9 @@ import {
   type Sql,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient, NoRouteError, PaperExecutionAdapter } from '@sol-agent-trader/execution';
-import { LLM_STRATEGY_SPECS, llmStrategyVersion, llmStrategyVersions, s0StrategyVersion } from '@sol-agent-trader/strategies';
+import { LLM_STRATEGY_SPECS, llmStrategyVersion, llmStrategyVersions, s0StrategyVersion, s0TinyLiveVersion } from '@sol-agent-trader/strategies';
+import { armingPreconditions } from '@sol-agent-trader/risk';
+import type { CapitalAuthority, Instant } from '@sol-agent-trader/contracts';
 import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
@@ -957,6 +967,7 @@ async function stateProjectorLoop(env: WorkerEnv, logger: Logger, shared: Shared
       cohorts: async (now: Parameters<typeof latestClusterSet>[1]) => ({ memberships: await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version), clusterSet: await latestClusterSet(sql, now, 2 * DEFAULT_CORRELATION_CLUSTER_POLICY.windowMs) }),
       nextSequence: () => nextProjectionSequence(sql, account.id),
       insert: (envelope: Parameters<typeof insertProjection>[2]) => insertProjection(sql, account.id, envelope),
+      capitalCeilingUsd: async () => (await latestCapitalAttestation(sql, account.id))?.ceilingUsd ?? null,
     },
     key,
     clock: systemClock,
@@ -1029,6 +1040,17 @@ async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
       insertApproval: (envelope: Parameters<typeof insertApproval>[1]) => insertApproval(sql, envelope),
       setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
       resolve: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
+      loadRelease: (id: Uuid) => loadRelease(sql, id),
+      applyReleaseStatus: (from: Parameters<typeof applyReleaseStatus>[1], to: Parameters<typeof applyReleaseStatus>[2]) => applyReleaseStatus(sql, from, to),
+      insertAttestation: (a: Parameters<typeof insertAttestation>[1]) => insertAttestation(sql, a),
+      insertCapitalAttestation: (c: Parameters<typeof insertCapitalAttestation>[1]) => insertCapitalAttestation(sql, c),
+      stepUpEvidence: (requestId: Uuid, now: Parameters<typeof stepUpEvidenceFor>[2]) => stepUpEvidenceFor(sql, requestId, now),
+      paperEvidence: async (release: Parameters<typeof applyReleaseStatus>[1]) => {
+        const [c] = await sql<{ n: string | number }[]>`select count(*)::int as n from agents.action_cycles where strategy_version_id = ${release.binding.strategyVersionId} and state = 'CLEARED'`;
+        const [r] = await sql<{ status: string | null }[]>`select status from trading.custody_reconciliations order by evaluated_at desc limit 1`;
+        return { paperCycles: Number(c?.n ?? 0), reconciliationClean: r?.status !== 'MISMATCH' };
+      },
+      recognizedUsd: async () => null,
       approverRole: async (userId: Uuid) => {
         const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
         return r && (r.role === 'operator' || r.role === 'admin') ? r.role : null;
@@ -1036,9 +1058,12 @@ async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
     },
     authorizerKeys,
     signing,
+    // Live Readiness (M8a) answers here; until it exists arming fails closed (§15.9).
+    readinessPermits: async () => false,
+    liveCapabilityEnabled: false,
     clock: systemClock,
     logger,
-    config: { batchSize: 20, maxValidityMs: env.APPROVAL_MAX_VALIDITY_MS },
+    config: { batchSize: 20, maxValidityMs: env.APPROVAL_MAX_VALIDITY_MS, attestationValidityMs: 24 * 3_600_000, minPaperCycles: 20 },
   };
   logger.info('approvals_starting', { intervalMs, keyId: signing.keyId, authorizerKeys: authorizerKeys.map((k) => k.keyId), maxValidityMs: env.APPROVAL_MAX_VALIDITY_MS, holder: shared.holder });
   await loopUnderLease('approvals', intervalMs, logger, shared, async () => {
@@ -1105,6 +1130,14 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
       listPendingControlRequests: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
       stepUpVerifiedFor: (id: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, id, now),
       resolveControlRequest: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
+      // §15.9: a live authority needs an ARMED Release with a valid ARM attestation and a readiness verdict; readiness lands in M8a, so live cannot be set yet.
+      armingFacts: async (authority: CapitalAuthority, now: Instant) => {
+        if (authority !== 'LIVE_APPROVAL' && authority !== 'LIVE_AUTO') return { releaseAttested: true, readinessPermits: true };
+        const release = await loadReleaseForStrategy(sql, s0TinyLiveVersion(env.GIT_SHA, now).versionId);
+        const attestation = release ? await loadLatestAttestation(sql, release.id, 'ARM') : null;
+        const facts = armingPreconditions({ requestedAuthority: authority, liveCapabilityEnabled: true, release, attestation, readinessPermits: true, stepUpVerified: true, now });
+        return { releaseAttested: facts.ok, readinessPermits: false };
+      },
     },
     clock: systemClock,
     logger,
@@ -1114,6 +1147,7 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
     attended,
     authority: 'PAPER' as const,
     autoStart: env.SESSION_AUTOSTART === 'true',
+    liveCapabilityEnabled: false,
   };
   logger.info('session_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, attended, autoStart: deps.autoStart, policy: DEFAULT_SESSION_POLICY.version, holder: shared.holder });
   await loopUnderLease('session', intervalMs, logger, shared, async () => {

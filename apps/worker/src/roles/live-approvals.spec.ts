@@ -32,12 +32,19 @@ describe('worker role approvals (§15.6, D41; INV-10)', () => {
       async setIntentState(intentId, state) { states.push({ intentId, state }); },
       async resolve(id, state, resolution) { resolutions.push({ id, state, resolution }); return true; },
       async approverRole() { return 'operator'; },
+      async stepUpEvidence() { return null; },
+      async loadRelease() { return null; },
+      async applyReleaseStatus() { return false; },
+      async insertAttestation() { throw new Error('not used'); },
+      async insertCapitalAttestation() { throw new Error('not used'); },
+      async paperEvidence() { return { paperCycles: 0, reconciliationClean: true }; },
+      async recognizedUsd() { return null; },
       ...over,
     };
     return { r, inserted, resolutions, states };
   }
   async function deps(r: ApprovalsRepo, authorizerKeys: Awaited<ReturnType<typeof generateSigningKeyPair>>[]): Promise<ApprovalsDeps> {
-    return { repo: r, authorizerKeys, signing: await generateSigningKeyPair(), clock: fixedClock(addMs(T0, 1_000)), logger, config: { batchSize: 10, maxValidityMs: 120_000 } };
+    return { repo: r, authorizerKeys, signing: await generateSigningKeyPair(), clock: fixedClock(addMs(T0, 1_000)), logger, readinessPermits: async () => false, liveCapabilityEnabled: false, config: { batchSize: 10, maxValidityMs: 120_000, attestationValidityMs: 600_000, minPaperCycles: 20 } };
   }
 
   it('grants a bound, signed approval for a verified unexpired authorization with step-up; the grant expires no later than the intent', async () => {

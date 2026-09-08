@@ -24,6 +24,7 @@ function fakeRepo(over: Partial<StateProjectorRepo> = {}) {
     async cohorts() { return { memberships: [{ assetId: IDS.asset as Uuid, cohortId: uuid(9), cohortName: 'memes' }], clusterSet: { id: uuid(8), versionId: 'clusters-v1' as VersionId, windowStart: T0, windowEnd: T0, calculatedAt: T0, method: 'pearson', clusters: [{ clusterId: 'c1', assetIds: [IDS.asset as Uuid] }] } }; },
     async nextSequence() { return seq++ as Sequence; },
     async insert(envelope) { inserted.push(envelope); },
+    async capitalCeilingUsd() { return null; },
     ...over,
   };
   return { repo, inserted };

@@ -113,8 +113,9 @@ export async function loadReleaseForStrategy(sql: Sql, strategyVersionId: Versio
   return { id: r['id'] as Uuid, digest: r['digest'] as Sha256Hex, binding: r['binding'] as Release['binding'], status: r['status'] as Release['status'], createdAt: iso(r['created_at']), promotedAt: isoOrNull(r['promoted_at']), retiredAt: isoOrNull(r['retired_at']) };
 }
 
-export async function loadLatestAttestation(sql: Sql, releaseId: Uuid): Promise<ReleaseAttestation | null> {
-  const rows = await sql<Record<string, unknown>[]>`select * from research.release_attestations where release_id = ${releaseId} order by attested_at desc limit 1`;
+/** The newest attestation for a Release, optionally of one purpose; the lifecycle decides whether it is still valid. */
+export async function loadLatestAttestation(sql: Sql, releaseId: Uuid, purpose: ReleaseAttestation['purpose'] | null = null): Promise<ReleaseAttestation | null> {
+  const rows = await sql<Record<string, unknown>[]>`select * from research.release_attestations where release_id = ${releaseId} and (${purpose}::text is null or purpose = ${purpose}) order by attested_at desc limit 1`;
   const r = rows[0];
   if (!r) return null;
   return {

@@ -1,4 +1,4 @@
-import type { ActivityState, ActorKind, CapitalAuthority, Clock, ColdStartGate, ControlRequestKind, DeploymentProfile, Instant, SessionPolicy, Uuid } from '@sol-agent-trader/contracts';
+import { CapitalAuthority, type ActivityState, type ActorKind, type Clock, type ColdStartGate, type ControlRequestKind, type DeploymentProfile, type Instant, type SessionPolicy, type Uuid } from '@sol-agent-trader/contracts';
 import type { ColdStartFactRows, PendingControlRequest, PersistedTransition, SessionRow } from '@sol-agent-trader/db/server';
 import type { Logger } from '@sol-agent-trader/observability';
 import { coldStartPassed, evaluateColdStartGates, presenceState, runtimeTransition, type Presence, type RuntimeEvent, type RuntimeState } from '@sol-agent-trader/risk';
@@ -30,6 +30,8 @@ export interface SessionRepo {
   listPendingControlRequests(kinds: ControlRequestKind[], limit: number): Promise<PendingControlRequest[]>;
   stepUpVerifiedFor(requestId: Uuid, now: Instant): Promise<boolean>;
   resolveControlRequest(id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant): Promise<boolean>;
+  /** §15.9 facts for a requested live authority: an ARMED Release with a valid ARM attestation exists for the account's strategies, and the readiness verdict permits. */
+  armingFacts(authority: CapitalAuthority, now: Instant): Promise<{ releaseAttested: boolean; readinessPermits: boolean }>;
 }
 
 export interface SessionDeps {
@@ -42,6 +44,8 @@ export interface SessionDeps {
   attended: boolean;
   authority: CapitalAuthority;
   autoStart: boolean;
+  /** Deployment-level live capability (§15.9); false in every paper profile. */
+  liveCapabilityEnabled: boolean;
 }
 
 export interface SessionReport {
@@ -56,7 +60,7 @@ export interface SessionReport {
   errors: string[];
 }
 
-const CONTROL_KINDS: ControlRequestKind[] = ['START_SESSION', 'END_SESSION', 'PAUSE_NEW_ENTRIES', 'RESUME_NEW_ENTRIES'];
+const CONTROL_KINDS: ControlRequestKind[] = ['START_SESSION', 'END_SESSION', 'PAUSE_NEW_ENTRIES', 'RESUME_NEW_ENTRIES', 'SET_REQUESTED_MODE'];
 
 export async function runSessionCycle(deps: SessionDeps): Promise<SessionReport> {
   const now = deps.clock.now();
@@ -155,6 +159,27 @@ export async function runSessionCycle(deps: SessionDeps): Promise<SessionReport>
             }
             session = await persist(session, state, r.state, 'OPERATOR', req.requestedBy, 'operator resume (step-up verified)', null);
             await resolve('ACCEPTED', null, { stepUpVerified: true });
+            break;
+          }
+          case 'SET_REQUESTED_MODE': {
+            if (!session) {
+              await resolve('REJECTED', 'NO_SESSION');
+              break;
+            }
+            const authority = CapitalAuthority.safeParse(req.payload['authority']);
+            if (!authority.success) {
+              await resolve('REJECTED', 'MALFORMED_PAYLOAD');
+              break;
+            }
+            const stepUpVerified = await deps.repo.stepUpVerifiedFor(req.id, now);
+            const facts = await deps.repo.armingFacts(authority.data, now);
+            const r = runtimeTransition({ ...state, liveCapabilityEnabled: deps.liveCapabilityEnabled }, { type: 'SET_AUTHORITY', at: now, by: 'OPERATOR', authority: authority.data, releaseAttested: facts.releaseAttested, readinessPermits: facts.readinessPermits, stepUpVerified });
+            if (!r.ok) {
+              await resolve('REJECTED', r.rejection.code, 'missing' in r.rejection ? { missing: r.rejection.missing } : {});
+              break;
+            }
+            session = await persist(session, state, r.state, 'OPERATOR', req.requestedBy, `operator set authority ${authority.data}`, null);
+            await resolve('ACCEPTED', null, { authority: authority.data, stepUpVerified, ...facts });
             break;
           }
           default:

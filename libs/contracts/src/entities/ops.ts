@@ -196,3 +196,18 @@ export const ControlRequest = z.object({
   resolvedAt: Instant.nullable(),
 });
 export type ControlRequest = z.infer<typeof ControlRequest>;
+
+// D56 ops.capital_attestations -------------------------------------------------------------------
+
+/** The capital ceiling live arming attested to for an account under a Release; append-only. */
+export const CapitalAttestation = z.object({
+  id: Uuid,
+  accountId: Uuid,
+  releaseId: Uuid,
+  attestationId: Uuid,
+  ceilingUsd: UsdValue,
+  recognizedUsdAtAttestation: UsdValue.nullable(),
+  attestedBy: Uuid,
+  attestedAt: Instant,
+});
+export type CapitalAttestation = z.infer<typeof CapitalAttestation>;

@@ -16,6 +16,7 @@ class MemoryRepo implements SessionRepo {
   requests: PendingControlRequest[] = [];
   resolved: { id: Uuid; state: string; resolution: Record<string, unknown> }[] = [];
   facts: ColdStartFactRows = healthyFacts;
+  async armingFacts() { return { releaseAttested: false, readinessPermits: false }; }
   lots = 0;
   inFlight = 0;
   verifiedRequests = new Set<Uuid>();
@@ -42,7 +43,7 @@ class MemoryRepo implements SessionRepo {
   activity(): ActivityState { return [...this.sessions.values()].at(-1)?.activityState ?? 'OFF'; }
 }
 
-const deps = (repo: MemoryRepo, over: Partial<SessionDeps> = {}): SessionDeps => ({ repo, clock: fixedClock(NOW), logger, policy: DEFAULT_SESSION_POLICY, account: { id: ACCOUNT }, profile: 'P1A', attended: true, authority: 'PAPER', autoStart: true, ...over });
+const deps = (repo: MemoryRepo, over: Partial<SessionDeps> = {}): SessionDeps => ({ repo, clock: fixedClock(NOW), logger, policy: DEFAULT_SESSION_POLICY, account: { id: ACCOUNT }, profile: 'P1A', attended: true, authority: 'PAPER', autoStart: true, liveCapabilityEnabled: false, ...over });
 const request = (n: number, kind: ControlRequestKind): PendingControlRequest => ({ id: id(n), requestedBy: OPERATOR, kind, payload: {}, createdAt: NOW });
 
 describe('worker role session (D2, D60–D63, §21.2B)', () => {
@@ -83,18 +84,18 @@ describe('worker role session (D2, D60–D63, §21.2B)', () => {
   it('operator requests: START/END/PAUSE are honoured in order with audited resolutions; PAUSE is sticky and RESUME needs a verified step-up', async () => {
     const repo = new MemoryRepo();
     repo.requests = [request(10, 'END_SESSION'), request(11, 'START_SESSION')];
-    const r1 = await runSessionCycle(deps(repo, { autoStart: false }));
+    const r1 = await runSessionCycle(deps(repo, { autoStart: false, liveCapabilityEnabled: false }));
     expect(r1.requests).toEqual([{ id: id(10), kind: 'END_SESSION', outcome: 'REJECTED', reason: 'NO_SESSION' }, { id: id(11), kind: 'START_SESSION', outcome: 'ACCEPTED', reason: null }]);
     expect(repo.transitions[0]).toMatchObject({ from: 'OFF', to: 'STARTING', actor: 'OPERATOR', actorRef: OPERATOR });
     expect(r1.activity).toBe('WATCH'); // gates pass in the same tick
     repo.requests.push(request(12, 'PAUSE_NEW_ENTRIES'), request(13, 'RESUME_NEW_ENTRIES'));
-    const r2 = await runSessionCycle(deps(repo, { autoStart: false }));
+    const r2 = await runSessionCycle(deps(repo, { autoStart: false, liveCapabilityEnabled: false }));
     expect(r2.requests).toEqual([{ id: id(12), kind: 'PAUSE_NEW_ENTRIES', outcome: 'ACCEPTED', reason: null }, { id: id(13), kind: 'RESUME_NEW_ENTRIES', outcome: 'REJECTED', reason: 'STEP_UP_REQUIRED' }]);
     expect(r2.paused).toBe(true);
     expect([...repo.sessions.values()][0]!.paused).toMatchObject({ active: true, reason: 'OPERATOR_PAUSE', by: 'OPERATOR' });
     repo.requests.push(request(14, 'RESUME_NEW_ENTRIES'));
     repo.verifiedRequests.add(id(14));
-    const r3 = await runSessionCycle(deps(repo, { autoStart: false }));
+    const r3 = await runSessionCycle(deps(repo, { autoStart: false, liveCapabilityEnabled: false }));
     expect(r3.requests).toEqual([{ id: id(14), kind: 'RESUME_NEW_ENTRIES', outcome: 'ACCEPTED', reason: null }]);
     expect(r3.paused).toBe(false);
     expect(repo.resolved.find((x) => x.id === id(14))!.resolution).toMatchObject({ stepUpVerified: true });

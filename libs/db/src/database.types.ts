@@ -1961,6 +1961,42 @@ export type Database = {
   }
   ops: {
     Tables: {
+      capital_attestations: {
+        Row: {
+          account_id: string
+          attestation_id: string
+          attested_at: string
+          attested_by: string
+          ceiling_usd: number
+          created_at: string
+          id: string
+          recognized_usd_at_attestation: number | null
+          release_id: string
+        }
+        Insert: {
+          account_id: string
+          attestation_id: string
+          attested_at: string
+          attested_by: string
+          ceiling_usd: number
+          created_at?: string
+          id?: string
+          recognized_usd_at_attestation?: number | null
+          release_id: string
+        }
+        Update: {
+          account_id?: string
+          attestation_id?: string
+          attested_at?: string
+          attested_by?: string
+          ceiling_usd?: number
+          created_at?: string
+          id?: string
+          recognized_usd_at_attestation?: number | null
+          release_id?: string
+        }
+        Relationships: []
+      }
       control_requests: {
         Row: {
           created_at: string

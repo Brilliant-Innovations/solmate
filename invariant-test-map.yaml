@@ -385,9 +385,12 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/risk-authorizer/src/release
+      - libs/risk/src/release
     tests:
       - apps/risk-authorizer/src/release/verify.spec.ts
       - apps/risk-authorizer/src/authorize/authorize.spec.ts
+      - libs/risk/src/release/lifecycle.spec.ts
+      - apps/worker/src/roles/release-controls.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
