@@ -53,4 +53,4 @@ Live-evidence walks of an exit gate, gathered by the authoring session and refer
 | Milestone | File |
 | --- | --- |
 | M4 | `m4-exit-gate-2026-09-07.md` — gate items with hosted-stack evidence; one item blocked by the Birdeye tier |
-- [M5a pipeline evidence (2026-09-08)](m5a-pipeline-evidence-2026-09-08.md) — every M5a package running against the hosted project, session ACTIVE, STARTING gate proven, no paper trade yet; gate open.
+| M5a | `m5a-pipeline-evidence-2026-09-08.md` — every package running against the hosted project, session ACTIVE, STARTING warm-up proven, no paper trade yet; gate open |
