@@ -1,4 +1,5 @@
-import { amountToBigInt, instantToMs, sha256Hex, type Amount, type Bps, type Instant, type MintAddress, type RiskAuthorizedIntent, type Sha256Hex } from '@sol-agent-trader/contracts';
+import { amountToBigInt, instantToMs, sha256Hex, type Amount, type Bps, type Instant, type MintAddress, type Sha256Hex } from '@sol-agent-trader/contracts';
+import type { ExecutionBounds } from './bounds.js';
 
 /**
  * Order-versus-authorization checks (blueprint §15.4 steps 1–3 and 7; ADR-0009 P7 bounds). The
@@ -46,7 +47,7 @@ export type OrderRejection =
 
 export type OrderVerdict = { ok: true; transactionHash: Sha256Hex } | { ok: false; reasons: OrderRejection[]; detail: string[] };
 
-export async function checkOrderAgainstAuthorization(order: JupiterOrderFacts, intent: RiskAuthorizedIntent, expected: { tradingWallet: string; now: Instant; currentBlockHeight: number | null }): Promise<OrderVerdict> {
+export async function checkOrderAgainstAuthorization(order: JupiterOrderFacts, intent: ExecutionBounds, expected: { tradingWallet: string; now: Instant; currentBlockHeight: number | null }): Promise<OrderVerdict> {
   const reasons: OrderRejection[] = [];
   const detail: string[] = [];
   const nowMs = instantToMs(expected.now);

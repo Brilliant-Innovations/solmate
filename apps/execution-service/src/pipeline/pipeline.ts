@@ -1,5 +1,6 @@
-import { amountToBigInt, instantToMs, type Amount, type Clock, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { LiveExecutionAdapter, proveDead, type ChainObserver, type DetailedExecution, type LiveAdapterOptions } from '@sol-agent-trader/execution';
+import { amountToBigInt, instantToMs, mulDiv, type Amount, type Bps, type Clock, type EmergencyCommand, type EmergencyIssuer, type ExecutionRequest, type ExecutorGuardrails, type Fill, type IdempotencyKey, type Instant, type JsonRecord, type MintAddress, type Order, type OrderAttempt, type ProtectionMode, type RiskAuthorizedIntent, type SignedApprovalGrant, type SignedEmergencyCommand, type SigningRequest, type SignatureResult, type TradeIntent, type TradingWalletSigner, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { LiveExecutionAdapter, planEmergencyClose, proveDead, type ChainObserver, type CustodyReader, type DetailedExecution, type EmergencyCloseAction, type EmergencyClosePolicy, type EmergencyPlanRejection, type ExecutionBounds, type LiveAdapterOptions } from '@sol-agent-trader/execution';
+import { verifyEmergencyCommand, type EmergencyCommandRejection } from '../emergency/command.js';
 import { verifyAuthority, type AuthorityRejection } from '../authority/verify.js';
 import { modeGate, type ModeFacts } from '../authority/mode-gate.js';
 import { checkCaps, type CapRejection } from '../caps/check.js';
@@ -46,6 +47,10 @@ export interface PipelineDeps {
   guardrails: ExecutorGuardrails;
   authorizerKeys: readonly VerificationKey[];
   approverKeys: readonly VerificationKey[];
+  emergencyOperatorKeys: readonly VerificationKey[];
+  custody: CustodyReader;
+  /** Deployment-local emergency policy (D22): settlement preference, protective slippage, validity. */
+  emergency: Omit<EmergencyClosePolicy, 'hardMaxProtectiveSlippageBps' | 'maxTxBaseUnits' | 'settlementMints'> & { settlementMints?: readonly MintAddress[] };
   signer: TradingWalletSigner;
   chain: ChainObserver;
   clock: Clock;
@@ -72,6 +77,25 @@ export type SubmitOutcome =
   | { outcome: 'DENIED'; stage: 'AUTHORITY' | 'CAPS'; reasons: (AuthorityRejection | CapRejection)[]; detail: string[] }
   | { outcome: 'DUPLICATE'; intentId: Uuid; state: string }
   | { outcome: 'EXECUTED'; execution: DetailedExecution };
+
+export interface EmergencyActionOutcome {
+  mint: MintAddress;
+  amount: Amount;
+  heldAmount: Amount;
+  state: OrderAttempt['state'] | 'SKIPPED';
+  txSignature: string | null;
+  reasons: string[];
+}
+
+export type EmergencyInput =
+  | { signed: SignedEmergencyCommand }
+  /** From the authenticated internal API: the position monitor acting on chain truth plus the shadow during a DB outage. */
+  | { monitor: { commandId: Uuid; type: EmergencyCommand['type']; mint: MintAddress | null; maxAmount: Amount | null; reason: string; shadowSequence: number | null } };
+
+export type EmergencyOutcome =
+  | { outcome: 'REJECTED'; reasons: (EmergencyCommandRejection | EmergencyPlanRejection | 'SHADOW_STALE')[]; detail: string[] }
+  | { outcome: 'PAUSED'; commandId: Uuid }
+  | { outcome: 'CLOSED'; commandId: Uuid; actions: EmergencyActionOutcome[]; skipped: { mint: MintAddress; reason: string }[] };
 
 export interface Recovery {
   correlationId: string;
@@ -103,10 +127,39 @@ function withRetry(signer: TradingWalletSigner, attempts: number): TradingWallet
 export class ExecutorPipeline {
   readonly registry: IdempotencyRegistry;
   readonly ledger: ExecutorExposureLedger;
+  /** The executor's own pause (D25 plane 1, §15.10): survives restarts through the journal; cleared only by an operator command. */
+  localPause: { active: boolean; reason: string | null };
 
   constructor(private readonly deps: PipelineDeps) {
-    this.registry = IdempotencyRegistry.fromJournal(deps.journal.all());
-    this.ledger = ExecutorExposureLedger.replay(deps.journal.all().filter((e) => e.kind === 'EXPOSURE_LEDGER_UPDATED').map((e) => e.payload as unknown as ExposureEvent));
+    const entries = deps.journal.all();
+    this.registry = IdempotencyRegistry.fromJournal(entries);
+    this.ledger = ExecutorExposureLedger.replay(entries.filter((e) => e.kind === 'EXPOSURE_LEDGER_UPDATED').map((e) => e.payload as unknown as ExposureEvent));
+    const lastPause = [...entries].reverse().find((e) => e.kind === 'PAUSE_APPLIED' || e.kind === 'PAUSE_CLEARED');
+    this.localPause = lastPause?.kind === 'PAUSE_APPLIED' ? { active: true, reason: (lastPause.payload['reason'] as string | undefined) ?? null } : { active: false, reason: null };
+  }
+
+  private facts(): ModeFacts {
+    const f = this.deps.modeFacts();
+    return { ...f, localPause: f.localPause || this.localPause.active };
+  }
+
+  async applyLocalPause(reason: string): Promise<void> {
+    if (this.localPause.active) return;
+    this.localPause = { active: true, reason };
+    await this.deps.journal.append('PAUSE_APPLIED', 'ops', { reason, at: this.deps.clock.now() });
+  }
+
+  /** Only the reconciliation/operator path clears a local pause after review (§15.10). */
+  async clearLocalPause(by: string): Promise<void> {
+    if (!this.localPause.active) return;
+    this.localPause = { active: false, reason: null };
+    await this.deps.journal.append('PAUSE_CLEARED', 'ops', { by, at: this.deps.clock.now() });
+  }
+
+  private lastShadowSequence(): number | null {
+    const e = [...this.deps.journal.all()].reverse().find((x) => x.kind === 'SHADOW_SYNCED');
+    const s = e?.payload['sequence'];
+    return typeof s === 'number' ? s : null;
   }
 
   get journal(): ExecutorJournal {
@@ -133,7 +186,7 @@ export class ExecutorPipeline {
       storedIntent: input.storedIntent,
       approval: input.approval ? { grant: input.approval, keys: this.deps.approverKeys } : null,
       usedNonces: this.deps.journal.usedNonces(),
-      mode: this.deps.modeFacts(),
+      mode: this.facts(),
       now,
       maxSkewMs: this.deps.maxSkewMs,
     });
@@ -161,23 +214,33 @@ export class ExecutorPipeline {
     await this.ledgerEvent(intent.id, { kind: 'ENTRY_AUTHORIZED', at: now, intentId: intent.id, mint: authorized.outputMint as MintAddress, notional: authorized.maxInputAmount, protectionMode: input.protectionMode });
     this.registry.advance(key, 'AUTHORIZED');
 
+    const adapter = this.adapterFor(intent.id, key, authorized.nonce, request.executionPath, null);
+
+    const execution = await adapter.executeDetailed(request);
+    this.probe('AFTER_RESPONSE');
+    await this.record(intent.id, key, execution.attempt.state, execution.fill, execution.result.txSignature, execution.result.rejectionReasons, authorized);
+    return { outcome: 'EXECUTED', execution };
+  }
+
+  private adapterFor(intentId: Uuid, key: IdempotencyKey, nonce: string, path: ExecutionRequest['executionPath'], emergencyCommandId: Uuid | null): LiveExecutionAdapter {
     const journal = this.deps.journal;
     const deps = this.deps;
     let signedAttempt: OrderAttempt | null = null;
-    const adapter = new LiveExecutionAdapter({
+    const extra = emergencyCommandId ? { emergency: true, commandId: emergencyCommandId } : {};
+    return new LiveExecutionAdapter({
       ...deps.adapter,
       signer: withRetry(deps.signer, deps.signerRetries ?? 2),
       clock: deps.clock,
       newId: deps.newId,
       journal: async ({ attempt }: { order: Order; attempt: OrderAttempt }) => {
         signedAttempt = attempt;
-        await journal.append('ATTEMPT_SIGNED', intent.id, { intentId: intent.id, idempotencyKey: key, nonce: authorized.nonce, signedTxHash: attempt.signedTxHash, expectedTxSignature: attempt.expectedTxSignature, lastValidBlockHeight: attempt.lastValidBlockHeight, jupiterRequestId: attempt.jupiterRequestId });
+        await journal.append('ATTEMPT_SIGNED', intentId, { intentId, idempotencyKey: key, nonce, signedTxHash: attempt.signedTxHash, expectedTxSignature: attempt.expectedTxSignature, lastValidBlockHeight: attempt.lastValidBlockHeight, jupiterRequestId: attempt.jupiterRequestId, ...extra });
         this.probe('AFTER_SIGNED_JOURNAL');
       },
-      beforeSubmit: async () => {
-        const gate = modeGate(deps.modeFacts(), authorized.exposureEffect);
+      beforeSubmit: async (bounds) => {
+        const gate = modeGate(this.facts(), bounds.exposureEffect);
         if (!gate.allowed) return { allowed: false, reason: `MODE_GATE_${gate.reason}` };
-        await journal.append('ATTEMPT_SUBMITTED', intent.id, { intentId: intent.id, idempotencyKey: key, nonce: authorized.nonce, path: request.executionPath, expectedTxSignature: signedAttempt?.expectedTxSignature ?? null, signedTxHash: signedAttempt?.signedTxHash ?? null, lastValidBlockHeight: signedAttempt?.lastValidBlockHeight ?? null });
+        await journal.append('ATTEMPT_SUBMITTED', intentId, { intentId, idempotencyKey: key, nonce, path, expectedTxSignature: signedAttempt?.expectedTxSignature ?? null, signedTxHash: signedAttempt?.signedTxHash ?? null, lastValidBlockHeight: signedAttempt?.lastValidBlockHeight ?? null, ...extra });
         this.registry.advance(key, 'EXECUTING');
         this.probe('AFTER_SUBMITTED_JOURNAL');
         return { allowed: true };
@@ -189,29 +252,95 @@ export class ExecutorPipeline {
       },
       currentBlockHeight: () => deps.chain.blockHeight(),
     });
-
-    const execution = await adapter.executeDetailed(request);
-    this.probe('AFTER_RESPONSE');
-    await this.record(intent.id, key, execution.attempt.state, execution.fill, execution.result.txSignature, execution.result.rejectionReasons, authorized);
-    return { outcome: 'EXECUTED', execution };
   }
 
-  private async record(intentId: Uuid, key: IdempotencyKey, state: OrderAttempt['state'], fill: Fill | null, signature: string | null, reasons: string[], authorized: RiskAuthorizedIntent): Promise<void> {
+  /**
+   * D22 / §15.10: a verified out-of-band command or an authenticated monitor request. Works with no
+   * database: custody from chain, bounds from the deployment policy, everything journaled. Any
+   * close action applies the local pause so entries cannot resume before operator review.
+   */
+  async emergency(input: EmergencyInput): Promise<EmergencyOutcome> {
+    const now = this.deps.clock.now();
+    let cmd: { commandId: Uuid; type: EmergencyCommand['type']; mint: MintAddress | null; maxAmount: Amount | null; issuer: EmergencyIssuer; reason: string; nonce: string; shadowSequence: number | null };
+    if ('signed' in input) {
+      const v = await verifyEmergencyCommand({ envelope: input.signed, keys: this.deps.emergencyOperatorKeys, acceptedKeyIds: this.deps.guardrails.acceptedEmergencyOperatorKeyIds, cluster: this.deps.guardrails.cluster, usedNonces: this.deps.journal.usedNonces(), now, maxSkewMs: this.deps.maxSkewMs });
+      if (!v.ok) {
+        await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', input.signed.payloadHash, { reasons: v.reasons, detail: v.detail, keyId: input.signed.keyId });
+        return { outcome: 'REJECTED', reasons: v.reasons, detail: v.detail };
+      }
+      cmd = { commandId: v.command.commandId, type: v.command.type, mint: v.command.mint, maxAmount: v.command.maxAmount, issuer: v.command.issuer, reason: v.command.reason, nonce: v.command.nonce, shadowSequence: null };
+    } else {
+      const m = input.monitor;
+      const last = this.lastShadowSequence();
+      if (m.shadowSequence !== null && last !== null && m.shadowSequence < last) {
+        await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', m.commandId, { reasons: ['SHADOW_STALE'], shadowSequence: m.shadowSequence, lastSynced: last });
+        return { outcome: 'REJECTED', reasons: ['SHADOW_STALE'], detail: [`shadow ${m.shadowSequence} older than synced ${last}`] };
+      }
+      cmd = { commandId: m.commandId, type: m.type, mint: m.mint, maxAmount: m.maxAmount, issuer: 'POSITION_MONITOR', reason: m.reason, nonce: `monitor:${m.commandId}`, shadowSequence: m.shadowSequence };
+    }
+    await this.deps.journal.append('EMERGENCY_COMMAND_RECEIVED', cmd.commandId, { commandId: cmd.commandId, type: cmd.type, mint: cmd.mint, maxAmount: cmd.maxAmount, issuer: cmd.issuer, reason: cmd.reason, nonce: cmd.nonce, shadowSequence: cmd.shadowSequence });
+
+    if (cmd.type === 'PAUSE_NEW_ENTRIES') {
+      await this.applyLocalPause(`EMERGENCY_COMMAND:${cmd.commandId}`);
+      return { outcome: 'PAUSED', commandId: cmd.commandId };
+    }
+
+    const g = this.deps.guardrails;
+    const custody = await this.deps.custody.holdings(g.tradingWalletAddress);
+    const policy: EmergencyClosePolicy = { ...this.deps.emergency, settlementMints: this.deps.emergency.settlementMints ?? g.allowedSettlementMints, hardMaxProtectiveSlippageBps: g.hardMaxProtectiveSlippageBps, maxTxBaseUnits: g.maxEmergencyCloseTxBaseUnits === null ? null : BigInt(g.maxEmergencyCloseTxBaseUnits) };
+    const plan = planEmergencyClose({ type: cmd.type, mint: cmd.mint, maxAmount: cmd.maxAmount }, custody.holdings, policy, now);
+    if (!plan.ok) {
+      await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', cmd.commandId, { reasons: plan.reasons, custodySlot: custody.slot });
+      return { outcome: 'REJECTED', reasons: plan.reasons, detail: [`custody slot ${custody.slot}`] };
+    }
+    const actions: EmergencyActionOutcome[] = [];
+    for (const a of plan.actions) actions.push(await this.emergencyAction(cmd, a));
+    await this.applyLocalPause(`EMERGENCY_ACTION:${cmd.commandId}`);
+    return { outcome: 'CLOSED', commandId: cmd.commandId, actions, skipped: plan.skipped };
+  }
+
+  private async emergencyAction(cmd: { commandId: Uuid; nonce: string; reason: string }, a: EmergencyCloseAction): Promise<EmergencyActionOutcome> {
+    const intentId = this.deps.newId();
+    const key = `emergency:${cmd.commandId}:${a.mint}` as IdempotencyKey;
+    const claim = this.registry.claim(intentId, key);
+    if (claim.outcome === 'DUPLICATE') return { mint: a.mint, amount: a.amount, heldAmount: a.heldAmount, state: 'SKIPPED', txSignature: null, reasons: ['DUPLICATE_COMMAND'] };
+    await this.deps.journal.append('ATTEMPT_PREPARED', intentId, { intentId, idempotencyKey: key, nonce: cmd.nonce, emergency: true, commandId: cmd.commandId, mint: a.mint, maxInputAmount: a.amount, heldAmount: a.heldAmount, outputMint: a.outputMint, expiresAt: a.bounds.expiresAt });
+    this.registry.advance(key, 'AUTHORIZED');
+    const intent: TradeIntent = {
+      id: intentId, idempotencyKey: key, accountId: cmd.commandId, strategyVersionId: 'EMERGENCY_CLOSE@1' as TradeIntent['strategyVersionId'], sleeveId: null, assetId: cmd.commandId, action: 'EMERGENCY_CLOSE', side: 'SELL', exposureEffect: 'REDUCE',
+      inputMint: a.mint, outputMint: a.outputMint, maxInputAmount: a.amount, riskEvaluationId: cmd.commandId, actionCycleId: cmd.commandId, clearedCutoffVersion: 1,
+      constraints: { maxSlippageBps: a.bounds.maxSlippageBps, maxPriceImpactBps: a.bounds.maxPriceImpactBps, chaseToleranceBps: 0 as Bps, maxQuoteAgeMs: a.bounds.maxQuoteAgeMs }, protectionPolicyRef: null, targetLotIds: [], approvalRequired: false, createdAt: this.deps.clock.now(), expiresAt: a.bounds.expiresAt,
+    };
+    const request: ExecutionRequest = { intent, capitalAuthority: 'LIVE_AUTO', authorization: null, approvalHash: null, executionPath: 'JUPITER_ORDER', requestedAt: this.deps.clock.now() };
+    const adapter = this.adapterFor(intentId, key, cmd.nonce, 'JUPITER_ORDER', cmd.commandId);
+    const execution = await adapter.executeDetailed(request, { bounds: a.bounds });
+    await this.record(intentId, key, execution.attempt.state, execution.fill, execution.result.txSignature, execution.result.rejectionReasons, a.bounds, { mint: a.mint, heldAmount: a.heldAmount });
+    return { mint: a.mint, amount: a.amount, heldAmount: a.heldAmount, state: execution.attempt.state, txSignature: execution.result.txSignature, reasons: execution.result.rejectionReasons };
+  }
+
+  private async record(intentId: Uuid, key: IdempotencyKey, state: OrderAttempt['state'], fill: Fill | null, signature: string | null, reasons: string[], authorized: ExecutionBounds, exit?: { mint: MintAddress; heldAmount: Amount }): Promise<void> {
     const at = this.deps.clock.now();
     if (state === 'FINALIZED') {
-      await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: (fill?.inputAmount ?? authorized.maxInputAmount) as Amount });
+      if (exit) {
+        // Emergency exit: release the open entries of that mint in proportion to what was sold against chain-held quantity.
+        const sold = (fill?.inputAmount ?? authorized.maxInputAmount) as Amount;
+        for (const o of this.ledger.openByMint(exit.mint)) {
+          const released = amountToBigInt(exit.heldAmount) > 0n ? mulDiv(o.exposure, amountToBigInt(sold), amountToBigInt(exit.heldAmount), 'FLOOR') : o.exposure;
+          await this.ledgerEvent(o.intentId, { kind: 'EXIT_CONFIRMED', at, intentId: o.intentId, costReleased: released });
+        }
+      } else await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: (fill?.inputAmount ?? authorized.maxInputAmount) as Amount });
       this.registry.advance(key, 'COMPLETED');
       await this.deps.journal.append('ATTEMPT_RESULT', intentId, { intentId, idempotencyKey: key, state, lifecycle: 'COMPLETED', txSignature: signature, fillId: fill?.id ?? null, inputAmount: fill?.inputAmount ?? null, outputAmount: fill?.outputAmount ?? null });
       return;
     }
     if (state === 'CONFIRMED_PROVISIONAL') {
       // Exposure is real once confirmed; the lifecycle stays EXECUTING until finality (INV-22).
-      await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: authorized.maxInputAmount });
+      if (!exit) await this.ledgerEvent(intentId, { kind: 'ENTRY_CONFIRMED', at, intentId, costBasis: authorized.maxInputAmount });
       return;
     }
     if (state === 'SUBMITTED') return; // unresolved on purpose: recovery decides from chain truth
     // PREPARED (refused pre-submit) or NOT_LANDED (proven dead): nothing is open.
-    await this.ledgerEvent(intentId, { kind: 'ENTRY_RELEASED', at, intentId, reason: reasons[0] ?? state });
+    if (!exit) await this.ledgerEvent(intentId, { kind: 'ENTRY_RELEASED', at, intentId, reason: reasons[0] ?? state });
     this.registry.advance(key, 'FAILED');
     await this.deps.journal.append('ATTEMPT_RESULT', intentId, { intentId, idempotencyKey: key, state, lifecycle: 'FAILED', reasons, txSignature: signature });
   }

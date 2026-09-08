@@ -14,3 +14,6 @@ export * from './simulate/deltas.js';
 export * from './jupiter/order-client.js';
 export * from './adapter/live-adapter.js';
 export * from './chain/observer.js';
+export * from './validate/bounds.js';
+export * from './chain/custody.js';
+export * from './emergency/plan.js';

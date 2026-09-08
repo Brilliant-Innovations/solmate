@@ -1,4 +1,4 @@
-import { amountToBigInt, instantToMs, sha256Hex, type Amount, type Clock, type ExecutionAdapter, type ExecutionPath, type ExecutionPreview, type ExecutionRequest, type ExecutionResult, type Fill, type Instant, type JupiterQuoteClient, type Order, type OrderAttempt, type Quote, type QuoteRequest, type RiskAuthorizedIntent, type Sha256Hex, type TradeIntent, type SimulationReport, type Slot, type SolanaCluster, type TradingWalletSigner, type TxSignature, type Uuid } from '@sol-agent-trader/contracts';
+import { amountToBigInt, instantToMs, sha256Hex, type Amount, type Clock, type ExecutionAdapter, type ExecutionPath, type ExecutionPreview, type ExecutionRequest, type ExecutionResult, type Fill, type Instant, type JupiterQuoteClient, type Order, type OrderAttempt, type Quote, type QuoteRequest, type Sha256Hex, type TradeIntent, type SimulationReport, type Slot, type SolanaCluster, type TradingWalletSigner, type TxSignature, type Uuid } from '@sol-agent-trader/contracts';
 import { attemptTransition, newOrderAttempt, type OrderAttemptRecord, type OrderAttemptResult } from '../state/order-attempt.js';
 import { emptyIntentRegistry, registerIntent, type IntentRegistry } from '../state/intent.js';
 import { NoRouteError } from '../jupiter/quote-client.js';
@@ -6,6 +6,7 @@ import type { JupiterOrderClient } from '../jupiter/order-client.js';
 import { decodeTransaction, encodeTransaction, fromBase64, toBase64 } from '../tx/codec.js';
 import { checkOrderAgainstAuthorization } from '../validate/order.js';
 import { checkTransactionStructure, type StructureExpectation } from '../validate/structure.js';
+import type { ExecutionBounds } from '../validate/bounds.js';
 import { assertSemanticDeltas } from '../simulate/deltas.js';
 import type { AccountSnapshot, SimulationReader } from '../simulate/client.js';
 import type { DetailedExecution } from './paper-adapter.js';
@@ -42,7 +43,7 @@ export interface LiveAdapterOptions {
   /** Persists the SIGNED_NOT_SUBMITTED attempt; must be durable before it resolves (D12). */
   journal: (records: { order: Order; attempt: OrderAttempt }) => Promise<void>;
   /** The executor's mode gate and caps, read immediately before submit (P3). */
-  beforeSubmit: (intent: RiskAuthorizedIntent) => Promise<{ allowed: true } | { allowed: false; reason: string }>;
+  beforeSubmit: (bounds: ExecutionBounds) => Promise<{ allowed: true } | { allowed: false; reason: string }>;
   /** Waits for finality of a confirmed signature; null when it could not be observed within the caller's budget. */
   awaitFinalized: (signature: TxSignature, lastValidBlockHeight: number | null) => Promise<{ slot: Slot } | null>;
   /** Proof that a submitted transaction can no longer land (INV-23); null when not (yet) provable. */
@@ -65,7 +66,12 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     return (await this.executeDetailed(request)).result;
   }
 
-  async executeDetailed(request: ExecutionRequest): Promise<DetailedExecution> {
+  /**
+   * `emergency` carries D22 bounds built by the executor from chain custody (§15.10): no envelope
+   * exists during a database outage, and the caller has already verified the command. Everything
+   * downstream (order, structure, simulation, deltas, signing) runs exactly as for an envelope.
+   */
+  async executeDetailed(request: ExecutionRequest, emergency?: { bounds: ExecutionBounds }): Promise<DetailedExecution> {
     const { intent } = request;
     const wallet = this.opts.signer.publicKey;
     const order: Order = { id: this.opts.newId(), intentId: intent.id, authorizationHash: null, executionPath: request.executionPath, transactionClass: 'SWAP_V2', createdAt: this.opts.clock.now() };
@@ -85,10 +91,16 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     });
 
     if (request.capitalAuthority !== 'LIVE_APPROVAL' && request.capitalAuthority !== 'LIVE_AUTO') return reject(['NOT_LIVE_AUTHORITY'], null);
-    if (!request.authorization || request.authorization.payload.intentId !== intent.id) return reject(['AUTHORIZATION_MISSING'], null);
-    const authorized = request.authorization.payload;
-    order.authorizationHash = request.authorization.payloadHash;
-    if (request.capitalAuthority === 'LIVE_APPROVAL' && !request.approvalHash) return reject(['APPROVAL_MISSING'], null);
+    let authorized: ExecutionBounds;
+    if (emergency) {
+      if (emergency.bounds.exposureEffect !== 'REDUCE') return reject(['EMERGENCY_NOT_RISK_REDUCING'], null);
+      authorized = emergency.bounds;
+    } else {
+      if (!request.authorization || request.authorization.payload.intentId !== intent.id) return reject(['AUTHORIZATION_MISSING'], null);
+      authorized = request.authorization.payload;
+      order.authorizationHash = request.authorization.payloadHash;
+      if (request.capitalAuthority === 'LIVE_APPROVAL' && !request.approvalHash) return reject(['APPROVAL_MISSING'], null);
+    }
     const registered = registerIntent(this.registry, intent.id, intent.idempotencyKey);
     if (registered.outcome === 'DUPLICATE') return reject(['DUPLICATE_INTENT'], null);
     this.registry = registered.registry;
@@ -96,14 +108,16 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
     // 1. Order for exactly the authorized pair and amount.
     const now = this.opts.clock.now();
     if (instantToMs(now) >= instantToMs(intent.expiresAt)) return reject(['INTENT_EXPIRED'], null);
-    let decision: Quote | null;
-    try {
-      decision = await this.opts.decisionQuote(intent);
-    } catch (err) {
-      if (err instanceof NoRouteError) return reject(['NO_ROUTE'], null);
-      throw err;
+    let decision: Quote | null = null;
+    if (authorized.chaseToleranceBps !== null) {
+      try {
+        decision = await this.opts.decisionQuote(intent);
+      } catch (err) {
+        if (err instanceof NoRouteError) return reject(['NO_ROUTE'], null);
+        throw err;
+      }
+      if (!decision) return reject(['DECISION_QUOTE_MISSING'], null);
     }
-    if (!decision) return reject(['DECISION_QUOTE_MISSING'], null);
     const quoteRequest: QuoteRequest = { inputMint: authorized.inputMint, outputMint: authorized.outputMint, inputAmount: authorized.maxInputAmount, maxSlippageBps: authorized.maxSlippageBps, taker: wallet, cluster: this.opts.cluster, requestedAt: now };
     let built: Awaited<ReturnType<JupiterOrderClient['order']>>;
     try {
@@ -124,8 +138,8 @@ export class LiveExecutionAdapter implements ExecutionAdapter {
       { tradingWallet: wallet, now, currentBlockHeight: await this.opts.currentBlockHeight() },
     );
     if (!orderCheck.ok) return reject(canonicalReasons(orderCheck.reasons), built.quote);
-    const worse = chaseWorseBps(decision, built.quote);
-    if (worse !== null && worse > authorized.chaseToleranceBps) return reject(['CHASE_EXCEEDED', `executable price ${worse}bps worse than decision > ${authorized.chaseToleranceBps}bps`], built.quote);
+    const worse = decision ? chaseWorseBps(decision, built.quote) : null;
+    if (worse !== null && authorized.chaseToleranceBps !== null && worse > authorized.chaseToleranceBps) return reject(['CHASE_EXCEEDED', `executable price ${worse}bps worse than decision > ${authorized.chaseToleranceBps}bps`], built.quote);
 
     // 4. Structure.
     let decoded: ReturnType<typeof decodeTransaction>;

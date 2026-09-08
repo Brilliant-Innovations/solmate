@@ -1,5 +1,5 @@
 import { type Amount, type Clock, type JupiterQuoteClient, type MintAddress, type Quote, type QuoteRequest, type QuoteRoutePlan, type Slot, type SigningRequest, type SignatureResult, type TradingWalletSigner } from '@sol-agent-trader/contracts';
-import { ASSOCIATED_TOKEN_PROGRAM, BASE_PROGRAMS, COMPUTE_BUDGET_PROGRAM, JUPITER_V6_PROGRAM, JupiterHttpError, NoRouteError, SYSTEM_PROGRAM, TOKEN_PROGRAM, decodeTransaction, encodeTransaction, fromBase64, toBase64, type AccountSnapshot, type ChainObserver, type DecodedMessage, type JupiterExecuteResult, type JupiterOrder, type JupiterOrderClient, type SignatureStatus, type SimulationOutcome, type SimulationReader } from '@sol-agent-trader/execution';
+import { ASSOCIATED_TOKEN_PROGRAM, BASE_PROGRAMS, COMPUTE_BUDGET_PROGRAM, JUPITER_V6_PROGRAM, JupiterHttpError, NoRouteError, SYSTEM_PROGRAM, TOKEN_PROGRAM, decodeTransaction, encodeTransaction, fromBase64, toBase64, type AccountSnapshot, type ChainObserver, type CustodyReader, type Holding, type DecodedMessage, type JupiterExecuteResult, type JupiterOrder, type JupiterOrderClient, type SignatureStatus, type SimulationOutcome, type SimulationReader } from '@sol-agent-trader/execution';
 import { base58Decode, base58Encode } from '@sol-agent-trader/solana-hard-state';
 import { CrashSignal, SignerTimeout } from '../pipeline/pipeline.js';
 
@@ -64,7 +64,7 @@ export function swapMessage(wallet: string): DecodedMessage {
   };
 }
 
-export class FakeChain implements SimulationReader, ChainObserver {
+export class FakeChain implements SimulationReader, ChainObserver, CustodyReader {
   readonly label = 'fake-chain';
   blockHeight_ = 100;
   slot = 1000;
@@ -92,6 +92,16 @@ export class FakeChain implements SimulationReader, ChainObserver {
     for (const s of this.statuses.values()) if (s.err === null) s.confirmationStatus = 'finalized';
   }
 
+  ataFor(mint: string): string {
+    return mint === this.opts.inputMint ? IN_ATA : mint === this.opts.outputMint ? OUT_ATA : OTHER_ATA;
+  }
+
+  // --- CustodyReader -------------------------------------------------------------------------
+  async holdings(owner: string): Promise<{ slot: number; holdings: Holding[] }> {
+    if (owner !== this.opts.wallet) return { slot: this.slot, holdings: [] };
+    return { slot: this.slot, holdings: [...this.balances.entries()].map(([mint, amount]) => ({ mint: mint as MintAddress, tokenAccount: this.ataFor(mint), amount, frozen: false, program: TOKEN_PROGRAM })) };
+  }
+
   private snapshot(address: string, balances: Map<string, bigint>, lamports: number): AccountSnapshot | null {
     const w = this.opts.wallet;
     if (address === w) return { address, lamports, owner: SYSTEM_PROGRAM, dataBase64: '' };
@@ -110,8 +120,8 @@ export class FakeChain implements SimulationReader, ChainObserver {
     const o = this.orders[this.orders.length - 1];
     if (!o) throw new Error('simulate before order');
     const post = new Map(this.balances);
-    post.set(this.opts.inputMint, (post.get(this.opts.inputMint) ?? 0n) - BigInt(o.quote.inputAmount));
-    post.set(this.opts.outputMint, (post.get(this.opts.outputMint) ?? 0n) + BigInt(o.quote.expectedOutputAmount));
+    post.set(o.quote.inputMint, (post.get(o.quote.inputMint) ?? 0n) - BigInt(o.quote.inputAmount));
+    post.set(o.quote.outputMint, (post.get(o.quote.outputMint) ?? 0n) + BigInt(o.quote.expectedOutputAmount));
     let accounts = addresses.map((a) => this.snapshot(a, post, this.lamports - 5_000));
     if (this.opts.tamperPost) accounts = this.opts.tamperPost(accounts, this.opts.wallet);
     return { slot: this.slot, err: null, logs: ['Program log: ok'], unitsConsumed: 120_000, accounts };
@@ -132,9 +142,11 @@ export class FakeChain implements SimulationReader, ChainObserver {
       const q = this.opts.quotes[Math.min(this.quoteCalls++, this.opts.quotes.length - 1)];
       if (!q) throw new NoRouteError('FAKE', 'no route');
       const requested = BigInt(request.inputAmount);
-      const expected = (BigInt(q.expectedOutputAmount) * requested) / BigInt(q.inputAmount);
+      // The scripted rate applies to its own pair; the reverse pair sells at the inverse rate.
+      const reversed = request.inputMint === q.outputMint && request.outputMint === q.inputMint;
+      const expected = reversed ? (BigInt(q.inputAmount) * requested) / BigInt(q.expectedOutputAmount) : (BigInt(q.expectedOutputAmount) * requested) / BigInt(q.inputAmount);
       const minOut = (expected * BigInt(10_000 - request.maxSlippageBps)) / 10_000n;
-      return { quote: { ...q, inputAmount: request.inputAmount, expectedOutputAmount: expected.toString() as Amount, minOutputAmount: minOut.toString() as Amount, slippageBps: request.maxSlippageBps, quotedAt: request.requestedAt }, route: { hops: [], contextSlot: this.slot as Slot, providerImpactPct: null } };
+      return { quote: { ...q, inputMint: request.inputMint, outputMint: request.outputMint, inputAmount: request.inputAmount, expectedOutputAmount: expected.toString() as Amount, minOutputAmount: minOut.toString() as Amount, slippageBps: request.maxSlippageBps, quotedAt: request.requestedAt }, route: { hops: [], contextSlot: this.slot as Slot, providerImpactPct: null } };
     };
     return { quote: async (r) => next(r), buildOrder: async (r) => ({ quote: next(r).quote, transactionClass: 'SWAP_V2', unsignedTransactionBase64: null, unsignedTransactionHash: null, feePayer: null, requiredSigners: [] }) };
   }
@@ -162,8 +174,8 @@ export class FakeChain implements SimulationReader, ChainObserver {
     const o = this.orders[this.orders.length - 1];
     if (!o) throw new Error('fake chain: execute before order');
     const inputAmount = BigInt(o.quote.inputAmount);
-    this.balances.set(this.opts.inputMint, (this.balances.get(this.opts.inputMint) ?? 0n) - inputAmount);
-    this.balances.set(this.opts.outputMint, (this.balances.get(this.opts.outputMint) ?? 0n) + outputAmount);
+    this.balances.set(o.quote.inputMint, (this.balances.get(o.quote.inputMint) ?? 0n) - inputAmount);
+    this.balances.set(o.quote.outputMint, (this.balances.get(o.quote.outputMint) ?? 0n) + outputAmount);
     this.lamports -= 5_000;
     this.slot += 1;
     this.statuses.set(signature, { slot: this.slot, confirmationStatus: 'confirmed', err: null });

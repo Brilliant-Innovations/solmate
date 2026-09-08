@@ -1,81 +1,28 @@
-import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addMs, canonicalHash, fixtures, generateSigningKeyPair, sha256Hex, signPayload, toInstant, type Amount, type Bps, type Clock, type ExecutionRequest, type ExecutorGuardrails, type Instant, type KeyId, type MintAddress, type Nonce, type Quote, type RiskAuthorizedIntent, type SigningKeyPair, type TradeIntent, type TradingWalletSigner, type Uuid } from '@sol-agent-trader/contracts';
-import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, SoftwareDevSigner, baseIntent, encodeMessage, quoteOf, type DecodedMessage } from '@sol-agent-trader/execution';
+import { generateSigningKeyPair, sha256Hex, type Amount, type SigningKeyPair } from '@sol-agent-trader/contracts';
+import { JUPITER_V6_PROGRAM, encodeMessage, quoteOf, type DecodedMessage } from '@sol-agent-trader/execution';
 import { base58Encode } from '@sol-agent-trader/solana-hard-state';
-import { CrashSignal, ExecutorPipeline, type Boundary, type PipelineDeps, type SubmitOutcome } from '../pipeline/pipeline.js';
-import { ExecutorJournal } from '../journal/journal.js';
-import type { ModeFacts } from '../authority/mode-gate.js';
-import { FakeChain, OTHER_ATA, OTHER_MINT, flakySigner, policySigner, swapMessage, tokenAccountData, type ExecuteBehaviour, type FakeChainOptions } from './fake-chain.js';
+import { CrashSignal } from '../pipeline/pipeline.js';
+import { OTHER_ATA, OTHER_MINT, flakySigner, policySigner, swapMessage, tokenAccountData } from './fake-chain.js';
+import { ACTIVE, AT, TOKEN, USDC, createWorld, kinds, newId, type WorldOptions } from './world.js';
 
 /**
  * Execution harness (blueprint §24.3; execution plan M3 exit gate). Every case runs the real
  * pipeline: authority verification, idempotency, caps, the live adapter, the durable journal and
  * restart recovery, over the fake Jupiter/Solana. Cases that need modules M6/M8b own (Trigger
  * lifecycle, explicit stop slippage, direct-pool emergency adapter, provider-protected lots) are
- * listed in the changelog as pending, not silently skipped here.
+ * listed in the changelog as pending, not silently skipped here. Emergency close: emergency.spec.
  */
 
-const AT = toInstant(Date.UTC(2026, 8, 8, 15, 0, 0));
-const USDC = fixtures.MINTS.USDC as MintAddress;
-const TOKEN = fixtures.MINTS.RISK as MintAddress;
 const ATTACKER = base58Encode(new Uint8Array(32).fill(66));
-const ACTIVE: ModeFacts = { activity: 'ACTIVE', authority: 'LIVE_AUTO', paused: false, localPause: false, liveCapabilityEnabled: true };
-let seq = 0;
-const newId = () => `${String(++seq).padStart(8, '0')}-0000-4000-8000-000000000000` as Uuid;
-const nonceOf = (n: number) => n.toString(16).padStart(32, '0') as Nonce;
-
-function steppingClock(start: Instant, stepMs: number): Clock {
-  let t = start;
-  return { now: () => { const out = t; t = addMs(t, stepMs); return out; } } as Clock;
-}
-
-function devSigner(clock: Clock): SoftwareDevSigner {
-  const { privateKey } = generateKeyPairSync('ed25519');
-  return new SoftwareDevSigner({ privateKeyPkcs8Hex: Buffer.from(privateKey.export({ format: 'der', type: 'pkcs8' })).toString('hex'), cluster: 'devnet', liveCapabilityEnabled: true, clock });
-}
-
-async function envelopeFor(intent: TradeIntent, key: SigningKeyPair, nonce: Nonce) {
-  const { intentHash: _drop, ...unsigned } = {
-    ...fixtures.riskAuthorizedIntent(),
-    intentId: intent.id, actionCycleId: intent.actionCycleId, clearedCutoffVersion: intent.clearedCutoffVersion, accountId: intent.accountId, assetId: intent.assetId, strategyVersionId: intent.strategyVersionId, sleeveId: intent.sleeveId,
-    cluster: 'devnet' as const, capitalAuthority: 'LIVE_AUTO' as const, action: intent.action, side: intent.side, exposureEffect: intent.exposureEffect, inputMint: intent.inputMint, outputMint: intent.outputMint, maxInputAmount: intent.maxInputAmount,
-    maxSlippageBps: intent.constraints.maxSlippageBps, maxPriceImpactBps: intent.constraints.maxPriceImpactBps, chaseToleranceBps: intent.constraints.chaseToleranceBps, maxQuoteAgeMs: intent.constraints.maxQuoteAgeMs,
-    targetLotIds: intent.targetLotIds, approvalRequired: intent.approvalRequired, issuedAt: intent.createdAt, expiresAt: intent.expiresAt, nonce,
-  };
-  void _drop;
-  const payload: RiskAuthorizedIntent = { ...unsigned, intentHash: await canonicalHash(unsigned) } as RiskAuthorizedIntent;
-  return signPayload(payload, key, intent.createdAt);
-}
-
-interface World {
-  chain: FakeChain;
-  journalPath: string;
-  signer: TradingWalletSigner;
-  authorizer: SigningKeyPair;
-  guardrails: ExecutorGuardrails;
-  clock: Clock;
-  pipeline: ExecutorPipeline;
-  reopen(over?: Partial<Pick<PipelineDeps, 'probe' | 'signer' | 'modeFacts'>>): Promise<ExecutorPipeline>;
-  request(over?: Partial<TradeIntent>): Promise<{ request: ExecutionRequest; intent: TradeIntent }>;
-  submit(over?: Partial<TradeIntent>, stored?: (i: TradeIntent) => TradeIntent | null): Promise<SubmitOutcome>;
-}
-
-interface WorldOptions {
-  behaviour?: ExecuteBehaviour;
-  quotes?: Quote[];
-  probe?: (b: Boundary) => void;
-  signer?: (base: TradingWalletSigner) => TradingWalletSigner;
-  chain?: Partial<FakeChainOptions>;
-  modeFacts?: () => ModeFacts;
-}
-
 let dir: string;
 let authorizer: SigningKeyPair;
+let emergencyOperator: SigningKeyPair;
 beforeAll(async () => {
   authorizer = await generateSigningKeyPair();
+  emergencyOperator = await generateSigningKeyPair();
 });
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'solmate-harness-'));
@@ -83,51 +30,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
-
-async function world(opts: WorldOptions = {}): Promise<World> {
-  const clock = steppingClock(AT, 100);
-  const base = devSigner(clock);
-  const signer = opts.signer ? opts.signer(base) : base;
-  const q = quoteOf(100_000_000n, 1_000_000n, 100, 20, USDC, TOKEN, AT);
-  const chain = new FakeChain({ wallet: base.publicKey, inputMint: USDC, outputMint: TOKEN, clock, quotes: opts.quotes ?? [q, q], behaviour: opts.behaviour ?? 'FILL', ...opts.chain });
-  const guardrails: ExecutorGuardrails = {
-    liveCapabilityEnabled: true, cluster: 'devnet', tradingWalletAddress: base.publicKey, allowedSettlementMints: [USDC], allowedFundingMints: [USDC],
-    maxPerEntryNotionalBaseUnits: '300000000', maxAggregateNonSettlementExposureBaseUnits: '900000000', maxSignerOutageUnprotectedExposureBaseUnits: '400000000', maxEmergencyCloseTxBaseUnits: null,
-    hardMaxSlippageBps: 150 as Bps, hardMaxProtectiveSlippageBps: 300 as Bps, acceptedRiskAuthorizerKeyIds: [authorizer.keyId], acceptedEmergencyOperatorKeyIds: ['ed25519:' + '1'.repeat(32) as KeyId], expectedSignerPolicyDigest: null, expectedSignerWorkloadFingerprint: null,
-  };
-  const journalPath = join(dir, `executor-${seq}.journal`);
-  let token = 0;
-  const open = async (over: Partial<Pick<PipelineDeps, 'probe' | 'signer' | 'modeFacts'>> = {}): Promise<ExecutorPipeline> => {
-    const journal = await ExecutorJournal.open(journalPath, `executor-${++token}`, () => clock.now());
-    return new ExecutorPipeline({
-      journal, guardrails, authorizerKeys: [authorizer], approverKeys: [], signer, chain, clock, newId,
-      modeFacts: () => ACTIVE,
-      adapter: { orders: chain.orderClient(), quotes: chain.quoteClient(), simulation: chain, cluster: 'devnet', structure: { allowedPrograms: [...BASE_PROGRAMS, JUPITER_V6_PROGRAM], allowLookupTables: false, allowedTransferRecipients: [] }, maxSolDebitLamports: 50_000n, decisionQuote: async (intent) => (await chain.quoteClient().quote({ inputMint: intent.inputMint, outputMint: intent.outputMint, inputAmount: intent.maxInputAmount, maxSlippageBps: intent.constraints.maxSlippageBps, taker: base.publicKey, cluster: 'devnet', requestedAt: clock.now() })).quote },
-      awaitFinalized: async (signature) => { const s = chain.statuses.get(signature); if (!s) return null; s.confirmationStatus = 'finalized'; return { slot: s.slot }; },
-      maxSkewMs: 5_000,
-      probe: opts.probe,
-      ...over,
-    });
-  };
-  const pipeline = await open();
-  const w: World = {
-    chain, journalPath, signer, authorizer, guardrails, clock, pipeline,
-    reopen: async (over) => { w.pipeline.journal.release(); w.pipeline = await open(over); return w.pipeline; },
-    request: async (over = {}) => {
-      const n = ++seq;
-      const intent: TradeIntent = { ...baseIntent(newId(), `harness:${n}`, USDC, TOKEN, AT, addMs(AT, 120_000)), ...over };
-      const authorization = await envelopeFor(intent, authorizer, nonceOf(n));
-      return { request: { intent, capitalAuthority: 'LIVE_AUTO', authorization, approvalHash: null, executionPath: 'JUPITER_ORDER', requestedAt: AT }, intent };
-    },
-    submit: async (over = {}, stored = (i) => i) => {
-      const { request, intent } = await w.request(over);
-      return w.pipeline.submit({ request, storedIntent: stored(intent), approval: null, protectionMode: 'MONITORED_EXIT' });
-    },
-  };
-  return w;
-}
-
-const kinds = (w: World) => w.pipeline.journal.all().map((e) => e.kind);
+const world = (opts: WorldOptions = {}) => createWorld(dir, { authorizer, emergencyOperator }, opts);
 
 describe('execution harness (§24.3): the pipeline over a fake Jupiter/Solana', () => {
   it('successful fill: authority → prepared → caps → signed → submitted → finalized, journaled in that order, exposure held at cost', async () => {

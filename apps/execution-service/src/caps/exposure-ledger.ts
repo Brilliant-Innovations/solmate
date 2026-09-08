@@ -89,6 +89,11 @@ export class ExecutorExposureLedger {
     return [...this.open.keys()];
   }
 
+  /** Open entries holding `mint`, with the exposure each currently counts for. */
+  openByMint(mint: MintAddress): { intentId: Uuid; exposure: Amount }[] {
+    return [...this.open.entries()].filter(([, o]) => o.mint === mint).map(([intentId, o]) => ({ intentId, exposure: this.exposureOf(o) }));
+  }
+
   history(): readonly ExposureEvent[] {
     return this.events;
   }

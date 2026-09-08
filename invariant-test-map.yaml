@@ -268,9 +268,13 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/execution-service/src/emergency
-    tests: []
-    evidence: []
-    status: unmapped
+      - apps/execution-service/src/pipeline/pipeline.ts
+      - libs/execution/src/emergency/plan.ts
+    tests:
+      - apps/execution-service/src/harness/emergency.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-13
     statement: "No strategy sees evidence from the future in replay."
