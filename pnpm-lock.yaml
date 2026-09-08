@@ -156,6 +156,9 @@ importers:
       '@sol-agent-trader/contracts':
         specifier: workspace:*
         version: link:../../libs/contracts
+      '@sol-agent-trader/db':
+        specifier: workspace:*
+        version: link:../../libs/db
       '@sol-agent-trader/execution':
         specifier: workspace:*
         version: link:../../libs/execution

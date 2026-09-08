@@ -4,6 +4,7 @@ import { ExecutionRequest, NonceWindow, ProtectionMode, verifyServiceRequest, ty
 import type { Logger } from '@sol-agent-trader/observability';
 import { BodyTooLarge, json, readBody, serve, type Handler } from './http.js';
 import type { ExecutorPipeline } from '../pipeline/pipeline.js';
+import type { DetailedExecution } from '@sol-agent-trader/execution';
 
 /**
  * The executor's internal API (blueprint §15.2, §15.8): the narrow verbs the worker may call over
@@ -22,6 +23,8 @@ export interface InternalApiDeps {
   loadIntent: (intentId: Uuid) => Promise<TradeIntent | null>;
   loadApproval: (intentId: Uuid) => Promise<SignedApprovalGrant | null>;
   signerHealth: () => Promise<SignerHealth>;
+  /** Best-effort reconciliation of an executed attempt into Postgres; the journal already holds the truth. */
+  persist?: (execution: DetailedExecution, lifecycle: 'COMPLETED' | 'FAILED' | 'EXECUTING') => Promise<void>;
   maxSkewMs?: number;
   maxBodyBytes?: number;
 }
@@ -82,6 +85,10 @@ export function internalApiHandler(deps: InternalApiDeps): Handler {
           return json(res, 503, { outcome: 'DENIED', stage: 'AUTHORITY', reasons: ['DB_UNAVAILABLE'], detail: [] });
         }
         const outcome = await deps.pipeline.submit({ request: parsed.request, storedIntent: stored, approval, protectionMode: parsed.protectionMode });
+        if (outcome.outcome === 'EXECUTED' && deps.persist) {
+          const s = outcome.execution.attempt.state;
+          await deps.persist(outcome.execution, s === 'FINALIZED' ? 'COMPLETED' : s === 'PREPARED' || s === 'NOT_LANDED' || s === 'SIGNED_NOT_SUBMITTED' ? 'FAILED' : 'EXECUTING');
+        }
         deps.logger.info('internal_api_execute', { intentId: parsed.request.intent.id, outcome: outcome.outcome, state: outcome.outcome === 'EXECUTED' ? outcome.execution.attempt.state : null, reasons: outcome.outcome === 'DENIED' ? outcome.reasons : outcome.outcome === 'EXECUTED' ? outcome.execution.result.rejectionReasons : [] });
         return json(res, 200, outcome);
       }

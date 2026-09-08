@@ -56,7 +56,7 @@ export interface PipelineDeps {
   clock: Clock;
   newId: () => Uuid;
   /** Read fresh every time; the gate is consulted at verification and again immediately before submit (P3). */
-  modeFacts: () => ModeFacts;
+  modeFacts: () => ModeFacts | Promise<ModeFacts>;
   /** Everything the live adapter needs except the hooks this pipeline owns. */
   adapter: Omit<LiveAdapterOptions, 'signer' | 'clock' | 'newId' | 'journal' | 'beforeSubmit' | 'proveDead' | 'awaitFinalized' | 'currentBlockHeight'>;
   /** How long to wait for finality before returning CONFIRMED_PROVISIONAL to the caller. */
@@ -138,8 +138,8 @@ export class ExecutorPipeline {
     this.localPause = lastPause?.kind === 'PAUSE_APPLIED' ? { active: true, reason: (lastPause.payload['reason'] as string | undefined) ?? null } : { active: false, reason: null };
   }
 
-  private facts(): ModeFacts {
-    const f = this.deps.modeFacts();
+  private async facts(): Promise<ModeFacts> {
+    const f = await this.deps.modeFacts();
     return { ...f, localPause: f.localPause || this.localPause.active };
   }
 
@@ -186,7 +186,7 @@ export class ExecutorPipeline {
       storedIntent: input.storedIntent,
       approval: input.approval ? { grant: input.approval, keys: this.deps.approverKeys } : null,
       usedNonces: this.deps.journal.usedNonces(),
-      mode: this.facts(),
+      mode: await this.facts(),
       now,
       maxSkewMs: this.deps.maxSkewMs,
     });
@@ -238,7 +238,7 @@ export class ExecutorPipeline {
         this.probe('AFTER_SIGNED_JOURNAL');
       },
       beforeSubmit: async (bounds) => {
-        const gate = modeGate(this.facts(), bounds.exposureEffect);
+        const gate = modeGate(await this.facts(), bounds.exposureEffect);
         if (!gate.allowed) return { allowed: false, reason: `MODE_GATE_${gate.reason}` };
         await journal.append('ATTEMPT_SUBMITTED', intentId, { intentId, idempotencyKey: key, nonce, path, expectedTxSignature: signedAttempt?.expectedTxSignature ?? null, signedTxHash: signedAttempt?.signedTxHash ?? null, lastValidBlockHeight: signedAttempt?.lastValidBlockHeight ?? null, ...extra });
         this.registry.advance(key, 'EXECUTING');

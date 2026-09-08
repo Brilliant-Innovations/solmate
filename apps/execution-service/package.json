@@ -127,6 +127,7 @@
     "@sol-agent-trader/contracts": "workspace:*",
     "@sol-agent-trader/observability": "workspace:*",
     "@sol-agent-trader/execution": "workspace:*",
-    "@sol-agent-trader/solana-hard-state": "workspace:*"
+    "@sol-agent-trader/solana-hard-state": "workspace:*",
+    "@sol-agent-trader/db": "workspace:*"
   }
 }
