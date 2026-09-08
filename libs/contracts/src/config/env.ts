@@ -148,6 +148,8 @@ export const WorkerEnv = Common.extend({
   /** Discretionary cycle cadence (§11.7); each tick evaluates automations for S1 candidates and open positions. */
   AGENTS_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   AGENTS_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
+  /** Signed RiskStateProjection cadence (§6.14A, D52); the authorizer refuses a projection older than its own max age. */
+  STATE_PROJECTOR_INTERVAL_MS: z.coerce.number().int().min(10_000).max(600_000).default(60_000),
   /** Drain cadence for cleared discretionary position actions (trading-actions queue). */
   TRADING_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   // Intelligence providers (M6, §3.4–3.5). Absent key = that source is skipped; both absent = the intel-ingest role is disabled.

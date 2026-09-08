@@ -84,6 +84,13 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  ensureRelease,
+  heldAssetEligibility,
+  insertProjection,
+  latestReconciliation,
+  listOpenLotSummaries,
+  listSleeves,
+  nextProjectionSequence,
   listEventsVisibleAt,
   listRecentCandidateSignals,
   onchainFlowAt,
@@ -116,6 +123,9 @@ import { primeContractDigest, runAgentsCycle, type AgentsDeps } from './roles/ag
 import { executeClearedExit, type PositionMonitorDeps } from './roles/position-monitor.js';
 import { runTradingActionsCycle } from './roles/trading-actions.js';
 import { runIntelIngestCycle } from './roles/intel-ingest.js';
+import { runStateProjectorCycle } from './roles/state-projector.js';
+import { releaseFor } from '@sol-agent-trader/strategies';
+import { importSigningKeyPair, DEFAULT_FRESHNESS_REQUIREMENTS as PROJECTION_FRESHNESS } from '@sol-agent-trader/contracts';
 import { CryptoPanicClient, LunarCrushClient } from '@sol-agent-trader/intelligence';
 import { DEFAULT_CATALYST_TRIGGER_POLICY, DEFAULT_HYBRID_TRIGGER_POLICY, DEFAULT_NORMALIZATION_POLICY, DEFAULT_SMART_MONEY_TRIGGER_POLICY } from '@sol-agent-trader/contracts';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
@@ -187,7 +197,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -275,6 +285,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('agents')) loops.push(agentsLoop(env, logger, shared));
   if (roles.has('trading-actions')) loops.push(tradingActionsLoop(env, logger, shared));
   if (roles.has('intel-ingest')) loops.push(intelIngestLoop(env, logger, shared));
+  if (roles.has('state-projector')) loops.push(stateProjectorLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -903,6 +914,53 @@ async function intelIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared): 
   logger.info('intel_ingest_starting', { intervalMs, providers: { cryptopanic: cryptopanic !== null, lunarcrush: lunarcrush !== null }, policy: DEFAULT_NORMALIZATION_POLICY.version, holder: shared.holder });
   await loopUnderLease('intel-ingest', intervalMs, logger, shared, async () => {
     await runIntelIngestCycle(deps);
+  });
+}
+
+async function stateProjectorLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.STATE_PROJECTOR_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('state_projector_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const taker = env.PAPER_TRADING_WALLET;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  const startingCapital = env.PAPER_STARTING_CAPITAL_BASE_UNITS;
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
+  const activeFrom = systemClock.now();
+  const key = await importSigningKeyPair(env.PROJECTION_SIGNING_KEY_PKCS8, env.PROJECTION_SIGNING_PUBLIC_KEY);
+  // The projection binds to the S0_SAFE Release (M7 runs on S0_SAFE as the cleared input); the same digest is what the authorizer expects.
+  const safe = s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom);
+  await ensureStrategyVersion(sql, safe);
+  const release = await releaseFor(safe, { contractSetDigest: (await getContractSetDigest()).digest, freshnessPolicyVersion: PROJECTION_FRESHNESS.version }, activeFrom);
+  const registered = await ensureRelease(sql, release);
+  logger.info('release_registered', { releaseId: registered.id, outcome: registered.outcome, digest: release.digest, strategy: safe.versionId });
+  const deps = {
+    repo: {
+      book: (now: Parameters<typeof paperBook>[4]) => paperBook(sql, account.id, settlementMint, startingCapital, now),
+      sleeves: () => listSleeves(sql, account.id),
+      openLots: () => listOpenLotSummaries(sql, account.id),
+      latestReconciliation: () => latestReconciliation(sql, account.id),
+      heldAssetEligibility: () => heldAssetEligibility(sql, account.id),
+      feedHealth: () => loadFeedHealth(sql, ['BIRDEYE', 'JUPITER', 'HELIUS']),
+      cohorts: async (now: Parameters<typeof latestClusterSet>[1]) => ({ memberships: await listActiveMemberships(sql, DEFAULT_COHORT_TAXONOMY.version), clusterSet: await latestClusterSet(sql, now, 2 * DEFAULT_CORRELATION_CLUSTER_POLICY.windowMs) }),
+      nextSequence: () => nextProjectionSequence(sql, account.id),
+      insert: (envelope: Parameters<typeof insertProjection>[2]) => insertProjection(sql, account.id, envelope),
+    },
+    key,
+    clock: systemClock,
+    logger,
+    account: { id: account.id, settlementMint, settlementDecimals: 6, startingCapital, virtualSolLamports: '1000000000' as typeof startingCapital },
+    release: { ...release, id: registered.id },
+    policy: DEFAULT_RISK_POLICY,
+    freshness: PROJECTION_FRESHNESS,
+    providerFor: (dataClass: string) => (dataClass === 'ACTIVE_POSITION_PRICE' || dataClass === 'CANDIDATE_PRICE' ? 'JUPITER' : dataClass === 'CANDLES' || dataClass === 'TOKEN_OVERVIEW' || dataClass === 'DISCOVERY_LIST' ? 'BIRDEYE' : null),
+    config: { reconciliationMaxAgeMs: 5 * env.RECONCILIATION_INTERVAL_MS },
+  };
+  logger.info('state_projector_starting', { intervalMs, accountId: account.id, keyId: key.keyId, release: release.digest.slice(0, 12), holder: shared.holder });
+  await loopUnderLease('state-projector', intervalMs, logger, shared, async () => {
+    await runStateProjectorCycle(deps);
   });
 }
 

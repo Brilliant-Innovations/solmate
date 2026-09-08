@@ -89,6 +89,12 @@ export const RiskStateProjection = z.strictObject({
   }),
 });
 export type RiskStateProjection = z.infer<typeof RiskStateProjection>;
+export type CustodyBalance = z.infer<typeof CustodyBalance>;
+export type SleeveUsage = z.infer<typeof SleeveUsage>;
+export type OpenLotSummary = z.infer<typeof OpenLotSummary>;
+export type CapacityEntry = z.infer<typeof CapacityEntry>;
+export type EligibilitySummaryEntry = z.infer<typeof EligibilitySummaryEntry>;
+export type FreshnessSummaryEntry = z.infer<typeof FreshnessSummaryEntry>;
 
 export const SignedRiskStateProjection = signedEnvelopeOf(RiskStateProjection);
 export type SignedRiskStateProjection = z.infer<typeof SignedRiskStateProjection>;
