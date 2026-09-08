@@ -81,6 +81,20 @@ export function i32le(value: number): Uint8Array {
   return out;
 }
 
+export function i32be(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setInt32(0, value, false);
+  return out;
+}
+
+export function u128le(value: bigint): Uint8Array {
+  if (value < 0n || value >= 1n << 128n) throw new RangeError(`u128 out of range: ${value}`);
+  const out = new Uint8Array(16);
+  new DataView(out.buffer).setBigUint64(0, value & ((1n << 64n) - 1n), true);
+  new DataView(out.buffer).setBigUint64(8, value >> 64n, true);
+  return out;
+}
+
 export function i64le(value: bigint): Uint8Array {
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigInt64(0, value, true);

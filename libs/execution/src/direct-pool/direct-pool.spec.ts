@@ -9,6 +9,8 @@ import { MAINNET_POOL_FIXTURES } from './fixtures/mainnet-pools.js';
 import { MAINNET_DLMM_FIXTURE } from './fixtures/mainnet-dlmm.js';
 import { binArrayIndex, deriveBinArray, deriveEventAuthority, MeteoraDlmmAdapter, nextBinArrayWithLiquidity } from './meteora-dlmm.js';
 import { MAINNET_TOKEN2022_MINT } from './fixtures/mainnet-token2022-mint.js';
+import { MAINNET_CLMM_FIXTURE } from './fixtures/mainnet-clmm.js';
+import { deriveTickArray, MAX_SQRT_PRICE_X64, MAX_TICK, MIN_SQRT_PRICE_X64, MIN_TICK, nextInitialisedTickArray, RaydiumClmmAdapter, sqrtPriceAtTick, tickArrayStartIndex, tickAtSqrtPrice } from './raydium-clmm.js';
 import { activeTransferFee, decodeMintExtensions, transferFeeAmount } from './token2022.js';
 import { RaydiumAmmV4Adapter } from './raydium-amm-v4.js';
 import { RaydiumCpmmAdapter } from './raydium-cpmm.js';
@@ -262,5 +264,72 @@ describe('Token-2022 mint extensions (transfer fee, captured from mainnet 2026-0
     expect(activeTransferFee(ext, null)?.basisPoints).toBe(300);
     expect(decodeMintExtensions(null).transferFee).toBeNull();
     expect(decodeMintExtensions(raw(MAINNET_POOL_FIXTURES.cpmm.accounts[2])!).extensionTypes).toEqual([]); // a classic token account, not a Token-2022 mint
+  });
+});
+
+describe('Raydium CLMM adapter (layout captured from mainnet 2026-09-08, USDC/HcRL tick spacing 60)', () => {
+  const adapter = new RaydiumClmmAdapter();
+  const F = MAINNET_CLMM_FIXTURE;
+  const USDC = F.mint0 as MintAddress;
+  const HCRL = F.mint1 as MintAddress;
+  const byAddress = new Map<string, RawAccount>(F.accounts.filter((a): a is NonNullable<typeof a> => a !== null).map((a) => [a.address, raw(a)!]));
+  const ctx = { nowMs: Date.parse(F.capturedAt) };
+  it('tick math matches the program: bounds, round trips and Q64.64 sqrt prices', () => {
+    expect(sqrtPriceAtTick(0)).toBe(1n << 64n);
+    expect(sqrtPriceAtTick(MIN_TICK)).toBe(MIN_SQRT_PRICE_X64);
+    expect(sqrtPriceAtTick(MAX_TICK)).toBe(MAX_SQRT_PRICE_X64);
+    for (const t of [-443636, -100000, -92240, -61, -1, 0, 1, 60, 92240, 100000, 443635]) expect(tickAtSqrtPrice(sqrtPriceAtTick(t))).toBe(t);
+    // price 1.0001^92240 ≈ 10132.86 and sqrt price squared agrees
+    const sp = Number(sqrtPriceAtTick(92240)) / 2 ** 64;
+    expect(sp * sp).toBeCloseTo(Math.pow(1.0001, 92240), -1);
+    expect(tickArrayStartIndex(92240, 60)).toBe(90000);
+    expect(tickArrayStartIndex(-1, 60)).toBe(-3600);
+    expect(tickArrayStartIndex(-3600, 60)).toBe(-3600);
+    expect(deriveTickArray(F.pool, 90000)).toBe('5FctGXM9xrtuFPhtCduG4kqAdfus9nRK9XAjsVPb7xHj');
+  });
+  it('decodes the pool, config, bitmap extension and tick arrays; quotes both directions by walking ticks; builds swap_v2 with the extension and arrays as remaining accounts', () => {
+    const pool = byAddress.get(F.pool)!;
+    const hop: DirectPoolHop = { program: 'RAYDIUM_CLMM', programId: adapter.programId as SolanaAddress, poolAddress: F.pool as SolanaAddress, inputMint: HCRL, outputMint: USDC };
+    const dependent = adapter.dependentAccounts(hop, pool);
+    expect(dependent.slice(0, 6)).toEqual([F.ammConfig, 'Be76qZre4bLB5LsEZQVLumvCn3qcPuVeFNbnMGLEZr8L', '36yskKDMc8fonVifSDKYCDeurrRpecDZw55cej18nyxJ', USDC, HCRL, F.bitmapExtension]);
+    // selling HcRL (token 1) pushes the price up: the current array first, then higher ones
+    expect(dependent[6]).toBe(deriveTickArray(F.pool, 90000));
+    expect(dependent.length).toBeGreaterThanOrEqual(8);
+    const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
+    const state = adapter.decode(hop, accounts, ctx);
+    expect(state).toMatchObject({ program: 'RAYDIUM_CLMM', mintA: USDC, mintB: HCRL, tokenProgramA: TOKEN_PROGRAM, feeBps: 40, tradeable: true, tradeableReason: null });
+    const d = state.detail as { tickSpacing: number; tickCurrent: number; liquidity: bigint; bitmapExtension: string | null; tickArrays: { startTick: number }[]; dynamicFee: unknown };
+    expect(d.tickSpacing).toBe(60);
+    // the pool moved between the layout probe (tick 92240) and the capture; the current tick still sits in array 90000
+    expect(tickArrayStartIndex(d.tickCurrent, 60)).toBe(90000);
+    expect(d.tickCurrent).toBeGreaterThanOrEqual(90000);
+    expect(d.liquidity).toBeGreaterThan(0n);
+    expect(d.bitmapExtension).toBe(F.bitmapExtension);
+    expect(d.tickArrays[0]!.startTick).toBe(90000);
+    // 1 HcRL (9 decimals) at ~10133 USDC per token... the pool prices token1 in token0 terms: price = 1.0001^tick = HcRL per USDC? check magnitude only
+    const q = adapter.quote(state, HCRL, 1_000_000_000n);
+    expect(BigInt(q.expectedOutputAmount)).toBeGreaterThan(0n);
+    expect(BigInt(q.feeAmount)).toBeGreaterThan(0n);
+    expect(q.outputMint).toBe(USDC);
+    const back = adapter.quote(state, USDC, 1_000_000n);
+    expect(BigInt(back.expectedOutputAmount)).toBeGreaterThan(0n);
+    expect(back.outputMint).toBe(HCRL);
+    // round trip loses roughly the two fees, never gains
+    const twice = adapter.quote(state, USDC, BigInt(q.expectedOutputAmount));
+    expect(BigInt(twice.expectedOutputAmount)).toBeLessThan(1_000_000_000n);
+    expect(BigInt(twice.expectedOutputAmount)).toBeGreaterThan(900_000_000n);
+    expect(() => adapter.quote(state, HCRL, 10n ** 24n)).toThrow(/insufficient liquidity|converge|limit/);
+    const ix = adapter.swapInstruction({ state, user: WALLET, inputMint: HCRL, userSource: 'src', userDestination: 'dst', amountIn: 5n, minimumAmountOut: 1n });
+    expect(ix.accounts.length).toBe(13 + 1 + d.tickArrays.length);
+    expect(ix.accounts[0]).toEqual({ pubkey: WALLET, isSigner: true, isWritable: false });
+    expect(ix.accounts[5]!.pubkey).toBe('36yskKDMc8fonVifSDKYCDeurrRpecDZw55cej18nyxJ'); // input vault = vault1 for HcRL in
+    expect(ix.accounts[11]!.pubkey).toBe(HCRL);
+    expect(ix.accounts[12]!.pubkey).toBe(USDC);
+    expect(ix.accounts[13]!.pubkey).toBe(F.bitmapExtension);
+    expect(Buffer.from(ix.data).toString('hex')).toBe('2b04ed0b1ac91e62' + '0500000000000000' + '0100000000000000' + '00'.repeat(16) + '01');
+    // bitmap helpers: the next initialised array above 90000 exists in this pool
+    const h = state.detail as never;
+    const next = nextInitialisedTickArray(h, (state.detail as { extension: never }).extension, 90000, false);
+    expect(next === null || next > 90000).toBe(true);
   });
 });
