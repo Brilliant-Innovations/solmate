@@ -185,6 +185,8 @@ export const WorkerEnv = Common.extend({
   SESSION_AUTOSTART: z.enum(['true', 'false']).default('false'),
   /** MONITORED_EXIT cadence (§13.4–13.5): executable marks and deterministic exits for open paper positions. */
   POSITION_MONITOR_INTERVAL_MS: z.coerce.number().int().min(10_000).max(900_000).default(30_000),
+  /** Operator manual close/reduce/emergency requests are polled this often (§14.8); fast by design. */
+  MANUAL_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(2_000).max(120_000).default(5_000),
   /** S0 decision cadence (§12.1): RAW and SAFE action cycles over new candidates. */
   S0_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Git commit of the running build, recorded on strategy versions it registers (§6.21). */

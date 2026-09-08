@@ -164,7 +164,8 @@ function takeProfitOf(p: OpenPositionRow, policy: RiskPolicy): RiskPolicy['takeP
   };
 }
 
-async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action: 'EXIT' | 'REDUCE', fraction: number, requested: Amount, impactBps: Bps | null, reason: string, now: Instant): Promise<'FILLED' | 'NOT_FILLED'> {
+/** Deterministic exit path shared by mandatory exits and operator manual actions (§14.8): audited cycle, evaluation, intent, adapter. */
+export async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action: 'EXIT' | 'REDUCE', fraction: number, requested: Amount, impactBps: Bps | null, reason: string, now: Instant): Promise<'FILLED' | 'NOT_FILLED'> {
   const strategyVersionId = p.lots[0]?.strategyVersionId ?? (Object.keys(deps.strategies)[0] as VersionId);
   // A lot opened under an older, retired version is still managed under that version's own contract (D7 immutable versions).
   const strategy = deps.strategies[strategyVersionId] ?? (await deps.repo.loadStrategyVersion(strategyVersionId));

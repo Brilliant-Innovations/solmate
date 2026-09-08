@@ -473,6 +473,7 @@ invariants:
       - libs/execution/src/state/order-attempt.spec.ts
       - apps/execution-service/src/harness/finality.spec.ts
       - libs/execution/src/chain/health.spec.ts
+      - libs/db/src/server/recovery-repo.integration.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped

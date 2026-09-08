@@ -12,8 +12,8 @@ import { attestationFromStepUp, buildApprovalGrant, releaseTransition, signAppro
  * - PROMOTE_RELEASE → an admin PROMOTE attestation from a verified step-up moves a PAPER_VALIDATED
  *   Release to ELIGIBLE_LIVE (a DRAFT Release is first validated from paper evidence);
  * - ARM_RELEASE → an admin ARM attestation plus the Live Readiness verdict, deployment live
- *   capability and a capital ceiling move an ELIGIBLE_LIVE Release to ARMED and record the ceiling
- *   (D56). Readiness is a hook that answers false until M8a computes it, so arming fails closed.
+ *   capability, a capital ceiling and no mint held under two sleeves (ADR-0007) move an
+ *   ELIGIBLE_LIVE Release to ARMED and record the ceiling (D56). Readiness is a hook that answers false until M8a computes it, so arming fails closed.
  * Every refusal is recorded with its reason. Nothing here executes or changes the runtime mode.
  */
 
@@ -34,6 +34,8 @@ export interface ApprovalsRepo {
   paperEvidence(release: Release): Promise<{ paperCycles: number; reconciliationClean: boolean }>;
   /** Recognized wallet/custody value in USD at arming, for the capital attestation record. */
   recognizedUsd(accountId: Uuid): Promise<number | null>;
+  /** ADR-0007: mints the account holds under more than one strategy sleeve; arming needs none. */
+  sleeveConflicts(accountId: Uuid): Promise<{ mint: string; sleeves: number }[]>;
 }
 
 export interface ApprovalsDeps {
@@ -154,6 +156,8 @@ async function handleRelease(deps: ApprovalsDeps, report: ApprovalsReport, req: 
   const accountId = typeof req.payload['accountId'] === 'string' ? (req.payload['accountId'] as Uuid) : null;
   const ceilingUsd = typeof req.payload['capitalCeilingUsd'] === 'number' ? (req.payload['capitalCeilingUsd'] as number) : NaN;
   if (!accountId || !(ceilingUsd > 0)) return refuse('MALFORMED_PAYLOAD', { needs: ['accountId', 'capitalCeilingUsd > 0'] });
+  const conflicts = await deps.repo.sleeveConflicts(accountId);
+  if (conflicts.length) return refuse('SINGLE_SLEEVE_PER_MINT', { conflicts });
   const readinessPermits = await deps.readinessPermits(releaseId);
   const armed = releaseTransition(release, { type: 'ARM', at: now, attestation: made.attestation, readinessPermits, capitalCeilingUsd: ceilingUsd, liveCapabilityEnabled: deps.liveCapabilityEnabled });
   if (!armed.ok) return refuse(armed.rejection.code, { detail: armed.rejection });

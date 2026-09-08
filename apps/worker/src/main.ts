@@ -128,6 +128,11 @@ import {
   type Sql,
   insertChainHealth,
   lastHeadAdvance,
+  recoveryFacts,
+  expireStaleIntents,
+  settleIntentsFromAttempts,
+  failOrphanedExecuting,
+  sleeveConflicts,
 } from '@sol-agent-trader/db/server';
 import { JupiterSwapClient, NoRouteError, PaperExecutionAdapter } from '@sol-agent-trader/execution';
 import { LLM_STRATEGY_SPECS, llmStrategyVersion, llmStrategyVersions, s0StrategyVersion, s0TinyLiveVersion } from '@sol-agent-trader/strategies';
@@ -136,6 +141,9 @@ import type { CapitalAuthority, Instant } from '@sol-agent-trader/contracts';
 import { DEFAULT_CHAIN_HEALTH_POLICY } from '@sol-agent-trader/contracts';
 import type { PreviousHead } from '@sol-agent-trader/execution';
 import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
+import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
+import { runStartupRecovery } from './roles/recovery.js';
+import { executeExit } from './roles/position-monitor.js';
 import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
@@ -220,7 +228,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -301,6 +309,33 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('features')) loops.push(featuresLoop(env, logger, shared));
   if (roles.has('candidates')) loops.push(candidatesLoop(env, logger, shared));
   if (roles.has('s0')) loops.push(s0Loop(env, logger, shared));
+  // §21.3: before any entry or monitoring loop accepts work, reconcile what the database believes is open against chain truth.
+  const tradingRoles = ['paper-entry', 'position-monitor', 'live-entry', 'manual-actions', 'session'];
+  if (tradingRoles.some((r) => roles.has(r)) && env.PAPER_TRADING_WALLET) {
+    const { account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, env.POSITION_MONITOR_INTERVAL_MS);
+    const recovery = await runStartupRecovery({
+      repo: {
+        facts: (id: Uuid) => recoveryFacts(sql, id),
+        expireStaleIntents: (id: Uuid, now: Instant) => expireStaleIntents(sql, id, now),
+        settleFromAttempts: (id: Uuid) => settleIntentsFromAttempts(sql, id),
+        failOrphanedExecuting: (id: Uuid, now: Instant) => failOrphanedExecuting(sql, id, now),
+      },
+      reconcile: rpcFinalized
+        ? async () => {
+            const r = await runReconciliationCycle(reconciliationDeps(env, logger, shared, rpcFinalized));
+            return { accounts: r.accounts, clean: r.clean, mismatch: r.mismatch, unavailable: r.unavailable, paused: r.paused };
+          }
+        : null,
+      account: { id: account.id },
+      clock: systemClock,
+      logger,
+    });
+    if (!recovery.resume) {
+      // Chain, market and session roles keep running; nothing that could open or manage exposure starts until a restart reconciles.
+      for (const r of ['paper-entry', 'position-monitor', 'live-entry', 'manual-actions']) roles.delete(r);
+      logger.error('recovery_blocks_trading_roles', { disabled: ['paper-entry', 'position-monitor', 'live-entry', 'manual-actions'], reconciliation: recovery.reconciliation, after: recovery.after });
+    }
+  }
   if (roles.has('paper-entry')) loops.push(paperEntryLoop(env, logger, shared));
   if (roles.has('cohorts')) loops.push(cohortsLoop(env, logger, shared));
   if (roles.has('position-monitor')) loops.push(positionMonitorLoop(env, logger, shared));
@@ -315,6 +350,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   }
   if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
+  if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -471,27 +507,8 @@ async function heldAssetSafetyLoop(env: WorkerEnv, logger: Logger, shared: Share
 
 async function reconciliationLoop(env: WorkerEnv, logger: Logger, shared: Shared, rpc: SolanaRpcClient, rpcUrl: string): Promise<void> {
   const intervalMs = env.RECONCILIATION_INTERVAL_MS;
-  const helius = env.HELIUS_API_KEY ? new HeliusClient({ apiKey: env.HELIUS_API_KEY, clock: systemClock }) : null;
-  if (!helius) logger.warn('reconciliation_without_helius', { effect: 'any signature touching a trading wallet pauses new entries until HELIUS_API_KEY is set' });
-  const { sql } = shared;
-  const deps = {
-    rpc,
-    helius,
-    repo: {
-      listTradingAccounts: () => listTradingAccounts(sql),
-      listCustodyAccounts: (accountId: Parameters<typeof listCustodyAccounts>[1], now: Parameters<typeof listCustodyAccounts>[2]) => listCustodyAccounts(sql, accountId, now),
-      ledgerExpectations: (accountId: Parameters<typeof ledgerExpectations>[1]) => ledgerExpectations(sql, accountId),
-      reconciliationCursor: (accountId: Parameters<typeof reconciliationCursor>[1]) => reconciliationCursor(sql, accountId),
-      lifecycleForSignature: (signature: Parameters<typeof lifecycleForSignature>[1]) => lifecycleForSignature(sql, signature),
-      recordReconciliation: (report: Parameters<typeof recordReconciliation>[1]) => recordReconciliation(sql, report),
-      listOwnedAddresses: () => listOwnedAddresses(sql),
-      registerOwnedAddress: (a: Parameters<typeof registerOwnedAddress>[1]) => registerOwnedAddress(sql, a),
-    },
-    clock: systemClock,
-    logger,
-    policy: DEFAULT_RECONCILIATION_POLICY,
-  };
-  logger.info('reconciliation_starting', { intervalMs, policyVersion: DEFAULT_RECONCILIATION_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, helius: helius !== null, holder: shared.holder });
+  const deps = reconciliationDeps(env, logger, shared, rpc);
+  logger.info('reconciliation_starting', { intervalMs, policyVersion: DEFAULT_RECONCILIATION_POLICY.version, rpcOrigin: new URL(rpcUrl).origin, helius: deps.helius !== null, holder: shared.holder });
   await loopUnderLease('reconciliation', intervalMs, logger, shared, async () => {
     await runReconciliationCycle(deps);
   });
@@ -1054,6 +1071,7 @@ async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
       insertAttestation: (a: Parameters<typeof insertAttestation>[1]) => insertAttestation(sql, a),
       insertCapitalAttestation: (c: Parameters<typeof insertCapitalAttestation>[1]) => insertCapitalAttestation(sql, c),
       stepUpEvidence: (requestId: Uuid, now: Parameters<typeof stepUpEvidenceFor>[2]) => stepUpEvidenceFor(sql, requestId, now),
+      sleeveConflicts: (accountId: Uuid) => sleeveConflicts(sql, accountId),
       paperEvidence: async (release: Parameters<typeof applyReleaseStatus>[1]) => {
         const [c] = await sql<{ n: string | number }[]>`select count(*)::int as n from agents.action_cycles where strategy_version_id = ${release.binding.strategyVersionId} and state = 'CLEARED'`;
         const [r] = await sql<{ status: string | null }[]>`select status from trading.custody_reconciliations order by evaluated_at desc limit 1`;
@@ -1200,5 +1218,61 @@ async function chainHealthLoop(env: WorkerEnv, logger: Logger, shared: Shared, p
   logger.info('chain_health_starting', { intervalMs, policyVersion: DEFAULT_CHAIN_HEALTH_POLICY.version, views: samplers.map((s) => s.label), holder: shared.holder });
   await loopUnderLease('chain-health', intervalMs, logger, shared, async () => {
     previous = (await runChainHealthCycle(deps, previous)).previous;
+  });
+}
+
+/** Reconciliation dependencies, shared by the reconciliation loop and startup recovery (§21.3). */
+function reconciliationDeps(env: WorkerEnv, logger: Logger, shared: Shared, rpc: SolanaRpcClient) {
+  const helius = env.HELIUS_API_KEY ? new HeliusClient({ apiKey: env.HELIUS_API_KEY, clock: systemClock }) : null;
+  if (!helius) logger.warn('reconciliation_without_helius', { effect: 'any signature touching a trading wallet pauses new entries until HELIUS_API_KEY is set' });
+  const { sql } = shared;
+  return {
+    rpc,
+    helius,
+    repo: {
+      listTradingAccounts: () => listTradingAccounts(sql),
+      listCustodyAccounts: (accountId: Parameters<typeof listCustodyAccounts>[1], now: Parameters<typeof listCustodyAccounts>[2]) => listCustodyAccounts(sql, accountId, now),
+      ledgerExpectations: (accountId: Parameters<typeof ledgerExpectations>[1]) => ledgerExpectations(sql, accountId),
+      reconciliationCursor: (accountId: Parameters<typeof reconciliationCursor>[1]) => reconciliationCursor(sql, accountId),
+      lifecycleForSignature: (signature: Parameters<typeof lifecycleForSignature>[1]) => lifecycleForSignature(sql, signature),
+      recordReconciliation: (report: Parameters<typeof recordReconciliation>[1]) => recordReconciliation(sql, report),
+      listOwnedAddresses: () => listOwnedAddresses(sql),
+      registerOwnedAddress: (a: Parameters<typeof registerOwnedAddress>[1]) => registerOwnedAddress(sql, a),
+    },
+    clock: systemClock,
+    logger,
+    policy: DEFAULT_RECONCILIATION_POLICY,
+  };
+}
+
+async function manualActionsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.MANUAL_ACTIONS_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('manual_actions_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { deps: monitor, account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, env.POSITION_MONITOR_INTERVAL_MS);
+  const { sql } = shared;
+  const deps: ManualActionsDeps = {
+    repo: {
+      listPending: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
+      operatorRole: async (userId: Uuid) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      listOpenPositions: (limit: number) => listOpenPositionsForAccount(sql, account.id, limit),
+      resolve: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant) => resolveControlRequest(sql, id, state, resolution, at),
+    },
+    exit: async (p, action, fraction, requested, reason, now) => {
+      const quote = await monitor.exitQuote(p.mint, monitor.account.settlementMint, requested, monitor.policy.maxSlippageBps, now);
+      return executeExit(monitor, p, action, fraction, requested, quote?.impactBps ?? null, reason, now);
+    },
+    clock: systemClock,
+    logger,
+    config: { batchSize: 10, maxOpenPositions: 200 },
+  };
+  logger.info('manual_actions_starting', { intervalMs, accountId: account.id, holder: shared.holder });
+  await loopUnderLease('manual-actions', intervalMs, logger, shared, async () => {
+    await runManualActionsCycle(deps);
   });
 }

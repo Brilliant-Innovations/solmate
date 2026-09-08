@@ -10,7 +10,7 @@ const release = (status: Release['status']): Release => ({ id: IDS.release as Uu
 const evidence: StepUpEvidenceRow = { credentialId: 'cred', credentialFingerprint: 'cd'.repeat(32) as Sha256Hex, challenge: 'c'.repeat(43), verified: true, bindingHash: 'ef'.repeat(32) as Sha256Hex };
 const request = (kind: 'PROMOTE_RELEASE' | 'ARM_RELEASE', payload: Record<string, unknown>): PendingControlRequest => ({ id: IDS.message as Uuid, requestedBy: IDS.operator as Uuid, kind, payload, createdAt: T0 });
 
-function fake(over: { release?: Release | null; role?: 'operator' | 'admin' | null; evidence?: StepUpEvidenceRow | null; paper?: { paperCycles: number; reconciliationClean: boolean }; requests: PendingControlRequest[] }) {
+function fake(over: { release?: Release | null; role?: 'operator' | 'admin' | null; evidence?: StepUpEvidenceRow | null; paper?: { paperCycles: number; reconciliationClean: boolean }; conflicts?: { mint: string; sleeves: number }[]; requests: PendingControlRequest[] }) {
   const attestations: ReleaseAttestation[] = [];
   const capital: CapitalAttestation[] = [];
   const statuses: { from: Release['status']; to: Release['status'] }[] = [];
@@ -31,6 +31,7 @@ function fake(over: { release?: Release | null; role?: 'operator' | 'admin' | nu
     async insertCapitalAttestation(c) { capital.push(c); },
     async paperEvidence() { return over.paper ?? { paperCycles: 30, reconciliationClean: true }; },
     async recognizedUsd() { return 120; },
+    async sleeveConflicts() { return over.conflicts ?? []; },
   };
   return { repo, attestations, capital, statuses, resolutions, current: () => current };
 }
@@ -83,6 +84,12 @@ describe('release promotion and arming through control requests (§12.4, §15.9,
     // a DRAFT cannot be armed straight away, and a missing ceiling is malformed
     const draft = fake({ requests: [armReq] });
     expect((await runApprovalsCycle(await deps(draft.repo, { readinessPermits: async () => true, liveCapabilityEnabled: true }))).refused).toEqual({ INVALID_FROM_STATUS: 1 });
+    // ADR-0007: a mint held under two sleeves refuses arming before readiness is even asked
+    const twoSleeves = fake({ release: release('ELIGIBLE_LIVE'), conflicts: [{ mint: 'So11111111111111111111111111111111111111112', sleeves: 2 }], requests: [armReq] });
+    const r3 = await runApprovalsCycle(await deps(twoSleeves.repo, { readinessPermits: async () => true, liveCapabilityEnabled: true }));
+    expect(r3.refused).toEqual({ SINGLE_SLEEVE_PER_MINT: 1 });
+    expect(twoSleeves.resolutions[0]?.resolution).toMatchObject({ reason: 'SINGLE_SLEEVE_PER_MINT', conflicts: [{ sleeves: 2 }] });
+    expect(twoSleeves.attestations).toEqual([]);
     const noCeiling = fake({ release: release('ELIGIBLE_LIVE'), requests: [request('ARM_RELEASE', { releaseId: IDS.release, accountId: IDS.account })] });
     expect((await runApprovalsCycle(await deps(noCeiling.repo, { readinessPermits: async () => true, liveCapabilityEnabled: true }))).refused).toEqual({ MALFORMED_PAYLOAD: 1 });
   });

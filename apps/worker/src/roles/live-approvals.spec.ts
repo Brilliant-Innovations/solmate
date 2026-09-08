@@ -39,6 +39,7 @@ describe('worker role approvals (§15.6, D41; INV-10)', () => {
       async insertCapitalAttestation() { throw new Error('not used'); },
       async paperEvidence() { return { paperCycles: 0, reconciliationClean: true }; },
       async recognizedUsd() { return null; },
+      async sleeveConflicts() { return []; },
       ...over,
     };
     return { r, inserted, resolutions, states };
