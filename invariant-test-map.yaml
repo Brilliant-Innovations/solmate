@@ -308,9 +308,11 @@ invariants:
       - LLM_STRATEGY
     owner_modules:
       - libs/agents/src/action-cycle
+      - libs/agents/src/runner
       - apps/risk-authorizer/src/authorize
     tests:
       - libs/agents/src/action-cycle/action-cycle.spec.ts
+      - libs/agents/src/runner/runner.spec.ts
       - apps/risk-authorizer/src/authorize/authorize.spec.ts
     evidence:
       - docs/CHANGELOG.md
@@ -392,6 +394,7 @@ invariants:
 
   - id: INV-19
     statement: "A proposal under cutoff v1 cannot be adversarially cleared under cutoff v2 without proposer revision."
+    # runner: after a refresh the revision and its review both run at v2; a v1 proposal re-emitted is malformed
     required_by: M1
     applicable_profiles:
       - ALL
@@ -403,6 +406,7 @@ invariants:
       - libs/agents/src/action-cycle
     tests:
       - libs/agents/src/action-cycle/action-cycle.spec.ts
+      - libs/agents/src/runner/runner.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -418,9 +422,11 @@ invariants:
       - LLM_STRATEGY
     owner_modules:
       - libs/agents/src/action-cycle
+      - libs/agents/src/runner
       - libs/execution/src/state/position-review.ts
     tests:
       - libs/agents/src/action-cycle/protection-only.spec.ts
+      - libs/agents/src/runner/runner.spec.ts
       - libs/execution/src/state/position-review.spec.ts
     evidence:
       - docs/CHANGELOG.md
@@ -440,6 +446,7 @@ invariants:
       - libs/risk/src/safety
       - libs/agents/src/budget
     tests:
+      - libs/agents/src/budget/spend-gate.spec.ts
       - libs/risk/src/mandatory-exit/mandatory-exit.spec.ts
       - libs/risk/src/safety/held-asset-safety.spec.ts
     evidence:

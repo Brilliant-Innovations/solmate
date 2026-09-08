@@ -8,3 +8,4 @@ export * from './funding.js';
 export * from './queue.js';
 export * from './execution-adapter.js';
 export * from './signer.js';
+export * from './reasoning.js';
