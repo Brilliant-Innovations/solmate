@@ -41,6 +41,10 @@ export const STEP_UP_POLICY: Readonly<Record<ControlRequestKind, StepUpRequireme
   END_SESSION: 'FAST',
   REGISTER_PASSKEY: 'FIRST_PASSKEY_AAL2',
   REVOKE_PASSKEY: 'REQUIRED',
+  // §20.4 / §20.27: attention only; never eligibility or execution permission.
+  WATCH_ASSET: 'FAST',
+  UNWATCH_ASSET: 'FAST',
+  REQUEST_RESEARCH_REFRESH: 'FAST',
 };
 
 /** Zod mirror of the table so the digest changes when a classification changes (D50). */

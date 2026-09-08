@@ -869,6 +869,7 @@ export type Database = {
           id: string
           mint_address: string
           name: string
+          research_refresh_requested_at: string | null
           status: Database["enums"]["Enums"]["asset_status"]
           symbol: string
           token_program: Database["enums"]["Enums"]["token_program"]
@@ -884,6 +885,7 @@ export type Database = {
           id?: string
           mint_address: string
           name: string
+          research_refresh_requested_at?: string | null
           status?: Database["enums"]["Enums"]["asset_status"]
           symbol: string
           token_program: Database["enums"]["Enums"]["token_program"]
@@ -899,6 +901,7 @@ export type Database = {
           id?: string
           mint_address?: string
           name?: string
+          research_refresh_requested_at?: string | null
           status?: Database["enums"]["Enums"]["asset_status"]
           symbol?: string
           token_program?: Database["enums"]["Enums"]["token_program"]
@@ -1078,6 +1081,9 @@ export type Database = {
         | "END_SESSION"
         | "REGISTER_PASSKEY"
         | "REVOKE_PASSKEY"
+        | "WATCH_ASSET"
+        | "UNWATCH_ASSET"
+        | "REQUEST_RESEARCH_REFRESH"
       control_request_state: "PENDING" | "ACCEPTED" | "REJECTED" | "EXPIRED"
       custody_kind:
         | "TRADING_WALLET"
@@ -1495,6 +1501,42 @@ export type Database = {
           trade_count?: number | null
           updated_at?: string
           win_rate?: number | null
+        }
+        Relationships: []
+      }
+      watchlist: {
+        Row: {
+          added_at: string
+          added_by: string
+          alert_rules: Json
+          asset_id: string
+          id: string
+          note: string | null
+          reason: string
+          removed_at: string | null
+          removed_by: string | null
+        }
+        Insert: {
+          added_at?: string
+          added_by: string
+          alert_rules?: Json
+          asset_id: string
+          id?: string
+          note?: string | null
+          reason: string
+          removed_at?: string | null
+          removed_by?: string | null
+        }
+        Update: {
+          added_at?: string
+          added_by?: string
+          alert_rules?: Json
+          asset_id?: string
+          id?: string
+          note?: string | null
+          reason?: string
+          removed_at?: string | null
+          removed_by?: string | null
         }
         Relationships: []
       }
@@ -3461,6 +3503,20 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "candidates_asset_id_fkey"
+            columns: ["asset_id"]
+            isOneToOne: false
+            referencedRelation: "scanner"
+            referencedColumns: ["asset_id"]
+          },
+          {
+            foreignKeyName: "candidates_eligibility_evaluation_id_fkey"
+            columns: ["eligibility_evaluation_id"]
+            isOneToOne: false
+            referencedRelation: "scanner"
+            referencedColumns: ["eligibility_id"]
+          },
+          {
             foreignKeyName: "candidates_feature_snapshot_id_fkey"
             columns: ["feature_snapshot_id"]
             isOneToOne: false
@@ -3509,11 +3565,84 @@ export type Database = {
           regime?: Database["enums"]["Enums"]["market_regime"] | null
           self_influence_suppressed?: boolean
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "feature_snapshots_asset_id_fkey"
+            columns: ["asset_id"]
+            isOneToOne: false
+            referencedRelation: "scanner"
+            referencedColumns: ["asset_id"]
+          },
+        ]
       }
     }
     Views: {
-      [_ in never]: never
+      scanner: {
+        Row: {
+          asset_id: string | null
+          asset_status: Database["enums"]["Enums"]["asset_status"] | null
+          atr: number | null
+          buy_count: Json | null
+          buy_volume_usd: Json | null
+          cohorts: string[] | null
+          concentration: Json | null
+          cycle_action: Database["enums"]["Enums"]["trading_action_type"] | null
+          cycle_id: string | null
+          cycle_state: Database["enums"]["Enums"]["action_cycle_state"] | null
+          cycle_strategy: string | null
+          decimals: number | null
+          eligibility_at: string | null
+          eligibility_freshness: Json | null
+          eligibility_id: string | null
+          eligibility_liquidity_usd: number | null
+          eligible: boolean | null
+          event_count_24h: number | null
+          features: Json | null
+          features_at: string | null
+          first_observed_at: string | null
+          freeze_authority: Database["enums"]["Enums"]["authority_state"] | null
+          grade: number | null
+          hard_reject: boolean | null
+          holder_count: number | null
+          insider_metrics: Json | null
+          jupiter_route_available: boolean | null
+          liquidity_usd: number | null
+          market_cap_usd: number | null
+          mint: string | null
+          mint_authority: Database["enums"]["Enums"]["authority_state"] | null
+          name: string | null
+          open_candidates: Json | null
+          position_id: string | null
+          position_status: Database["enums"]["Enums"]["position_status"] | null
+          price_impact_probes: Json | null
+          price_usd: number | null
+          realized_volatility: number | null
+          regime: Database["enums"]["Enums"]["market_regime"] | null
+          rejection_reasons: unknown[] | null
+          relative_volume: number | null
+          research_refresh_requested_at: string | null
+          returns: Json | null
+          route_dry_run: Json | null
+          route_hops: Json | null
+          route_id: string | null
+          route_probes: Json | null
+          route_refreshed_at: string | null
+          security_flags: unknown[] | null
+          self_influence_suppressed: boolean | null
+          sell_count: Json | null
+          sell_volume_usd: Json | null
+          settlement_route_confirmed: boolean | null
+          snapshot_at: string | null
+          sol_relative_return: number | null
+          symbol: string | null
+          transfer_restrictions: unknown[] | null
+          universe_relative_strength: number | null
+          volume_usd: Json | null
+          watch_id: string | null
+          watch_reason: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never
@@ -4949,6 +5078,9 @@ export const Constants = {
         "END_SESSION",
         "REGISTER_PASSKEY",
         "REVOKE_PASSKEY",
+        "WATCH_ASSET",
+        "UNWATCH_ASSET",
+        "REQUEST_RESEARCH_REFRESH",
       ],
       control_request_state: ["PENDING", "ACCEPTED", "REJECTED", "EXPIRED"],
       custody_kind: [

@@ -14,7 +14,7 @@ describe('D41 step-up policy', () => {
 
   it('keeps exactly the risk-reducing/neutral controls fast', () => {
     expect([...FAST_CONTROLS].sort()).toEqual(
-      ['PAUSE_NEW_ENTRIES', 'REJECT_AUTHORIZATION', 'MANUAL_REDUCE', 'MANUAL_CLOSE', 'EMERGENCY_CLOSE_ALL', 'ACKNOWLEDGE_ALERT', 'RUN_READINESS_DRILL', 'END_SESSION'].sort(),
+      ['PAUSE_NEW_ENTRIES', 'REJECT_AUTHORIZATION', 'MANUAL_REDUCE', 'MANUAL_CLOSE', 'EMERGENCY_CLOSE_ALL', 'ACKNOWLEDGE_ALERT', 'RUN_READINESS_DRILL', 'END_SESSION', 'WATCH_ASSET', 'UNWATCH_ASSET', 'REQUEST_RESEARCH_REFRESH'].sort(),
     );
     for (const kind of FAST_CONTROLS) expect(stepUpRequired(kind, {})).toBe(false);
   });

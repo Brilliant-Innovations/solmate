@@ -81,3 +81,26 @@ export async function requestEmergencyCloseAll(form: FormData): Promise<void> {
   if (typed !== 'CLOSE ALL') throw new Error('type CLOSE ALL to confirm');
   await request('EMERGENCY_CLOSE_ALL', { source: 'positions', confirmedText: typed }, '/positions');
 }
+
+// §20.4 / §20.27 attention controls: FAST, never eligibility or execution permission.
+export async function requestWatchAsset(form: FormData): Promise<void> {
+  const mint = String(form.get('mint') ?? '').trim();
+  const assetId = String(form.get('assetId') ?? '').trim();
+  const reason = String(form.get('reason') ?? '').trim().slice(0, 128);
+  const note = String(form.get('note') ?? '').trim().slice(0, 1024);
+  if (!reason) throw new Error('reason is required');
+  const target = assetId && UUID.test(assetId) ? { assetId } : { mint };
+  if (!('assetId' in target) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) throw new Error('mint is not a Solana address');
+  const back = String(form.get('back') ?? '/watchlist');
+  await request('WATCH_ASSET', { ...target, reason, note: note || null, alertRules: {}, source: 'watchlist' }, back.startsWith('/') ? back : '/watchlist');
+}
+
+export async function requestUnwatchAsset(form: FormData): Promise<void> {
+  const back = String(form.get('back') ?? '/watchlist');
+  await request('UNWATCH_ASSET', { watchId: uuidField(form, 'watchId'), source: 'watchlist' }, back.startsWith('/') ? back : '/watchlist');
+}
+
+export async function requestResearchRefresh(form: FormData): Promise<void> {
+  const back = String(form.get('back') ?? '/scanner');
+  await request('REQUEST_RESEARCH_REFRESH', { assetId: uuidField(form, 'assetId'), source: 'scanner' }, back.startsWith('/') ? back : '/scanner');
+}

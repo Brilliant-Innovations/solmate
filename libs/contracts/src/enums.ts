@@ -289,6 +289,9 @@ export const ControlRequestKind = z.enum([
   'END_SESSION',
   'REGISTER_PASSKEY',
   'REVOKE_PASSKEY',
+  'WATCH_ASSET',
+  'UNWATCH_ASSET',
+  'REQUEST_RESEARCH_REFRESH',
 ]);
 export type ControlRequestKind = z.infer<typeof ControlRequestKind>;
 

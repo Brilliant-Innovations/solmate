@@ -41,6 +41,11 @@ import {
   recordPasskeyUse,
   insertPasskey,
   revokePasskey,
+  assetIdByMint,
+  assetExists,
+  addWatch,
+  removeWatch,
+  requestResearchRefresh,
   tightenStop,
   updateMark,
   windDownFacts,
@@ -184,6 +189,7 @@ import type { PreviousHead } from '@sol-agent-trader/execution';
 import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
 import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
 import { ensureStepUpJudged, runOperatorSecurityCycle, type OperatorSecurityDeps } from './roles/operator-security.js';
+import { runWatchlistCycle, type WatchlistDeps } from './roles/watchlist.js';
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle, type AuditCheckpointDeps } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
@@ -287,7 +293,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals' || r === 'operator-security');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals' || r === 'operator-security' || r === 'watchlist');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -411,6 +417,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
   if (roles.has('operator-security')) loops.push(operatorSecurityLoop(env, logger, shared));
+  if (roles.has('watchlist')) loops.push(watchlistLoop(env, logger, shared));
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
@@ -1384,6 +1391,35 @@ async function operatorSecurityLoop(env: WorkerEnv, logger: Logger, shared: Shar
   await loopUnderLease('operator-security', intervalMs, logger, shared, async () => {
     const r = await runOperatorSecurityCycle(deps);
     if (r.verified || r.verificationFailed || r.registered || r.revoked || r.errors.length || Object.keys(r.refused).length) logger.info('operator_security_cycle', { ...r });
+  });
+}
+
+/** Role watchlist (§20.4, §20.27): WATCH_ASSET / UNWATCH_ASSET / REQUEST_RESEARCH_REFRESH, attention only. */
+async function watchlistLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.MANUAL_ACTIONS_INTERVAL_MS;
+  const { sql } = shared;
+  const deps: WatchlistDeps = {
+    repo: {
+      listPending: (kinds, limit) => listPendingControlRequests(sql, kinds, limit),
+      operatorRole: async (userId) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      assetIdByMint: (mint) => assetIdByMint(sql, mint),
+      assetExists: (id) => assetExists(sql, id),
+      addWatch: (w) => addWatch(sql, w),
+      removeWatch: (id, by, at) => removeWatch(sql, id, by, at),
+      requestResearchRefresh: (assetId, at) => requestResearchRefresh(sql, assetId, at),
+      resolve: (id, state, resolution, at) => resolveControlRequest(sql, id, state, resolution, at),
+    },
+    clock: systemClock,
+    logger,
+    config: { batchSize: 20 },
+  };
+  logger.info('watchlist_starting', { intervalMs, holder: shared.holder });
+  await loopUnderLease('watchlist', intervalMs, logger, shared, async () => {
+    const r = await runWatchlistCycle(deps);
+    if (r.requests > 0) logger.info('watchlist_cycle', { ...r });
   });
 }
 

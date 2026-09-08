@@ -262,6 +262,12 @@ a:focus-visible {
   color: var(--failed);
 }
 
+.btn[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+}
+
 .btn.pause-hold {
   background-repeat: no-repeat;
   transition: background-image 0s;

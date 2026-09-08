@@ -38,7 +38,8 @@ export async function listAssetsForEvaluation(sql: Sql, opts: { limit: number; r
     ) e on true
     where (a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') and (e.last_evaluated_at is null or e.last_evaluated_at < ${opts.reevaluateAfter}))
        or (a.status = 'BLOCKED' and (e.last_evaluated_at is null or e.last_evaluated_at < ${blockedAfter}))
-    order by e.last_evaluated_at asc nulls first, a.first_observed_at desc
+       or (a.status <> 'RETIRED' and a.research_refresh_requested_at is not null and (e.last_evaluated_at is null or a.research_refresh_requested_at > e.last_evaluated_at))
+    order by (a.research_refresh_requested_at is not null and (e.last_evaluated_at is null or a.research_refresh_requested_at > e.last_evaluated_at)) desc, e.last_evaluated_at asc nulls first, a.first_observed_at desc
     limit ${opts.limit}`;
   return rows.map((r) => ({ id: r.id as Uuid, mintAddress: r.mint_address, status: r.status, lastEvaluatedAt: r.last_evaluated_at ? (new Date(r.last_evaluated_at).toISOString() as Instant) : null }));
 }
