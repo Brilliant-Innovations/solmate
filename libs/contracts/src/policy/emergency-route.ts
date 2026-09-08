@@ -33,7 +33,7 @@ export const DEFAULT_EMERGENCY_ROUTE_POLICY: EmergencyRoutePolicy = {
   computeUnitPriceMicroLamports: 50_000,
   dryRunSlippageBps: 300,
   maxTargetsPerCycle: 40,
-  supportedPrograms: ['RAYDIUM_CPMM', 'RAYDIUM_AMM_V4', 'METEORA_DLMM', 'RAYDIUM_CLMM'],
+  supportedPrograms: ['RAYDIUM_CPMM', 'RAYDIUM_AMM_V4', 'METEORA_DLMM', 'RAYDIUM_CLMM', 'ORCA_WHIRLPOOL'],
 };
 
 export const EmergencyRouteReadiness = z.enum(['READY', 'STALE', 'FAILED', 'UNSUPPORTED', 'MISSING']);

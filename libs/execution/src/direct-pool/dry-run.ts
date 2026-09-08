@@ -8,6 +8,7 @@ import { RaydiumAmmV4Adapter } from './raydium-amm-v4.js';
 import { RaydiumCpmmAdapter } from './raydium-cpmm.js';
 import { MeteoraDlmmAdapter } from './meteora-dlmm.js';
 import { RaydiumClmmAdapter } from './raydium-clmm.js';
+import { OrcaWhirlpoolAdapter } from './orca-whirlpool.js';
 import { PoolDecodeError, type AccountMeta, type DecodedPoolState, type DirectPoolAdapter, type DirectPoolInstruction, type PoolQuote, type RawAccount } from './types.js';
 
 /**
@@ -19,7 +20,7 @@ import { PoolDecodeError, type AccountMeta, type DecodedPoolState, type DirectPo
  * which is classified OK_UNFUNDED. Nothing here signs or submits.
  */
 
-export const DEFAULT_DIRECT_POOL_ADAPTERS: readonly DirectPoolAdapter[] = [new RaydiumCpmmAdapter(), new RaydiumAmmV4Adapter(), new MeteoraDlmmAdapter(), new RaydiumClmmAdapter()];
+export const DEFAULT_DIRECT_POOL_ADAPTERS: readonly DirectPoolAdapter[] = [new RaydiumCpmmAdapter(), new RaydiumAmmV4Adapter(), new MeteoraDlmmAdapter(), new RaydiumClmmAdapter(), new OrcaWhirlpoolAdapter()];
 
 export function adapterFor(hop: DirectPoolHop, adapters: readonly DirectPoolAdapter[] = DEFAULT_DIRECT_POOL_ADAPTERS): DirectPoolAdapter | null {
   return adapters.find((a) => a.program === hop.program && a.programId === hop.programId) ?? null;

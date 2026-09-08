@@ -1,6 +1,6 @@
 import { DEFAULT_EMERGENCY_ROUTE_POLICY, fixedClock, fixtures, toInstant, type EmergencyExitRouteSnapshot, type Instant, type MintAddress, type SolanaAddress, type Uuid } from '@sol-agent-trader/contracts';
 import type { DryRunTarget } from '@sol-agent-trader/db/server';
-import { MAINNET_POOL_FIXTURES, type SimulationReader } from '@sol-agent-trader/execution';
+import { MAINNET_POOL_FIXTURES, RaydiumAmmV4Adapter, RaydiumCpmmAdapter, type SimulationReader } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { dryRunAmount, runEmergencyDryRunCycle, type EmergencyDryRunDeps } from './emergency-dry-run.js';
 
@@ -59,8 +59,10 @@ describe('emergency-dry-run role (§14.6, D33)', () => {
       },
       reader: reader(),
       tradingWallet: WALLET,
+      // this deployment enables only the two constant-product families, so the Whirlpool snapshot is UNSUPPORTED
+      adapters: [new RaydiumCpmmAdapter(), new RaydiumAmmV4Adapter()],
       standInPayer: async (mint) => { standIns.push(mint); return { owner: 'GcaEn64W365GziEmvpLvAkjAW7wHjnPfjx71KVQNPmjE', tokenAccount: 'BaorCoZHp26WNmWZEJPKJYUQ98D4mRtx18v4euTukPT3' }; },
-      policy: DEFAULT_EMERGENCY_ROUTE_POLICY,
+      policy: { ...DEFAULT_EMERGENCY_ROUTE_POLICY, supportedPrograms: ['RAYDIUM_CPMM', 'RAYDIUM_AMM_V4'] },
       clock: fixedClock(NOW),
       logger,
       newId: () => `${String(++n).padStart(8, '0')}-0000-4000-8000-00000000d0d0` as Uuid,

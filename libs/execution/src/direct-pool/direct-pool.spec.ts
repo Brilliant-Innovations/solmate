@@ -10,6 +10,8 @@ import { MAINNET_DLMM_FIXTURE } from './fixtures/mainnet-dlmm.js';
 import { binArrayIndex, deriveBinArray, deriveEventAuthority, MeteoraDlmmAdapter, nextBinArrayWithLiquidity } from './meteora-dlmm.js';
 import { MAINNET_TOKEN2022_MINT } from './fixtures/mainnet-token2022-mint.js';
 import { MAINNET_CLMM_FIXTURE } from './fixtures/mainnet-clmm.js';
+import { MAINNET_WHIRLPOOL_FIXTURE } from './fixtures/mainnet-whirlpool.js';
+import { deriveWhirlpoolOracle, deriveWhirlpoolTickArray, ORCA_MAX_SQRT_PRICE, ORCA_MAX_TICK, ORCA_MIN_SQRT_PRICE, ORCA_MIN_TICK, OrcaWhirlpoolAdapter, orcaSqrtPriceFromTick, orcaTickFromSqrtPrice, whirlpoolSwapArrayStarts } from './orca-whirlpool.js';
 import { deriveTickArray, MAX_SQRT_PRICE_X64, MAX_TICK, MIN_SQRT_PRICE_X64, MIN_TICK, nextInitialisedTickArray, RaydiumClmmAdapter, sqrtPriceAtTick, tickArrayStartIndex, tickAtSqrtPrice } from './raydium-clmm.js';
 import { activeTransferFee, decodeMintExtensions, transferFeeAmount } from './token2022.js';
 import { RaydiumAmmV4Adapter } from './raydium-amm-v4.js';
@@ -172,7 +174,7 @@ describe('unsigned emergency build + simulation dry-run (§14.6, D33)', () => {
     const ok = await runEmergencyDryRun({ hop: cpmmHop, user: WALLET, amountIn: 1_000_000n, slippageBps: 300, policy, reader, now: NOW });
     expect(ok).toMatchObject({ class: 'OK', ok: true, slot: 9, tradeable: true });
     expect(reader.simulated).toHaveLength(1);
-    const unsupported = await runEmergencyDryRun({ hop: { ...cpmmHop, program: 'ORCA_WHIRLPOOL' }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW });
+    const unsupported = await runEmergencyDryRun({ hop: { ...cpmmHop, program: 'ORCA_WHIRLPOOL' }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW, adapters: [new RaydiumCpmmAdapter()] });
     expect(unsupported).toMatchObject({ class: 'UNSUPPORTED_PROGRAM', ok: false, build: null });
     const missing = await runEmergencyDryRun({ hop: { ...cpmmHop, poolAddress: 'Missing1111111111111111111111111111111111111' as SolanaAddress }, user: WALLET, amountIn: 1n, slippageBps: 300, policy, reader, now: NOW });
     expect(missing).toMatchObject({ class: 'DECODE_FAILED', ok: false });
@@ -331,5 +333,66 @@ describe('Raydium CLMM adapter (layout captured from mainnet 2026-09-08, USDC/Hc
     const h = state.detail as never;
     const next = nextInitialisedTickArray(h, (state.detail as { extension: never }).extension, 90000, false);
     expect(next === null || next > 90000).toBe(true);
+  });
+});
+
+describe('Orca Whirlpool adapter (layout captured from mainnet 2026-09-08, 31k8/USDC tick spacing 16)', () => {
+  const adapter = new OrcaWhirlpoolAdapter();
+  const F = MAINNET_WHIRLPOOL_FIXTURE;
+  const A = F.mintA as MintAddress;
+  const USDC = F.mintB as MintAddress;
+  const byAddress = new Map<string, RawAccount>(F.accounts.filter((a): a is NonNullable<typeof a> => a !== null).map((a) => [a.address, raw(a)!]));
+  const ctx = { nowMs: Date.parse(F.capturedAt) };
+  it('tick math matches the program: bounds, round trips, and the three-array sequence the swap requires', () => {
+    expect(orcaSqrtPriceFromTick(0)).toBe(1n << 64n);
+    expect(orcaSqrtPriceFromTick(ORCA_MIN_TICK)).toBe(ORCA_MIN_SQRT_PRICE);
+    expect(orcaSqrtPriceFromTick(ORCA_MAX_TICK)).toBe(ORCA_MAX_SQRT_PRICE);
+    for (const t of [-443636, -81379, -19320, -17, -1, 0, 1, 16, 19320, 81379, 443635]) expect(orcaTickFromSqrtPrice(orcaSqrtPriceFromTick(t))).toBe(t);
+    const sp = Number(orcaSqrtPriceFromTick(-81379)) / 2 ** 64;
+    expect(sp * sp).toBeCloseTo(Math.pow(1.0001, -81379), 8);
+    expect(whirlpoolSwapArrayStarts(-81379, 16, true)).toEqual([-81664, -83072, -84480]);
+    expect(whirlpoolSwapArrayStarts(-81379, 16, false)).toEqual([-81664, -80256, -78848]);
+    // right at the top of an array the program shifts the upward sequence by one
+    expect(whirlpoolSwapArrayStarts(-80266, 16, false)).toEqual([-80256, -78848, -77440]);
+    expect(deriveWhirlpoolTickArray(F.pool, -81664)).toBe('7CY3KNWw4WuEnsB9Hf58y7mbpEbqtF8ucqG1LQBhFBvS');
+    expect(deriveWhirlpoolOracle(F.pool)).toBe(F.oracle);
+  });
+  it('decodes the whirlpool, fixed and dynamic tick arrays, quotes both directions and builds swap_v2 with three arrays and the oracle', () => {
+    const pool = byAddress.get(F.pool)!;
+    const hop: DirectPoolHop = { program: 'ORCA_WHIRLPOOL', programId: adapter.programId as SolanaAddress, poolAddress: F.pool as SolanaAddress, inputMint: A, outputMint: USDC };
+    const dependent = adapter.dependentAccounts(hop, pool);
+    expect(dependent.slice(0, 5)).toEqual(['D8jrDk1xky71dYydPJvXuhUU7S3cKR3o7AnVCyp5V6QZ', 'd7gEhcZ7gYVpSiUhUGb51pvZsebujyfRwd9uJUyMoKL', A, USDC, F.oracle]);
+    expect(dependent.slice(5)).toEqual([-81664, -83072, -84480].map((s) => deriveWhirlpoolTickArray(F.pool, s)));
+    const accounts = [pool, ...dependent.map((a) => byAddress.get(a) ?? null)];
+    const state = adapter.decode(hop, accounts, ctx);
+    expect(state).toMatchObject({ program: 'ORCA_WHIRLPOOL', mintA: A, mintB: USDC, tokenProgramA: TOKEN_PROGRAM, feeBps: 16, tradeable: true, tradeableReason: null });
+    const d = state.detail as { tickSpacing: number; tickCurrent: number; adaptive: unknown; tickArrays: { startTick: number; ticks: unknown[] | null }[] };
+    expect(d.tickSpacing).toBe(16);
+    expect(d.adaptive).toBeNull(); // no oracle account: static fee
+    expect(d.tickArrays.map((t) => t.startTick)).toEqual([-81664, -83072, -84480]);
+    // selling the risk asset walks downward; buying it walks upward through the fixed array at -80256
+    const q = adapter.quote(state, A, 1_000_000_000n);
+    expect(BigInt(q.expectedOutputAmount)).toBeGreaterThan(0n);
+    expect(BigInt(q.feeAmount)).toBeGreaterThan(0n);
+    expect(q.outputMint).toBe(USDC);
+    const upHop = { ...hop, inputMint: USDC, outputMint: A };
+    const up = adapter.dependentAccounts(upHop, pool);
+    expect(up.slice(5)).toEqual([-81664, -80256, -78848].map((s) => deriveWhirlpoolTickArray(F.pool, s)));
+    const upState = adapter.decode(upHop, [pool, ...up.map((a) => byAddress.get(a) ?? null)], ctx);
+    const back = adapter.quote(upState, USDC, 1_000_000n);
+    expect(BigInt(back.expectedOutputAmount)).toBeGreaterThan(0n);
+    const twice = adapter.quote(upState, USDC, BigInt(q.expectedOutputAmount));
+    expect(BigInt(twice.expectedOutputAmount)).toBeLessThan(1_000_000_000n);
+    expect(BigInt(twice.expectedOutputAmount)).toBeGreaterThan(900_000_000n);
+    expect(() => adapter.quote(state, A, 10n ** 24n)).toThrow(/insufficient liquidity|converge|limit/);
+    const ix = adapter.swapInstruction({ state, user: WALLET, inputMint: A, userSource: 'src', userDestination: 'dst', amountIn: 5n, minimumAmountOut: 1n });
+    expect(ix.accounts).toHaveLength(15);
+    expect(ix.accounts[3]).toEqual({ pubkey: WALLET, isSigner: true, isWritable: false });
+    expect(ix.accounts[4]).toEqual({ pubkey: F.pool, isSigner: false, isWritable: true });
+    expect(ix.accounts[7]!.pubkey).toBe('src'); // token owner account A is the source when selling A
+    expect(ix.accounts[9]!.pubkey).toBe('dst');
+    expect(ix.accounts.slice(11, 14).map((a) => a.pubkey)).toEqual(dependent.slice(5));
+    expect(ix.accounts[14]!.pubkey).toBe(F.oracle);
+    expect(Buffer.from(ix.data).toString('hex')).toBe(Buffer.from(anchorDiscriminator('swap_v2')).toString('hex') + '0500000000000000' + '0100000000000000' + '00'.repeat(16) + '01' + '01' + '00');
   });
 });

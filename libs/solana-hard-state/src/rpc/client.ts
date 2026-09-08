@@ -92,7 +92,8 @@ export const TokenLargestAccounts = z.object({
   value: z.array(TokenAmount.extend({ address: z.string() })).max(20),
 });
 
-export const Balance = z.object({ context: z.object({ slot: z.number().int().nonnegative() }), value: z.number().int().nonnegative() });
+/** Lamports arrive as a JSON number; a treasury above 2^53 lamports loses precision but must not fail to parse. */
+export const Balance = z.object({ context: z.object({ slot: z.number().int().nonnegative() }), value: z.number().nonnegative() });
 
 /** jsonParsed token account as returned by getTokenAccountsByOwner. */
 export const ParsedTokenAccount = z.object({
