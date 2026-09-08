@@ -19,6 +19,7 @@
     "import-in-the-middle",
     "module-details-from-path",
     "ms",
+    "postgres",
     "require-in-the-middle",
     "supports-color",
     "zod"

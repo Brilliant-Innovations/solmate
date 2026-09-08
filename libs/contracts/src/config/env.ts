@@ -179,6 +179,10 @@ export const RiskAuthorizerEnv = Common.extend({
   RELEASE_ATTESTATION_TRUST_FINGERPRINTS: Csv(Sha256Hex),
   SOLANA_RPC_ALLOWLIST: Csv(Url),
   SENTRY_DSN_RISK_AUTHORIZER: Url.optional(),
+  /** host:port for the worker-facing authorize API (§15.8). Loopback or private network only. */
+  INTERNAL_API_LISTEN: z.string().regex(/^.*:\d{1,5}$/).default('127.0.0.1:8781'),
+  /** Shared HMAC secrets (hex, ≥32 bytes each); required to serve. */
+  INTERNAL_API_SECRETS: Csv(z.string().regex(/^[0-9a-f]{64,}$/)).optional(),
 });
 
 export function parseRiskAuthorizerEnv(env: Record<string, string | undefined>) {

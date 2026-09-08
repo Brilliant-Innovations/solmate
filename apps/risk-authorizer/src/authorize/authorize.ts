@@ -1,4 +1,4 @@
-import { addMs, canonicalHash, compareAmounts, instantToMs, signPayload, subAmounts, type ActionCycle, type Amount, type AuthorizationDenial, type Bps, type CapitalAuthority, type Instant, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskAuthorizedIntent, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaCluster, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
+import { addMs, canonicalHash, compareAmounts, instantToMs, signPayload, subAmounts, type ActionCycle, type Amount, type AuthorizationDenial, type Bps, type CapitalAuthority, type Instant, type MintAddress, type Nonce, type Proposal, type Release, type ReleaseAttestation, type RiskAuthorizedIntent, type RiskEvaluation, type RiskPolicy, type Sequence, type Sha256Hex, type SignedRiskAuthorizedIntent, type SignedRiskStateProjection, type SigningKeyPair, type SolanaCluster, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
 import { capitalAttestationVerdict, evaluateEntry, type PortfolioState } from '@sol-agent-trader/risk';
 import { verifyProjection, type IndependentChainReads } from '../projection/verify.js';
 import { verifyRelease } from '../release/verify.js';
@@ -45,7 +45,7 @@ export interface AuthorizeEntryInput {
 }
 
 export type AuthorizeOutcome =
-  | { kind: 'AUTHORIZED'; envelope: SignedRiskAuthorizedIntent; projectionSequence: Sequence }
+  | { kind: 'AUTHORIZED'; envelope: SignedRiskAuthorizedIntent; projectionSequence: Sequence; evaluation: RiskEvaluation }
   | { kind: 'DENIED'; denial: AuthorizationDenial };
 
 const DISCRETIONARY_ENTRY = new Set(['ENTER', 'ADD']);
@@ -195,7 +195,7 @@ export async function authorizeEntry(input: AuthorizeEntryInput): Promise<Author
   const payload: RiskAuthorizedIntent = { ...body, intentHash };
   const envelope = (await signPayload(payload, input.keys.signing, now)) as SignedRiskAuthorizedIntent;
   input.ledger.issue({ nonce, intentId, actionCycleId: cycle.id, sleeveId: body.sleeveId, exposureEffect: 'INCREASE', maxInputAmount: body.maxInputAmount, issuedAt: now, expiresAt, consumedAt: null });
-  return { kind: 'AUTHORIZED', envelope, projectionSequence: projection.sequence };
+  return { kind: 'AUTHORIZED', envelope, projectionSequence: projection.sequence, evaluation: evaluation.record };
 }
 
 function sumAmounts(a: Amount, b: Amount): Amount {

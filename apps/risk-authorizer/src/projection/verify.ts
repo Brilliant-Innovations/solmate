@@ -59,9 +59,10 @@ export async function verifyProjection(input: ProjectionVerifyInput): Promise<Pr
     return { ok: false, reasons, detail };
   }
   const p = input.envelope.payload;
-  if (input.lastSequence !== null && p.sequence <= input.lastSequence) {
+  // An older projection than one already accepted is a rollback; the same sequence may back several authorizations inside its freshness window.
+  if (input.lastSequence !== null && p.sequence < input.lastSequence) {
     reasons.push('PROJECTION_SEQUENCE_ROLLBACK');
-    detail.push(`sequence ${p.sequence} <= ${input.lastSequence}`);
+    detail.push(`sequence ${p.sequence} < ${input.lastSequence}`);
   }
   const age = instantToMs(input.now) - instantToMs(p.asOf);
   if (age > input.maxAgeMs) {

@@ -29,7 +29,7 @@ describe('signed risk-state projection verification (D21, D52, INV-07)', () => {
     if (!t2.ok) expect(t2.detail).toEqual(['UNKNOWN_KEY']);
 
     const cases: [RiskStateProjection, Partial<ProjectionVerifyInput>, string][] = [
-      [{ ...base, sequence: 41 as Sequence }, {}, 'PROJECTION_SEQUENCE_ROLLBACK'],
+      [{ ...base, sequence: 40 as Sequence }, {}, 'PROJECTION_SEQUENCE_ROLLBACK'],
       [{ ...base, asOf: addMs(NOW, -60_000) }, {}, 'PROJECTION_STALE'],
       [{ ...base, releaseDigest: 'ee'.repeat(32) as Sha256Hex }, {}, 'PROJECTION_RELEASE_MISMATCH'],
       [{ ...base, policyVersion: 'risk@9' as VersionId }, {}, 'PROJECTION_POLICY_MISMATCH'],

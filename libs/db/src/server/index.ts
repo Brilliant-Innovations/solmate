@@ -20,3 +20,4 @@ export * from './positions-repo.js';
 export * from './session-repo.js';
 export * from './quotes-repo.js';
 export * from './executor-repo.js';
+export * from './authorizer-repo.js';

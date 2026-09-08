@@ -174,12 +174,18 @@ importers:
       '@sol-agent-trader/contracts':
         specifier: workspace:*
         version: link:../../libs/contracts
+      '@sol-agent-trader/db':
+        specifier: workspace:*
+        version: link:../../libs/db
       '@sol-agent-trader/observability':
         specifier: workspace:*
         version: link:../../libs/observability
       '@sol-agent-trader/risk':
         specifier: workspace:*
         version: link:../../libs/risk
+      '@sol-agent-trader/solana-hard-state':
+        specifier: workspace:*
+        version: link:../../libs/solana-hard-state
 
   apps/web:
     dependencies:
