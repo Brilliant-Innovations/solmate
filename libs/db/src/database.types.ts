@@ -656,6 +656,42 @@ export type Database = {
         }
         Relationships: []
       }
+      verifications: {
+        Row: {
+          checkpoint_hash: string | null
+          checkpoint_sequence: number | null
+          detail: string | null
+          head_sequence: number | null
+          id: string
+          ok: boolean
+          reason: string | null
+          replica: string
+          verified_at: string
+        }
+        Insert: {
+          checkpoint_hash?: string | null
+          checkpoint_sequence?: number | null
+          detail?: string | null
+          head_sequence?: number | null
+          id?: string
+          ok: boolean
+          reason?: string | null
+          replica: string
+          verified_at?: string
+        }
+        Update: {
+          checkpoint_hash?: string | null
+          checkpoint_sequence?: number | null
+          detail?: string | null
+          head_sequence?: number | null
+          id?: string
+          ok?: boolean
+          reason?: string | null
+          replica?: string
+          verified_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

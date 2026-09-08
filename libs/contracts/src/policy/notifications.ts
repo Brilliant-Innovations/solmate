@@ -26,6 +26,7 @@ export const AlertClass = z.enum([
   'OFFLINE_RESUME_OVERDUE',
   'RUNTIME_HEARTBEAT_MISSING',
   'DB_OUTAGE_EMERGENCY_ACTION_IMPORTED',
+  'AUDIT_CHAIN_UNVERIFIED',
   'SYSTEM_ALIVE',
 ]);
 export type AlertClass = z.infer<typeof AlertClass>;
@@ -83,5 +84,6 @@ export const SeverityOf: Record<AlertClass, z.infer<typeof AlertSeverity>> = {
   OFFLINE_RESUME_OVERDUE: 'CRITICAL',
   RUNTIME_HEARTBEAT_MISSING: 'CRITICAL',
   DB_OUTAGE_EMERGENCY_ACTION_IMPORTED: 'CRITICAL',
+  AUDIT_CHAIN_UNVERIFIED: 'CRITICAL',
   SYSTEM_ALIVE: 'INFO',
 };

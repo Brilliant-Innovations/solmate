@@ -160,6 +160,7 @@ import {
   loadLatestProjection,
   FileCheckpointReplicator,
   verifyAgainstExternalCheckpoint,
+  recordAuditVerification,
   recoveryFacts,
   expireStaleIntents,
   settleIntentsFromAttempts,
@@ -175,7 +176,7 @@ import type { PreviousHead } from '@sol-agent-trader/execution';
 import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
 import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
 import { runStartupRecovery } from './roles/recovery.js';
-import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
+import { runAuditCheckpointCycle, type AuditCheckpointDeps } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
 import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
 import { runShadowSyncCycle, type ShadowSyncDeps, type ShadowSyncState } from './roles/shadow-sync.js';
@@ -1367,12 +1368,18 @@ async function auditCheckpointLoop(env: WorkerEnv, logger: Logger, shared: Share
   const intervalMs = env.AUDIT_CHECKPOINT_INTERVAL_MS;
   const { sql } = shared;
   const replicator = new FileCheckpointReplicator(path);
-  const deps = {
+  const deps: AuditCheckpointDeps = {
     repo: {
       checkpoint: () => checkpointAuditChain(sql, [replicator]),
       verify: () => verifyAgainstExternalCheckpoint(sql, replicator),
+      record: (v) => recordAuditVerification(sql, v),
+      openAlertExists: async (alertClass) => (await listOpenNotifications(sql)).some((n) => n.alertClass === alertClass),
+      raise: (n) => raiseNotification(sql, { ...n, deadManDeadline: null }),
+      resolve: (alertClass, at) => resolveNotifications(sql, alertClass, at),
     },
     logger,
+    replica: replicator.label,
+    clock: systemClock,
   };
   logger.info('audit_checkpoint_starting', { intervalMs, replica: replicator.label, holder: shared.holder });
   await loopUnderLease('audit-checkpoint', intervalMs, logger, shared, async () => {

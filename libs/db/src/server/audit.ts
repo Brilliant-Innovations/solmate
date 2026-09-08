@@ -206,3 +206,48 @@ export async function auditHead(sql: Sql): Promise<{ sequence: Sequence; hash: S
   const [r] = await sql<{ sequence: string | number; hash: string }[]>`select sequence, hash from audit.events order by sequence desc limit 1`;
   return r ? { sequence: Number(r.sequence) as Sequence, hash: r.hash as Sha256Hex } : null;
 }
+
+// §20.25 — persisted verification ---------------------------------------------------------------
+
+export interface AuditVerificationInput {
+  ok: boolean;
+  headSequence: number | null;
+  checkpoint: { sequence: number; hash: string } | null;
+  replica: string;
+  reason: string | null;
+  detail: string | null;
+}
+
+/**
+ * Records the outcome of one checkpoint/verify cycle so the Audit Log screen shows the last
+ * verified checkpoint from a fact in the ledger's own schema rather than from a log line. Rows are
+ * immutable; a failed verification stays visible until a later cycle passes.
+ */
+export async function recordAuditVerification(sql: Sql, v: AuditVerificationInput): Promise<void> {
+  await sql`
+    insert into audit.verifications (ok, head_sequence, checkpoint_sequence, checkpoint_hash, replica, reason, detail)
+    values (${v.ok}, ${v.headSequence}, ${v.checkpoint?.sequence ?? null}, ${v.checkpoint?.hash ?? null}, ${v.replica}, ${v.reason}, ${v.detail === null ? null : v.detail.slice(0, 1024)})`;
+}
+
+export interface AuditVerificationRow {
+  verifiedAt: Instant;
+  ok: boolean;
+  headSequence: number | null;
+  checkpointSequence: number | null;
+  replica: string;
+  reason: string | null;
+}
+
+export async function latestAuditVerification(sql: Sql): Promise<AuditVerificationRow | null> {
+  const [row] = await sql<{ verified_at: string; ok: boolean; head_sequence: string | null; checkpoint_sequence: string | null; replica: string; reason: string | null }[]>`
+    select verified_at, ok, head_sequence, checkpoint_sequence, replica, reason from audit.verifications order by verified_at desc limit 1`;
+  if (!row) return null;
+  return {
+    verifiedAt: new Date(row.verified_at).toISOString() as Instant,
+    ok: row.ok,
+    headSequence: row.head_sequence === null ? null : Number(row.head_sequence),
+    checkpointSequence: row.checkpoint_sequence === null ? null : Number(row.checkpoint_sequence),
+    replica: row.replica,
+    reason: row.reason,
+  };
+}
