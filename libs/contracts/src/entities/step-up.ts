@@ -94,6 +94,18 @@ export const WebAuthnRegistrationResponse = z.strictObject({
 });
 export type WebAuthnRegistrationResponse = z.infer<typeof WebAuthnRegistrationResponse>;
 
+/**
+ * payload.registration of a REGISTER_PASSKEY request: the challenge the ceremony consumed and the
+ * attestation it produced. Excluded from the binding hash like stepUp (R2-09): the challenge is
+ * issued before the ceremony exists, so the challenge id travels here rather than in the bound
+ * payload.
+ */
+export const PasskeyRegistrationEvidence = z.strictObject({
+  challengeId: Uuid,
+  response: WebAuthnRegistrationResponse,
+});
+export type PasskeyRegistrationEvidence = z.infer<typeof PasskeyRegistrationEvidence>;
+
 /** payload.stepUp: an assertion from an existing passkey over the challenge bound to this request. */
 export const StepUpEvidence = z.strictObject({
   challengeId: Uuid,

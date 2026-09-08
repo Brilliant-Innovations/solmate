@@ -33,6 +33,14 @@ import {
   sessionEntryGate,
   setIntentState,
   stepUpVerifiedFor,
+  loadPendingControlRequest,
+  loadStepUpChallenge,
+  loadPasskeyByCredentialId,
+  activePasskeyCount,
+  consumeStepUpChallenge,
+  recordPasskeyUse,
+  insertPasskey,
+  revokePasskey,
   tightenStop,
   updateMark,
   windDownFacts,
@@ -175,6 +183,7 @@ import { DEFAULT_CHAIN_HEALTH_POLICY } from '@sol-agent-trader/contracts';
 import type { PreviousHead } from '@sol-agent-trader/execution';
 import { runChainHealthCycle, type ChainHealthDeps, type ChainViewSampler } from './roles/chain-health.js';
 import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-actions.js';
+import { ensureStepUpJudged, runOperatorSecurityCycle, type OperatorSecurityDeps } from './roles/operator-security.js';
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle, type AuditCheckpointDeps } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
@@ -278,7 +287,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals' || r === 'operator-security');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -401,6 +410,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('live-entry')) loops.push(liveEntryLoop(env, logger, shared));
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
+  if (roles.has('operator-security')) loops.push(operatorSecurityLoop(env, logger, shared));
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
@@ -1128,7 +1138,7 @@ async function approvalsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
   const deps = {
     repo: {
       listPending: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
-      stepUpVerified: (requestId: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, requestId, now),
+      stepUpVerified: stepUpVerifiedLazily(env, logger, shared),
       loadAuthorization: (intentId: Uuid) => loadAuthorizationForIntent(sql, intentId),
       insertApproval: (envelope: Parameters<typeof insertApproval>[1]) => insertApproval(sql, envelope),
       setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
@@ -1223,7 +1233,7 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
       coldStartFacts: (now: Parameters<typeof coldStartFacts>[1]) => coldStartFacts(sql, now, { requiredFeatures: FEATURE_ENGINE_V2.requiredForScoring, featureWindowMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs, safetyMaxAgeMs: DEFAULT_SESSION_POLICY.safetyMaxAgeMs }),
       windDownFacts: (accountId: Uuid) => windDownFacts(sql, accountId),
       listPendingControlRequests: (kinds: Parameters<typeof listPendingControlRequests>[1], limit: number) => listPendingControlRequests(sql, kinds, limit),
-      stepUpVerifiedFor: (id: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, id, now),
+      stepUpVerifiedFor: stepUpVerifiedLazily(env, logger, shared),
       resolveControlRequest: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
       // §15.9: a live authority needs an ARMED Release with a valid ARM attestation and a readiness verdict; readiness lands in M8a, so live cannot be set yet.
       activeEntryPauses: () => activeEntryPauses(sql),
@@ -1322,6 +1332,59 @@ function reconciliationDeps(env: WorkerEnv, logger: Logger, shared: Shared, rpc:
     logger,
     policy: DEFAULT_RECONCILIATION_POLICY,
   };
+}
+
+/** Step-up verification deps shared by the operator-security role and the roles that consume verified assertions (ADR-0006). Null when no relying party is configured. */
+function operatorSecurityDeps(env: WorkerEnv, logger: Logger, shared: Shared): OperatorSecurityDeps | null {
+  if (!env.WEBAUTHN_RP_ID || !env.WEBAUTHN_ORIGINS?.length) return null;
+  const { sql } = shared;
+  return {
+    repo: {
+      listPending: (kinds, limit) => listPendingControlRequests(sql, kinds, limit),
+      loadPendingRequest: (id) => loadPendingControlRequest(sql, id),
+      loadChallenge: (id) => loadStepUpChallenge(sql, id),
+      loadPasskeyByCredentialId: (cid) => loadPasskeyByCredentialId(sql, cid),
+      activePasskeys: (userId) => activePasskeyCount(sql, userId),
+      consume: (input) => consumeStepUpChallenge(sql, input),
+      recordUse: (id, count, at) => recordPasskeyUse(sql, id, count, at),
+      insertPasskey: (p) => insertPasskey(sql, p),
+      revokePasskey: (id, userId, at) => revokePasskey(sql, id, userId, at),
+      operatorRole: async (userId) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      resolve: (id, state, resolution, at) => resolveControlRequest(sql, id, state, resolution, at),
+      raise: (n) => raiseNotification(sql, { ...n, deadManDeadline: null }),
+    },
+    rp: { rpId: env.WEBAUTHN_RP_ID, origins: env.WEBAUTHN_ORIGINS },
+    clock: systemClock,
+    logger,
+    config: { batchSize: 20 },
+  };
+}
+
+/** A `stepUpVerifiedFor` that first judges any evidence still sitting on the request, so the owning role never races the operator-security role. */
+function stepUpVerifiedLazily(env: WorkerEnv, logger: Logger, shared: Shared): (requestId: Uuid, now: Instant) => Promise<boolean> {
+  const deps = operatorSecurityDeps(env, logger, shared);
+  return async (requestId, now) => {
+    if (deps) await ensureStepUpJudged(deps, requestId).catch((err) => logger.error('step_up_judge_failed', { requestId, error: err instanceof Error ? err.message : String(err) }));
+    return stepUpVerifiedFor(shared.sql, requestId, now);
+  };
+}
+
+/** Role operator-security (§5.7, §20.26, D41): passkey registration/revocation and step-up verification for every control request. */
+async function operatorSecurityLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.OPERATOR_SECURITY_INTERVAL_MS;
+  const deps = operatorSecurityDeps(env, logger, shared);
+  if (!deps) {
+    logger.warn('roles_disabled', { roles: ['operator-security'], reason: 'WEBAUTHN_RP_ID / WEBAUTHN_ORIGINS not set' });
+    return;
+  }
+  logger.info('operator_security_starting', { intervalMs, rpId: deps.rp.rpId, origins: deps.rp.origins, holder: shared.holder });
+  await loopUnderLease('operator-security', intervalMs, logger, shared, async () => {
+    const r = await runOperatorSecurityCycle(deps);
+    if (r.verified || r.verificationFailed || r.registered || r.revoked || r.errors.length || Object.keys(r.refused).length) logger.info('operator_security_cycle', { ...r });
+  });
 }
 
 async function manualActionsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
@@ -1448,7 +1511,7 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
         const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
         return r?.role ?? null;
       },
-      stepUpVerified: (id: Uuid, now: Instant) => stepUpVerifiedFor(sql, id, now),
+      stepUpVerified: stepUpVerifiedLazily(env, logger, shared),
       resolve: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant) => resolveControlRequest(sql, id, state, resolution, at),
     },
     binding,

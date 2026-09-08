@@ -13,3 +13,10 @@ export async function unenrollTotp(formData: FormData): Promise<void> {
   if (error) redirect('/settings?notice=' + encodeURIComponent(error.message));
   revalidatePath('/settings');
 }
+
+/** §20.26 sessions/revoke: signs this user out of every device (global scope), including this one. */
+export async function signOutEverywhere(): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  if (supabase) await supabase.auth.signOut({ scope: 'global' });
+  redirect('/sign-in');
+}
