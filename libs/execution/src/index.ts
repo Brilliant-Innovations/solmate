@@ -8,3 +8,6 @@ export * from './tx/codec.js';
 export * from './validate/programs.js';
 export * from './validate/structure.js';
 export * from './validate/order.js';
+export * from './simulate/token-account.js';
+export * from './simulate/client.js';
+export * from './simulate/deltas.js';
