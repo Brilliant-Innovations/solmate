@@ -59,3 +59,25 @@ export async function requestReadinessEvidence(form: FormData): Promise<void> {
   if (!['PASS', 'FAIL', 'NOT_APPLICABLE'].includes(verdict)) throw new Error('verdict must be PASS, FAIL or NOT_APPLICABLE');
   await request('RUN_READINESS_DRILL', { rowId, kind, verdict, evidenceRef: evidenceRef || null, detail: note ? { note: note.slice(0, 500) } : {}, source: 'readiness' }, '/readiness');
 }
+
+/** Close one open position at market through the position monitor's exit path (MANUAL_CLOSE, D41: no step-up). */
+export async function requestManualClose(form: FormData): Promise<void> {
+  await request('MANUAL_CLOSE', { positionId: uuidField(form, 'positionId'), source: 'positions' }, '/positions');
+}
+
+/** Reduce one open position by a fraction in (0, 1); the worker rounds the quantity down and refuses a zero. */
+export async function requestManualReduce(form: FormData): Promise<void> {
+  const fraction = Number(String(form.get('fraction') ?? ''));
+  if (!Number.isFinite(fraction) || !(fraction > 0) || !(fraction < 1)) throw new Error('fraction must be between 0 and 1');
+  await request('MANUAL_REDUCE', { positionId: uuidField(form, 'positionId'), fraction, source: 'positions' }, '/positions');
+}
+
+/**
+ * Close every open position (EMERGENCY_CLOSE_ALL). The typed confirmation replaces a blocking
+ * browser dialog: the request is only inserted when the operator typed CLOSE ALL.
+ */
+export async function requestEmergencyCloseAll(form: FormData): Promise<void> {
+  const typed = String(form.get('confirm') ?? '').trim().toUpperCase();
+  if (typed !== 'CLOSE ALL') throw new Error('type CLOSE ALL to confirm');
+  await request('EMERGENCY_CLOSE_ALL', { source: 'positions', confirmedText: typed }, '/positions');
+}

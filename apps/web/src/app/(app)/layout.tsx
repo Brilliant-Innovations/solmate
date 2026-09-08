@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { Nav } from '../../components/nav';
+import { MobileNav, Nav } from '../../components/nav';
 import { loadStatusSnapshot, StatusBar } from '../../components/status-bar';
 import { getOperatorSession } from '../../lib/supabase/server';
 import { signOut } from '../(auth)/sign-in/actions';
@@ -19,6 +19,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="shell" data-authority={snapshot.authority ?? 'UNKNOWN'} data-paused={String(snapshot.paused)}>
       <StatusBar />
+      <MobileNav />
       <div className="body">
         <Nav />
         <main className="main">

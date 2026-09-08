@@ -121,12 +121,61 @@ button {
   grid-template-columns: 220px 1fr;
 }
 
+.mobile-nav {
+  display: none;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.controls input {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--ink);
+  max-width: 11rem;
+}
+
 @media (max-width: 760px) {
   .body {
     grid-template-columns: 1fr;
   }
   .nav {
     display: none;
+  }
+  .mobile-nav {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.35rem 0.75rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+  }
+  .mobile-nav a {
+    padding: 0.45rem 0.7rem;
+    border-radius: var(--radius);
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }
+  .mobile-nav a[aria-current='page'] {
+    background: var(--surface-2);
+    font-weight: 600;
+  }
+  /* §20.2: pause and close must be tappable when a panel fails; 44px targets */
+  .btn,
+  .controls input {
+    min-height: 44px;
+  }
+  .main {
+    padding: 1rem 0.9rem 3rem;
   }
 }
 
