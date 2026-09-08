@@ -68,7 +68,7 @@ export async function runNotificationsCycle(deps: NotificationsDeps): Promise<No
     report.raised.push(d.alertClass);
     deps.logger[d.severity === 'CRITICAL' ? 'error' : d.severity === 'HIGH' ? 'warn' : 'info']('alert_raised', { alertClass: d.alertClass, severity: d.severity, summary: d.summary, automatedResponse: d.automatedResponse });
   }
-  const desiredClasses = new Set(desired.map((d) => d.alertClass));
+  const desiredClasses = new Set<string>(desired.map((d) => d.alertClass));
   for (const cls of openClasses) {
     if (!OWNED.has(cls) || desiredClasses.has(cls)) continue;
     const ids = await deps.repo.resolve(cls, now);
@@ -132,6 +132,6 @@ export async function runNotificationsCycle(deps: NotificationsDeps): Promise<No
       deps.logger.error('critical_alert_under_delivered', { notificationId: n.id, alertClass: n.alertClass, confirmedChannels: confirmed, required: deps.policy.criticalMinConfirmedChannels });
     }
   }
-  if (report.raised.length || report.resolved.length || report.escalated.length || report.deadManPaused.length || report.deliveries.attempted) deps.logger.info('notifications_cycle', report);
+  if (report.raised.length || report.resolved.length || report.escalated.length || report.deadManPaused.length || report.deliveries.attempted) deps.logger.info('notifications_cycle', { ...report });
   return report;
 }
