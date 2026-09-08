@@ -6,3 +6,4 @@ export * from './prompt/render.js';
 export * from './context/sources.js';
 export * from './context/builder.js';
 export * from './context/handlers.js';
+export * from './versions.js';

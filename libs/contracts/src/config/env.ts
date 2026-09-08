@@ -137,6 +137,17 @@ export const WorkerEnv = Common.extend({
   COHORTS_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(3_600_000),
   /** Candidate scan cadence (§9.1, §9.7). */
   CANDIDATES_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  // Model providers (M6, §11.2). Absent key = the agents role stays disabled and says so; keys are never read from files (D65).
+  ANTHROPIC_API_KEY: NonEmpty.optional(),
+  OPENAI_API_KEY: NonEmpty.optional(),
+  /** `<provider>:<model>`; the proposer and adversary should run on different providers (model-v1). Exact ids are recorded on every agent run. */
+  AGENT_PROPOSER_MODEL: z.string().regex(/^(anthropic|openai):.+$/).default('anthropic:claude-sonnet-5'),
+  AGENT_ADVERSARY_MODEL: z.string().regex(/^(anthropic|openai):.+$/).default('openai:gpt-5'),
+  /** USD per million tokens as `input,output` for each model, e.g. `anthropic:claude-sonnet-5=3,15;openai:gpt-5=1.25,10`; unknown models are recorded at zero cost. */
+  AGENT_MODEL_PRICING: z.string().default(''),
+  /** Discretionary cycle cadence (§11.7); each tick evaluates automations for S1 candidates and open positions. */
+  AGENTS_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
+  AGENTS_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
   /** Paper book (§17): the account's wallet identifier (quotes and attribution only, never custody), starting settlement capital, entry cadence. */
   PAPER_TRADING_WALLET: SolanaAddress.optional(),
   PAPER_STARTING_CAPITAL_BASE_UNITS: Amount.default('10000000000' as never),
