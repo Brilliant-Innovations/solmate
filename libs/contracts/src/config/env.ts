@@ -171,6 +171,11 @@ export const WorkerEnv = Common.extend({
   AUDIT_CHECKPOINT_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
   /** Live Readiness rows and verdict recomputed this often (§29, ADR-0010). */
   READINESS_INTERVAL_MS: z.coerce.number().int().min(15_000).max(600_000).default(60_000),
+  /** Alert derivation, delivery, escalation, dead-man and heartbeat cadence (§20.20). */
+  NOTIFICATIONS_INTERVAL_MS: z.coerce.number().int().min(10_000).max(300_000).default(30_000),
+  /** Out-of-app channel: Telegram Bot API. Both must be set for the channel to count as configured. */
+  TELEGRAM_BOT_TOKEN: NonEmpty.optional(),
+  TELEGRAM_CHAT_ID: NonEmpty.optional(),
   /** Drain cadence for cleared discretionary position actions (trading-actions queue). */
   TRADING_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
   // Intelligence providers (M6, §3.4–3.5). Absent key = that source is skipped; both absent = the intel-ingest role is disabled.

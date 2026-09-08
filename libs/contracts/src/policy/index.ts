@@ -18,3 +18,4 @@ export * from './s1.js';
 export * from './event-window.js';
 export * from './chain-health.js';
 export * from './readiness.js';
+export * from './notifications.js';

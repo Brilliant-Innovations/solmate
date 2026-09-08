@@ -130,6 +130,16 @@ import {
   lastHeadAdvance,
   auditHead,
   checkpointAuditChain,
+  listOpenNotifications,
+  raiseNotification,
+  resolveNotifications,
+  deliveriesFor,
+  recordDelivery,
+  escalateNotification,
+  applyDeadManPause,
+  lastHeartbeatAt,
+  blockingFeeds,
+  activeSessionCount,
   insertReadinessRow,
   latestReadinessRows,
   insertReadinessVerdict,
@@ -156,6 +166,9 @@ import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-ac
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
+import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
+import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from './notifications/channels.js';
+import { DEFAULT_NOTIFICATION_POLICY } from '@sol-agent-trader/contracts';
 import { verdictPermits } from '@sol-agent-trader/risk';
 import { DEFAULT_READINESS_POLICY, DEFAULT_WALLET_RESERVE_POLICY, type ReadinessBinding } from '@sol-agent-trader/contracts';
 import type { Sha256Hex, StrategyVersion, VersionId } from '@sol-agent-trader/contracts';
@@ -244,7 +257,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'live-entry' || r === 'approvals');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'live-entry' || r === 'approvals');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -368,6 +381,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('approvals')) loops.push(approvalsLoop(env, logger, shared));
   if (roles.has('manual-actions')) loops.push(manualActionsLoop(env, logger, shared));
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
+  if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('audit-checkpoint')) {
     if (!env.AUDIT_CHECKPOINT_PATH) logger.warn('roles_disabled', { roles: ['audit-checkpoint'], reason: 'AUDIT_CHECKPOINT_PATH not set' });
     else loops.push(auditCheckpointLoop(env, logger, shared, env.AUDIT_CHECKPOINT_PATH));
@@ -1407,5 +1421,80 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
   logger.info('readiness_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, strategy: tiny.versionId, releaseId: registered.id, releaseOutcome: registered.outcome, policyVersion: DEFAULT_READINESS_POLICY.version, holder: shared.holder });
   await loopUnderLease('readiness', intervalMs, logger, shared, async () => {
     await runReadinessCycle(deps);
+  });
+}
+
+async function notificationsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.NOTIFICATIONS_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('notifications_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
+  const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
+  const executor = env.EXECUTION_SERVICE_URL && env.INTERNAL_API_SECRET ? new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 8_000 }) : null;
+  const senders: NotificationSender[] = [
+    inAppSender,
+    env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID ? telegramSender({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }) : unconfiguredSender('TELEGRAM'),
+    unconfiguredSender('EMAIL'),
+    unconfiguredSender('PUSH'),
+    unconfiguredSender('SMS'),
+  ];
+  const deps: NotificationsDeps = {
+    repo: {
+      facts: async () => {
+        const [recon, chainHealth, projection, presence, recovery, feeds, sessions] = await Promise.all([
+          latestReconciliation(sql, account.id),
+          latestChainHealth(sql),
+          loadLatestProjection(sql, account.id),
+          latestPresence(sql, account.id),
+          recoveryFacts(sql, account.id),
+          blockingFeeds(sql),
+          activeSessionCount(sql),
+        ]);
+        let executorHealth: { reachable: boolean; signerHealthy: boolean | null; detail: string | null } | null = null;
+        if (executor) {
+          try {
+            const h = await executor.health();
+            const signer = h['signer'] as { ok?: boolean; available?: boolean; healthy?: boolean; state?: string } | undefined;
+            const signerHealthy = signer ? (typeof signer.ok === 'boolean' ? signer.ok : typeof signer.available === 'boolean' ? signer.available : typeof signer.healthy === 'boolean' ? signer.healthy : signer.state ? signer.state !== 'UNAVAILABLE' : null) : null;
+            executorHealth = { reachable: true, signerHealthy, detail: signerHealthy === false ? JSON.stringify(signer).slice(0, 200) : null };
+          } catch (err) {
+            executorHealth = { reachable: false, signerHealthy: null, detail: (err instanceof Error ? err.message : String(err)).slice(0, 200) };
+          }
+        }
+        return {
+          reconciliation: recon ? { status: recon.status, evaluatedAt: recon.evaluatedAt } : null,
+          chainHealth,
+          projection: projection ? { gasReserveLamports: projection.envelope.payload.gasReserveLamports, settlementAvailableBaseUnits: projection.envelope.payload.settlementAvailableBaseUnits } : null,
+          presence: presence ? { attended: presence.attended, lastPresenceHeartbeatAt: presence.lastPresenceHeartbeatAt } : null,
+          openPositions: recovery.openPositions,
+          blockingFeeds: feeds,
+          executor: executorHealth,
+          sessionActive: sessions > 0,
+        };
+      },
+      listOpen: () => listOpenNotifications(sql),
+      raise: (n) => raiseNotification(sql, n),
+      resolve: (alertClass: string, at: Instant) => resolveNotifications(sql, alertClass, at),
+      deliveries: (ids: readonly Uuid[]) => deliveriesFor(sql, ids),
+      recordDelivery: (d) => recordDelivery(sql, d),
+      escalate: (id: Uuid, level: number) => escalateNotification(sql, id, level),
+      applyDeadManPause: (input) => applyDeadManPause(sql, input),
+      lastHeartbeatAt: () => lastHeartbeatAt(sql),
+    },
+    senders,
+    policy: DEFAULT_NOTIFICATION_POLICY,
+    reservePolicy: DEFAULT_WALLET_RESERVE_POLICY,
+    presenceTimeoutMs: DEFAULT_SESSION_POLICY.presenceTimeoutMs,
+    clock: systemClock,
+    logger,
+  };
+  const configured = senders.filter((x) => x.configured).map((x) => x.channel);
+  if (configured.length < DEFAULT_NOTIFICATION_POLICY.criticalMinConfirmedChannels) logger.warn('critical_channels_insufficient', { configured, required: DEFAULT_NOTIFICATION_POLICY.criticalMinConfirmedChannels, hint: 'set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for an out-of-app channel' });
+  logger.info('notifications_starting', { intervalMs, accountId: account.id, channels: configured, executorHealth: executor !== null, policyVersion: DEFAULT_NOTIFICATION_POLICY.version, holder: shared.holder });
+  await loopUnderLease('notifications', intervalMs, logger, shared, async () => {
+    await runNotificationsCycle(deps);
   });
 }

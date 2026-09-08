@@ -2162,6 +2162,7 @@ export type Database = {
           channel: Database["enums"]["Enums"]["notification_channel"]
           confirmed_at: string | null
           error: string | null
+          escalation_level: number
           id: string
           notification_id: string
         }
@@ -2170,6 +2171,7 @@ export type Database = {
           channel: Database["enums"]["Enums"]["notification_channel"]
           confirmed_at?: string | null
           error?: string | null
+          escalation_level?: number
           id?: string
           notification_id: string
         }
@@ -2178,6 +2180,7 @@ export type Database = {
           channel?: Database["enums"]["Enums"]["notification_channel"]
           confirmed_at?: string | null
           error?: string | null
+          escalation_level?: number
           id?: string
           notification_id?: string
         }
