@@ -84,6 +84,9 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  listAssetEntities,
+  listEventsForClustering,
+  upsertEvent,
   PgmqClient,
   loadActionCycle,
   loadProposal,
@@ -109,6 +112,9 @@ import { createRepoContextSources } from './agents/sources.js';
 import { primeContractDigest, runAgentsCycle, type AgentsDeps } from './roles/agents.js';
 import { executeClearedExit, type PositionMonitorDeps } from './roles/position-monitor.js';
 import { runTradingActionsCycle } from './roles/trading-actions.js';
+import { runIntelIngestCycle } from './roles/intel-ingest.js';
+import { CryptoPanicClient, LunarCrushClient } from '@sol-agent-trader/intelligence';
+import { DEFAULT_NORMALIZATION_POLICY } from '@sol-agent-trader/contracts';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
@@ -178,7 +184,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -265,6 +271,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('session')) loops.push(sessionLoop(env, logger, shared));
   if (roles.has('agents')) loops.push(agentsLoop(env, logger, shared));
   if (roles.has('trading-actions')) loops.push(tradingActionsLoop(env, logger, shared));
+  if (roles.has('intel-ingest')) loops.push(intelIngestLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -841,6 +848,43 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
   logger.info('position_monitor_starting', { intervalMs, accountId: account.id, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
   await loopUnderLease('position-monitor', intervalMs, logger, shared, async () => {
     await runPositionMonitorCycle(deps);
+  });
+}
+
+async function intelIngestLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.INTEL_INGEST_INTERVAL_MS;
+  if (!env.CRYPTOPANIC_API_KEY && !env.LUNARCRUSH_API_KEY) {
+    logger.warn('roles_disabled', { roles: ['intel-ingest'], reason: 'neither CRYPTOPANIC_API_KEY nor LUNARCRUSH_API_KEY is set' });
+    return;
+  }
+  const { sql } = shared;
+  const cryptopanic = env.CRYPTOPANIC_API_KEY ? new CryptoPanicClient({ apiKey: env.CRYPTOPANIC_API_KEY, transport: fetchTransport, clock: systemClock, requestsPerMinute: env.CRYPTOPANIC_REQUESTS_PER_MINUTE }) : null;
+  const lunarcrush = env.LUNARCRUSH_API_KEY ? new LunarCrushClient({ apiKey: env.LUNARCRUSH_API_KEY, transport: fetchTransport, clock: systemClock, requestsPerMinute: env.LUNARCRUSH_REQUESTS_PER_MINUTE }) : null;
+  const deps = {
+    sources: {
+      news: cryptopanic ? async (symbols: readonly string[]) => (await cryptopanic.recentPosts({ currencies: symbols })).events : null,
+      social: lunarcrush ? (symbol: string) => lunarcrush.coinMetrics(symbol) : null,
+    },
+    repo: {
+      listAssetEntities: () => listAssetEntities(sql),
+      listTrackedSymbols: async (limit: number) => {
+        const refs = await listTrackedAssets(sql, limit, REFERENCE_SERIES_MINTS);
+        if (refs.length === 0) return [];
+        const rows = await sql<{ id: string; symbol: string }[]>`select id, symbol from core.assets where id = any(${refs.map((r) => r.id)}::uuid[])`;
+        const bySymbol = new Map(rows.map((r) => [r.id, r.symbol]));
+        return refs.flatMap((r) => (bySymbol.get(r.id) ? [{ assetId: r.id, symbol: bySymbol.get(r.id) as string }] : []));
+      },
+      listEventsForClustering: (at: Parameters<typeof listEventsForClustering>[1], windowMs: number) => listEventsForClustering(sql, at, windowMs),
+      upsertEvent: (e: Parameters<typeof upsertEvent>[1]) => upsertEvent(sql, e),
+    },
+    policy: DEFAULT_NORMALIZATION_POLICY,
+    clock: systemClock,
+    logger,
+    config: { symbolsPerTick: 40, newsBatch: 40, socialPerTick: Math.max(1, Math.floor((env.LUNARCRUSH_REQUESTS_PER_MINUTE * intervalMs) / 60_000 / 2)) },
+  };
+  logger.info('intel_ingest_starting', { intervalMs, providers: { cryptopanic: cryptopanic !== null, lunarcrush: lunarcrush !== null }, policy: DEFAULT_NORMALIZATION_POLICY.version, holder: shared.holder });
+  await loopUnderLease('intel-ingest', intervalMs, logger, shared, async () => {
+    await runIntelIngestCycle(deps);
   });
 }
 

@@ -23,6 +23,8 @@ export interface RawSourceEvent {
   summary: string | null;
   /** Mints the provider attached to the item, when any. */
   mints: string[];
+  /** Ticker symbols the provider attached (CryptoPanic currencies, LunarCrush coin); matched like cashtags. */
+  symbols?: readonly string[];
   sentiment: { score: number; confidence: number } | null;
   classification: string | null;
   /** Everything the provider returned, for the hash and the retention pointer. */
@@ -72,7 +74,7 @@ export function normalizeTitle(title: string | null): string {
 export async function normalizeEvent(raw: RawSourceEvent, input: { firstSeenAt: Instant; policy: NormalizationPolicy; entities: EntityIndex; rawPayloadRef?: string | null }): Promise<NormalizedEvent> {
   const domain = domainOf(raw.url);
   const time = sourceTimeOf(raw, input.policy);
-  const text = `${raw.title ?? ''} ${raw.summary ?? ''}`;
+  const text = `${raw.title ?? ''} ${raw.summary ?? ''} ${(raw.symbols ?? []).map((sym) => `$${sym}`).join(' ')}`;
   const matches = input.entities.match(text, raw.mints, input.policy);
   const payloadHash = await canonicalHash(raw.payload);
   const sourceUrlHash = raw.url ? ((await sha256Hex(raw.url.trim().toLowerCase())) as Sha256Hex) : null;

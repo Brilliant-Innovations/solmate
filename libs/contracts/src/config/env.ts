@@ -150,6 +150,13 @@ export const WorkerEnv = Common.extend({
   AGENTS_BATCH_SIZE: z.coerce.number().int().min(1).max(50).default(5),
   /** Drain cadence for cleared discretionary position actions (trading-actions queue). */
   TRADING_ACTIONS_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
+  // Intelligence providers (M6, §3.4–3.5). Absent key = that source is skipped; both absent = the intel-ingest role is disabled.
+  CRYPTOPANIC_API_KEY: NonEmpty.optional(),
+  LUNARCRUSH_API_KEY: NonEmpty.optional(),
+  INTEL_INGEST_INTERVAL_MS: z.coerce.number().int().min(60_000).max(3_600_000).default(300_000),
+  /** Provider request ceilings per minute (plan-dependent; free tiers are small). */
+  CRYPTOPANIC_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(600).default(5),
+  LUNARCRUSH_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(600).default(10),
   /** Paper book (§17): the account's wallet identifier (quotes and attribution only, never custody), starting settlement capital, entry cadence. */
   PAPER_TRADING_WALLET: SolanaAddress.optional(),
   PAPER_STARTING_CAPITAL_BASE_UNITS: Amount.default('10000000000' as never),

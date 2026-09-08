@@ -28,6 +28,9 @@
   ],
   "references": [
     {
+      "path": "../../libs/intelligence/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/skills/tsconfig.lib.json"
     },
     {
