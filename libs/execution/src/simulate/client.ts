@@ -53,7 +53,14 @@ export class SimulationRpcError extends Error {
   }
 }
 
-export class SimulationRpcClient {
+/** What the live adapter needs from the independent simulation endpoint; the RPC client implements it, harnesses stub it. */
+export interface SimulationReader {
+  readonly label: string;
+  simulate(transactionBase64: string, accounts: readonly string[]): Promise<SimulationOutcome>;
+  accounts(addresses: readonly string[]): Promise<{ slot: number; accounts: (AccountSnapshot | null)[] }>;
+}
+
+export class SimulationRpcClient implements SimulationReader {
   private readonly transport: RpcTransport;
   private id = 0;
 

@@ -11,3 +11,5 @@ export * from './validate/order.js';
 export * from './simulate/token-account.js';
 export * from './simulate/client.js';
 export * from './simulate/deltas.js';
+export * from './jupiter/order-client.js';
+export * from './adapter/live-adapter.js';

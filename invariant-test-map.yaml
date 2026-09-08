@@ -35,8 +35,10 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/execution-service/src/authority
+      - libs/execution/src/adapter/live-adapter.ts
     tests:
       - apps/execution-service/src/authority/verify.spec.ts
+      - libs/execution/src/adapter/live-adapter.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -460,9 +462,11 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - libs/execution/src/state/order-attempt.ts
+      - libs/execution/src/adapter/live-adapter.ts
       - apps/execution-service/src/submission
     tests:
       - libs/execution/src/state/order-attempt.spec.ts
+      - libs/execution/src/adapter/live-adapter.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped

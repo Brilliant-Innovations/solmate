@@ -48,6 +48,13 @@ export type FillModelOutcome =
 /** Output per input unit at 1e12 resolution, so sub-bps moves survive integer division. */
 const priceScaled = (q: Quote): bigint => (amountToBigInt(q.expectedOutputAmount) * 1_000_000_000_000n) / amountToBigInt(q.inputAmount);
 
+/** How many bps worse the executable output-per-input is than the decision's (negative = improved); null when the decision quote has no price. */
+export function chaseWorseBps(decision: Quote, executable: Quote): number | null {
+  const dPrice = priceScaled(decision);
+  if (dPrice <= 0n) return null;
+  return Number(((dPrice - priceScaled(executable)) * 10_000n) / dPrice);
+}
+
 export function modelPaperFill(input: FillModelInput): FillModelOutcome {
   const { intent, decisionQuote: d, executableQuote: x, policy } = input;
   const execMs = instantToMs(input.executionAt);
@@ -60,10 +67,8 @@ export function modelPaperFill(input: FillModelInput): FillModelOutcome {
   if (amountToBigInt(x.inputAmount) !== amountToBigInt(intent.maxInputAmount)) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'QUOTE_AMOUNT_MISMATCH', detail: `executable quote for ${x.inputAmount}, intent ${intent.maxInputAmount}` };
   if (x.priceImpactBps === null || x.priceImpactBps > intent.constraints.maxPriceImpactBps) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'IMPACT_ABOVE_MAX', detail: `impact ${x.priceImpactBps ?? 'unknown'}bps > ${intent.constraints.maxPriceImpactBps}bps` };
   // Chase: executable output per input unit worse than the decision's by more than the tolerance.
-  const dPrice = priceScaled(d);
-  const xPrice = priceScaled(x);
-  if (dPrice > 0n) {
-    const worseBps = Number(((dPrice - xPrice) * 10_000n) / dPrice);
+  const worseBps = chaseWorseBps(d, x);
+  if (worseBps !== null) {
     if (worseBps > intent.constraints.chaseToleranceBps) return { kind: 'REJECT', stage: 'PRE_SUBMIT', reason: 'CHASE_EXCEEDED', detail: `executable price ${worseBps}bps worse than decision > ${intent.constraints.chaseToleranceBps}bps` };
   }
 

@@ -6,6 +6,9 @@ export interface JupiterHttpRequest {
   url: string;
   headers: Readonly<Record<string, string>>;
   timeoutMs: number;
+  /** GET when absent; `/execute` posts a JSON body. */
+  method?: 'GET' | 'POST';
+  body?: string;
 }
 export interface JupiterHttpResponse {
   status: number;
@@ -18,7 +21,7 @@ export const fetchJupiterTransport: JupiterHttpTransport = async (req) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), req.timeoutMs);
   try {
-    const res = await fetch(req.url, { method: 'GET', headers: req.headers, signal: controller.signal });
+    const res = await fetch(req.url, { method: req.method ?? 'GET', headers: req.headers, body: req.method === 'POST' ? req.body : undefined, signal: controller.signal });
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       headers[k.toLowerCase()] = v;

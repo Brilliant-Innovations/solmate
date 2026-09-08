@@ -54,7 +54,7 @@ export const quoteOf = (inputAmount: bigint, expectedOut: bigint, slippageBps: n
   lastValidBlockHeight: 500,
 });
 
-export function parityScenarios(inputMint: MintAddress, outputMint: MintAddress, at: Instant, later: (ms: number) => Instant): ParityScenario[] {
+export function parityScenarios(inputMint: MintAddress, outputMint: MintAddress, at: Instant, later: (ms: number) => Instant, kind: 'paper' | 'live' = 'paper'): ParityScenario[] {
   const q = (out: bigint, impact: number | null = 20, slippage = 100) => quoteOf(100_000_000n, out, slippage, impact, inputMint, outputMint, at);
   return [
     { name: 'clean fill: decision and executable quotes agree, modelled output within the minimum', quotes: [q(1_000_000n), q(1_000_000n)], intent: (b) => b, expect: { state: 'FINALIZED', rejection: null, filled: true } },
@@ -67,7 +67,9 @@ export function parityScenarios(inputMint: MintAddress, outputMint: MintAddress,
     { name: 'unknown executable impact is not a pass: refused pre-submit', quotes: [q(1_000_000n), q(1_000_000n, null)], intent: (b) => b, expect: { state: 'PREPARED', rejection: 'IMPACT_ABOVE_MAX', filled: false } },
     { name: 'tight slippage: the modelled adverse allowance breaches the minimum output, transaction does not land', quotes: [q(1_000_000n, 20, 5), q(1_000_000n, 20, 5)], intent: (b) => ({ ...b, constraints: { ...b.constraints, maxSlippageBps: 5 as Bps } }), expect: { state: 'NOT_LANDED', rejection: 'SLIPPAGE_EXCEEDED', filled: false } },
     { name: 'redelivered intent under the same idempotency key: refused, no second attempt', quotes: [q(1_000_000n), q(1_000_000n)], intent: (b) => b, request: (r) => r, expect: { state: 'PREPARED', rejection: 'DUPLICATE_INTENT', filled: false } },
-    { name: 'a live-authority request never executes on the paper adapter', quotes: [q(1_000_000n), q(1_000_000n)], intent: (b) => b, request: (r) => ({ ...r, capitalAuthority: 'LIVE_AUTO' }), expect: { state: 'PREPARED', rejection: 'NOT_PAPER_AUTHORITY', filled: false } },
+    kind === 'paper'
+      ? { name: 'a live-authority request never executes on the paper adapter', quotes: [q(1_000_000n), q(1_000_000n)], intent: (b) => b, request: (r) => ({ ...r, capitalAuthority: 'LIVE_AUTO' }), expect: { state: 'PREPARED', rejection: 'NOT_PAPER_AUTHORITY', filled: false } }
+      : { name: 'a paper-authority request never executes on the live adapter', quotes: [q(1_000_000n), q(1_000_000n)], intent: (b) => b, request: (r) => ({ ...r, capitalAuthority: 'PAPER', authorization: null }), expect: { state: 'PREPARED', rejection: 'NOT_LIVE_AUTHORITY', filled: false } },
   ];
 }
 
