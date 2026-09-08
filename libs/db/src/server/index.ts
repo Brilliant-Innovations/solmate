@@ -23,3 +23,4 @@ export * from './executor-repo.js';
 export * from './authorizer-repo.js';
 export * from './cohorts-repo.js';
 export * from './intelligence-repo.js';
+export * from './agents-repo.js';
