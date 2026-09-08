@@ -34,6 +34,8 @@ export interface PositionMonitorRepo {
   writeSnapshot(snapshot: PortfolioSnapshot): Promise<void>;
   /** The account's open session activity; WIND_DOWN closes every paper lot (§21.2B step 4). */
   sessionActivity(): Promise<string | null>;
+  /** The immutable version a lot was opened under, when it is no longer among the worker's current versions (D7). */
+  loadStrategyVersion(versionId: VersionId): Promise<StrategyVersion | null>;
   /** Level B capture (§18.1): best effort, never blocks an exit. */
   captureQuotes(probes: QuoteProbe[]): Promise<void>;
 }
@@ -162,7 +164,8 @@ function takeProfitOf(p: OpenPositionRow, policy: RiskPolicy): RiskPolicy['takeP
 
 async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action: 'EXIT' | 'REDUCE', fraction: number, requested: Amount, impactBps: Bps | null, reason: string, now: Instant): Promise<'FILLED' | 'NOT_FILLED'> {
   const strategyVersionId = p.lots[0]?.strategyVersionId ?? (Object.keys(deps.strategies)[0] as VersionId);
-  const strategy = deps.strategies[strategyVersionId];
+  // A lot opened under an older, retired version is still managed under that version's own contract (D7 immutable versions).
+  const strategy = deps.strategies[strategyVersionId] ?? (await deps.repo.loadStrategyVersion(strategyVersionId));
   if (!strategy) throw new Error(`no strategy ${strategyVersionId} for position ${p.id}`);
 
   // Lot allocation: oldest lots first, exactly the named quantities (D44).

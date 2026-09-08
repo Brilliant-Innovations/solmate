@@ -28,6 +28,10 @@ Execution plan §4 "M5b — Signal breadth and research features", exit gate: "P
 - Intent expiry: `liveIntentExpiryMs` bounds every paper intent; the live adapter re-checks intent and authorization expiry and chase tolerance before signing (M3 parity table).
 - Cohort inputs: `requireCohortCapacity` makes an unknown cohort or cluster the most restrictive cap (`entry.spec.ts`); the paper-entry role now feeds real usage.
 
+## First full paper round trip and the defect it exposed
+
+The STONK lot opened at 03:33 UTC under `S0_RAW@1.0.0` breached its ATR hard stop at about 04:09 (exit mark 179.2 USDC on a 200 USDC lot). The exit did not execute for four minutes: after the 1.1.0 and 1.2.0 version bumps the position monitor could not find `S0_RAW@1.0.0` among the worker's registered versions (`position_monitor_failed`). The monitor now resolves a lot's strategy version from its immutable row when it is not a current version (worker spec: an older-version lot exits; an unknown version is an error, never a silent hold). After the fixed bundle started at 04:13 the exit filled at 04:14: `position_exit_filled` reason `HARD_STOP`, quantity 964 781 907 526, proceeds 179 431 804, realized −20 568 196 base units, position and lot closed, sleeve commitment released. This is the first complete paper round trip on the hosted project and the first defect caught by a live paper position rather than a test.
+
 ## Gate closure
 
 Every P3 deliverable and acceptance item is met and S0 paper-trades the full deterministic trigger set. The plan §8 M5b checkbox is ticked with this record as evidence. M5b is not an adversarial-review gate. Regime labels and empirical clusters will only populate on a richer candle cadence than Birdeye Lite provides; the classifier and the clustering are correct on the data they have and say so (null label, unknown cluster) rather than guess.

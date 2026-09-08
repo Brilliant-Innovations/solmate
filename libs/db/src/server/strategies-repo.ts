@@ -137,3 +137,48 @@ export async function persistS0Expiry(sql: Sql, candidateId: Uuid, cycles: Actio
     if (updated.length === 0) throw new Error(`candidate ${candidateId} is no longer DETECTED`);
   });
 }
+
+/** One immutable strategy version row (§6.21, D7): what an older lot was opened under, whatever the worker currently registers. */
+export async function loadStrategyVersion(sql: Sql, versionId: VersionId): Promise<StrategyVersion | null> {
+  const rows = await sql<Record<string, unknown>[]>`select * from research.strategy_versions where version_id = ${versionId}`;
+  const r = rows[0];
+  if (!r) return null;
+  const n = (k: string): number => Number(r[k]);
+  const iso = (v: unknown): Instant | null => (v === null || v === undefined ? null : (new Date(v as string).toISOString() as Instant));
+  return {
+    id: r['id'] as Uuid,
+    strategyId: r['strategy_id'] as StrategyVersion['strategyId'],
+    versionId: r['version_id'] as VersionId,
+    variant: r['variant'] as string,
+    gitSha: r['git_sha'] as StrategyVersion['gitSha'],
+    featureVersion: r['feature_version'] as VersionId,
+    promptVersions: r['prompt_versions'] as StrategyVersion['promptVersions'],
+    modelSelections: r['model_selections'] as StrategyVersion['modelSelections'],
+    thresholds: r['thresholds'] as StrategyVersion['thresholds'],
+    riskPolicyVersion: r['risk_policy_version'] as VersionId,
+    skillVersionId: (r['skill_version_id'] as VersionId | null) ?? null,
+    guidelineVersionId: (r['guideline_version_id'] as VersionId | null) ?? null,
+    automationSetVersionId: (r['automation_set_version_id'] as VersionId | null) ?? null,
+    speedTier: r['speed_tier'] as StrategyVersion['speedTier'],
+    maxDecisionLatencyMs: n('max_decision_latency_ms'),
+    maxCandidateAgeMs: n('max_candidate_age_ms'),
+    maxQuoteAgeMs: n('max_quote_age_ms'),
+    chaseToleranceBps: n('chase_tolerance_bps') as StrategyVersion['chaseToleranceBps'],
+    allowedActionTypes: r['allowed_action_types'] as StrategyVersion['allowedActionTypes'],
+    reassessmentPolicy: r['reassessment_policy'] as StrategyVersion['reassessmentPolicy'],
+    adversaryPolicy: r['adversary_policy'] as StrategyVersion['adversaryPolicy'],
+    sessionRules: r['session_rules'] as StrategyVersion['sessionRules'],
+    regimeConditions: r['regime_conditions'] as StrategyVersion['regimeConditions'],
+    outsideWindowBehavior: r['outside_window_behavior'] as StrategyVersion['outsideWindowBehavior'],
+    warmup: r['warmup'] as StrategyVersion['warmup'],
+    eventWindowPolicy: r['event_window_policy'] as StrategyVersion['eventWindowPolicy'],
+    offlineProtection: r['offline_protection'] as StrategyVersion['offlineProtection'],
+    attendedPresenceRequiredProfiles: r['attended_presence_required_profiles'] as StrategyVersion['attendedPresenceRequiredProfiles'],
+    humanReactionFloorMs: n('human_reaction_floor_ms'),
+    liveIntentExpiryMs: n('live_intent_expiry_ms'),
+    eligibleCapitalAuthorities: r['eligible_capital_authorities'] as StrategyVersion['eligibleCapitalAuthorities'],
+    status: r['status'] as StrategyVersion['status'],
+    activeFrom: iso(r['active_from']) as Instant,
+    activeTo: iso(r['active_to']),
+  };
+}

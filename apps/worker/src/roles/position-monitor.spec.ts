@@ -1,4 +1,4 @@
-import { addMs, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RISK_POLICY, fixedClock, toInstant, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type Proposal, type QuoteProbe, type RiskEvaluation, type SignedAmount, type SolanaAddress, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
+import { addMs, DEFAULT_PAPER_FILL_POLICY, DEFAULT_RISK_POLICY, fixedClock, toInstant, type ActionCycle, type AdversarialReview, type Amount, type Bps, type Fill, type Instant, type MintAddress, type Order, type OrderAttempt, type PortfolioSnapshot, type StrategyVersion, type VersionId, type Proposal, type QuoteProbe, type RiskEvaluation, type SignedAmount, type SolanaAddress, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
 import type { ExitApplication, OpenPositionRow, PaperBook } from '@sol-agent-trader/db/server';
 import { PaperExecutionAdapter, quoteOf, scriptedQuoteClient } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
@@ -45,6 +45,8 @@ class MemoryRepo implements PositionMonitorRepo {
   async writeSnapshot(s: PortfolioSnapshot) { this.snapshots.push(s); }
   activity: string | null = 'ACTIVE';
   async sessionActivity() { return this.activity; }
+  olderVersions: Record<string, StrategyVersion> = {};
+  async loadStrategyVersion(id: VersionId) { return this.olderVersions[id] ?? null; }
   probes: QuoteProbe[] = [];
   async captureQuotes(p: QuoteProbe[]) { this.probes.push(...p); }
 }
@@ -148,5 +150,21 @@ describe('worker role position-monitor (§13.4–13.5, §17.2, D31, D39, D44)', 
     expect(repo.intents[0]!.states).toEqual(['AUTHORIZED', 'EXECUTING', 'FAILED']);
     expect(repo.exits).toHaveLength(0);
     void ((_: Instant) => undefined);
+  });
+});
+
+describe('worker role position-monitor: immutable strategy versions (D7)', () => {
+  it('a lot opened under a version the worker no longer registers is still managed and exited under that version row', async () => {
+    const OLD = { ...s0StrategyVersion('RAW', 'abcdef1', NOW), versionId: 'S0_RAW@0.9.0' as VersionId };
+    const repo = new MemoryRepo();
+    repo.olderVersions[OLD.versionId] = OLD;
+    repo.positions = [position({ lots: [{ id: id(4), sleeveId: id(5), strategyVersionId: OLD.versionId, quantity: '2000000000' as Amount, costBasisBaseUnits: '200000000' as Amount, entryIntentId: id(6) }] })];
+    const report = await runPositionMonitorCycle(deps(repo, 190n)); // price 95: below the 96 stop
+    expect(report).toMatchObject({ positions: 1, exits: 1, filled: 1, errors: [] });
+    expect(repo.decisions[0]?.cycle.strategyVersionId).toBe(OLD.versionId);
+    const missing = new MemoryRepo();
+    missing.positions = [position({ lots: [{ id: id(4), sleeveId: id(5), strategyVersionId: 'S0_RAW@0.0.1' as VersionId, quantity: '2000000000' as Amount, costBasisBaseUnits: '200000000' as Amount, entryIntentId: id(6) }] })];
+    const r2 = await runPositionMonitorCycle(deps(missing, 190n));
+    expect(r2.errors).toHaveLength(1);
   });
 });

@@ -39,6 +39,7 @@ import {
   listCandidatesAwaitingStrategy,
   persistS0Decisions,
   persistS0Expiry,
+  loadStrategyVersion,
   heldBucketTimes,
   insertEmergencyRouteSnapshot,
   insertSnapshot,
@@ -640,6 +641,7 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
   const deps = {
     repo: {
       listOpenPositions: (limit: number) => listOpenPositionsForAccount(sql, account.id, limit),
+      loadStrategyVersion: (id: Parameters<typeof loadStrategyVersion>[1]) => loadStrategyVersion(sql, id),
       highSince: (assetId: Uuid, since: Parameters<typeof highSince>[2], until: Parameters<typeof highSince>[3]) => highSince(sql, assetId, since, until),
       updateMark: (positionId: Uuid, pnl: Parameters<typeof updateMark>[2], next: Parameters<typeof updateMark>[3]) => updateMark(sql, positionId, pnl, next),
       tightenStop: (positionId: Uuid, level: number) => tightenStop(sql, positionId, level),
