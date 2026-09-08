@@ -25,6 +25,7 @@
   "dependencies": {
     "@sol-agent-trader/contracts": "workspace:*",
     "tslib": "^2.3.0",
-    "zod": "^4.5.4"
+    "zod": "^4.5.4",
+    "@sol-agent-trader/solana-hard-state": "workspace:*"
   }
 }
