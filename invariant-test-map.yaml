@@ -35,9 +35,11 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/execution-service/src/authority
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - apps/execution-service/src/authority/verify.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-02
     statement: "No intent amount greater than the risk-evaluated maximum."
@@ -95,6 +97,7 @@ invariants:
       - apps/execution-service/src/idempotency
     tests:
       - libs/execution/src/state/intent.spec.ts
+      - apps/execution-service/src/idempotency/intents.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -115,6 +118,7 @@ invariants:
       - apps/execution-service/src/authority/mode-gate.ts
     tests:
       - libs/risk/src/runtime-session/runtime-session.spec.ts
+      - apps/execution-service/src/authority/mode-gate.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -135,6 +139,7 @@ invariants:
       - apps/execution-service/src/authority
     tests:
       - libs/contracts/src/signing/signing.spec.ts
+      - apps/execution-service/src/authority/verify.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
@@ -172,9 +177,11 @@ invariants:
       - LIVE_SIGNING
     owner_modules:
       - apps/execution-service/src/caps
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - apps/execution-service/src/caps/check.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-09
     statement: "No new LIVE_AUTO entry may exceed the signer-outage unprotected-exposure cap for MONITORED_EXIT lots."
@@ -189,9 +196,12 @@ invariants:
     owner_modules:
       - apps/execution-service/src/caps
       - libs/risk/src/policy/signer-outage-cap.ts
-    tests: []
-    evidence: []
-    status: unmapped
+    tests:
+      - libs/risk/src/policy/signer-outage-cap.spec.ts
+      - apps/execution-service/src/caps/check.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+    status: mapped
 
   - id: INV-10
     statement: "A stale or replayed approval cannot authorize a changed or expired envelope."
@@ -211,6 +221,7 @@ invariants:
     tests:
       - libs/contracts/src/signing/signing.spec.ts
       - libs/contracts/src/envelopes/approval.spec.ts
+      - apps/execution-service/src/authority/verify.spec.ts
     evidence:
       - docs/CHANGELOG.md
     status: mapped
