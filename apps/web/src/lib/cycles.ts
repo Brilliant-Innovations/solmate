@@ -64,6 +64,8 @@ export interface CycleFilters {
   result?: string;
   /** Cycles that failed to clear, by state or unresolved reason. */
   failReason?: string;
+  /** Only cycles that reassess this open position. */
+  positionId?: string;
   limit?: number;
 }
 
@@ -111,6 +113,7 @@ export async function loadCycles(f: CycleFilters): Promise<CycleView[]> {
   if (f.agreement === 'agree') q = q.eq('verdict', 'CONFIRM' as never);
   else if (f.agreement === 'disagree') q = q.in('verdict', ['CHALLENGE', 'REJECT'] as never[]);
   if (f.result) q = q.eq('state', f.result as never);
+  if (f.positionId) q = q.eq('position_id', f.positionId);
   if (f.failReason) q = q.or(`unresolved_reason.eq.${f.failReason},reason_codes.cs.{${f.failReason}}`);
   const { data } = await q;
   const rows = ((data as unknown as CycleRow[] | null) ?? []).map(normalise);
