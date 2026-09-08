@@ -130,6 +130,11 @@ import {
   lastHeadAdvance,
   auditHead,
   checkpointAuditChain,
+  activeEntryPauses,
+  clearEntryPauses,
+  windDownLots,
+  watchdogLastRunAt,
+  setOfflineResumeDeadline,
   acknowledgeNotification,
   listOpenNotifications,
   raiseNotification,
@@ -169,7 +174,7 @@ import { runAuditCheckpointCycle } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
 import { runNotificationsCycle, type NotificationsDeps } from './roles/notifications.js';
 import { inAppSender, telegramSender, unconfiguredSender, type NotificationSender } from './notifications/channels.js';
-import { DEFAULT_NOTIFICATION_POLICY } from '@sol-agent-trader/contracts';
+import { DEFAULT_NOTIFICATION_POLICY, DEFAULT_WATCHDOG_POLICY } from '@sol-agent-trader/contracts';
 import { verdictPermits } from '@sol-agent-trader/risk';
 import { DEFAULT_READINESS_POLICY, DEFAULT_WALLET_RESERVE_POLICY, type ReadinessBinding } from '@sol-agent-trader/contracts';
 import type { Sha256Hex, StrategyVersion, VersionId } from '@sol-agent-trader/contracts';
@@ -1199,6 +1204,15 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
       stepUpVerifiedFor: (id: Uuid, now: Parameters<typeof stepUpVerifiedFor>[2]) => stepUpVerifiedFor(sql, id, now),
       resolveControlRequest: (id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Parameters<typeof resolveControlRequest>[4]) => resolveControlRequest(sql, id, state, resolution, at),
       // §15.9: a live authority needs an ARMED Release with a valid ARM attestation and a readiness verdict; readiness lands in M8a, so live cannot be set yet.
+      activeEntryPauses: () => activeEntryPauses(sql),
+      clearEntryPauses: (by: Uuid, ref: string) => clearEntryPauses(sql, by, ref),
+      windDownLots: (accountId: Uuid) => windDownLots(sql, accountId),
+      strategyOfflineTerms: async (v: VersionId) => {
+        const strategy = await loadStrategyVersion(sql, v);
+        return strategy ? { permitted: strategy.offlineProtection.permitted, maxOfflineMs: strategy.offlineProtection.maxOfflineMs } : null;
+      },
+      watchdogLastRunAt: () => watchdogLastRunAt(sql),
+      setOfflineResumeDeadline: (sessionId: Uuid, deadline: Instant | null, protectedLots: number) => setOfflineResumeDeadline(sql, sessionId, deadline, protectedLots),
       armingFacts: async (authority: CapitalAuthority, now: Instant) => {
         if (authority !== 'LIVE_APPROVAL' && authority !== 'LIVE_AUTO') return { releaseAttested: true, readinessPermits: true };
         const release = await loadReleaseForStrategy(sql, s0TinyLiveVersion(env.GIT_SHA, now).versionId);
@@ -1217,6 +1231,7 @@ async function sessionLoop(env: WorkerEnv, logger: Logger, shared: Shared): Prom
     authority: 'PAPER' as const,
     autoStart: env.SESSION_AUTOSTART === 'true',
     liveCapabilityEnabled: false,
+    watchdogPolicy: DEFAULT_WATCHDOG_POLICY,
   };
   logger.info('session_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, attended, autoStart: deps.autoStart, policy: DEFAULT_SESSION_POLICY.version, holder: shared.holder });
   await loopUnderLease('session', intervalMs, logger, shared, async () => {

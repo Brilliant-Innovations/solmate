@@ -178,7 +178,9 @@ export async function paperBook(sql: Sql, accountId: Uuid, settlementMint: MintA
 export async function entryHealth(sql: Sql): Promise<{ feedsBlockEntries: boolean; entriesPaused: boolean }> {
   const [feeds] = await sql<{ n: number }[]>`select count(*)::int as n from ops.provider_health where effect_on_entries = 'BLOCK'`;
   const [paused] = await sql<{ n: number }[]>`select count(*)::int as n from ops.runtime_sessions where (paused->>'active')::boolean and activity_state <> 'OFF'`;
-  return { feedsBlockEntries: (feeds?.n ?? 0) > 0, entriesPaused: (paused?.n ?? 0) > 0 };
+  // §21.2C: a sticky entry pause (watchdog, dead-man) blocks entries even before a session honours it.
+  const [sticky] = await sql<{ n: number }[]>`select count(*)::int as n from ops.entry_pauses where cleared_at is null`;
+  return { feedsBlockEntries: (feeds?.n ?? 0) > 0, entriesPaused: (paused?.n ?? 0) > 0 || (sticky?.n ?? 0) > 0 };
 }
 
 /** Inserts the evaluation and links it to its cycle in one transaction; a cycle is evaluated once. */

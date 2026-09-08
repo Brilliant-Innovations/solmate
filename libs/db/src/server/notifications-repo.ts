@@ -94,6 +94,8 @@ export async function applyDeadManPause(sql: Sql, input: { notificationId: Uuid;
         set paused = jsonb_build_object('active', true, 'reason', ${reason}, 'since', ${input.at}::timestamptz, 'by', 'WORKER')
       where activity_state <> 'OFF' and not coalesce((paused ->> 'active')::boolean, false)
       returning id`;
+    // §21.2C: the pause outlives the session so the next STARTING cannot silently resume entries.
+    await t`insert into ops.entry_pauses (reason, set_by, set_by_ref) select ${reason}, 'WORKER', ${input.actorRef} where not exists (select 1 from ops.entry_pauses where cleared_at is null and reason = ${reason})`;
     for (const s of sessions) {
       await writeAuditEvent(t, { actor: 'WORKER', actorRef: input.actorRef, actionClass: 'RUNTIME_PAUSE', entity: { type: 'runtime_session', id: s.id }, beforeSummary: { paused: false }, afterSummary: { paused: true, reason, notificationId: input.notificationId }, liveImpacting: true });
     }

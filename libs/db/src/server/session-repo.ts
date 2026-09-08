@@ -1,4 +1,5 @@
-import type { ActivityState, ActorKind, CapitalAuthority, ColdStartGate, ControlRequestKind, DeploymentProfile, Instant, Uuid } from '@sol-agent-trader/contracts';
+import type { VersionId } from '@sol-agent-trader/contracts';
+import type { Amount, ActivityState, ActorKind, CapitalAuthority, ColdStartGate, ControlRequestKind, DeploymentProfile, Instant, Uuid } from '@sol-agent-trader/contracts';
 import { writeAuditEvent } from './audit.js';
 import { asJson, type Sql } from './sql.js';
 
@@ -149,4 +150,50 @@ export async function resolveControlRequest(sql: Sql, id: Uuid, state: 'ACCEPTED
 export async function sessionEntryGate(sql: Sql, accountId: Uuid): Promise<{ activity: ActivityState; paused: boolean; authority: CapitalAuthority; attended: boolean } | null> {
   const s = await findOpenSession(sql, accountId);
   return s ? { activity: s.activityState, paused: s.paused.active, authority: s.capitalAuthority, attended: s.attended } : null;
+}
+
+// §21.2C sticky entry pause and D61 wind-down inputs ---------------------------------------------
+
+export async function activeEntryPauses(sql: Sql): Promise<{ reason: string; setBy: string; setAt: Instant }[]> {
+  const rows = await sql<{ reason: string; set_by: string; set_at: string }[]>`select reason, set_by, set_at from ops.entry_pauses where cleared_at is null order by set_at asc`;
+  return rows.map((r) => ({ reason: r.reason, setBy: r.set_by, setAt: new Date(r.set_at).toISOString() as Instant }));
+}
+
+/** Clears every sticky pause; only the step-up RESUME path calls this. Returns how many were cleared. */
+export async function clearEntryPauses(sql: Sql, by: Uuid, ref: string): Promise<number> {
+  const rows = await sql<{ id: string }[]>`update ops.entry_pauses set cleared_at = now(), cleared_by = ${by}, cleared_by_ref = ${ref} where cleared_at is null returning id`;
+  return rows.length;
+}
+
+export interface WindDownLotRow {
+  lotId: Uuid;
+  positionId: Uuid;
+  strategyVersionId: VersionId;
+  quantity: Amount;
+  protectionMode: 'MONITORED_EXIT' | 'JUPITER_TRIGGER';
+  providerProtectionActive: boolean;
+  safetyState: string;
+}
+
+export async function windDownLots(sql: Sql, accountId: Uuid): Promise<WindDownLotRow[]> {
+  const rows = await sql<{ id: string; position_id: string; strategy_version_id: string; quantity: string; protection_mode: 'MONITORED_EXIT' | 'JUPITER_TRIGGER'; provider_order_id: string | null; safety_state: string }[]>`
+    select l.id, l.position_id, l.strategy_version_id, l.quantity::text as quantity, l.protection_mode, l.provider_order_id, p.safety_state
+    from trading.position_lots l join trading.positions p on p.id = l.position_id
+    where p.account_id = ${accountId} and l.status = 'OPEN' and l.quantity <> 0 order by l.opened_at`;
+  return rows.map((r) => ({ lotId: r.id as Uuid, positionId: r.position_id as Uuid, strategyVersionId: r.strategy_version_id as VersionId, quantity: r.quantity as Amount, protectionMode: r.protection_mode, providerProtectionActive: r.protection_mode === 'JUPITER_TRIGGER' && r.provider_order_id !== null, safetyState: r.safety_state }));
+}
+
+export async function watchdogLastRunAt(sql: Sql): Promise<Instant | null> {
+  const [r] = await sql<{ ran_at: string | null }[]>`select max(ran_at) as ran_at from ops.watchdog_runs`;
+  return r?.ran_at ? (new Date(r.ran_at).toISOString() as Instant) : null;
+}
+
+/** The resume obligation an OFF session leaves behind for the watchdog (§21.2B step 5). */
+export async function setOfflineResumeDeadline(sql: Sql, sessionId: Uuid, deadline: Instant | null, protectedLots: number): Promise<void> {
+  await sql`
+    update ops.runtime_sessions
+      set offline_resume_deadline = ${deadline},
+          resume_watchdog = jsonb_build_object('expectedCheckAt', ${deadline}::timestamptz, 'lastCheckAt', null, 'status', ${deadline ? 'REQUIRED' : 'NOT_REQUIRED'}),
+          exposure_at_last_transition = jsonb_set(exposure_at_last_transition, '{offlineProtectedCount}', to_jsonb(${protectedLots}::int))
+    where id = ${sessionId}`;
 }

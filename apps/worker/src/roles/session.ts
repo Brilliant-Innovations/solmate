@@ -1,7 +1,7 @@
-import { CapitalAuthority, type ActivityState, type ActorKind, type Clock, type ColdStartGate, type ControlRequestKind, type DeploymentProfile, type Instant, type SessionPolicy, type Uuid } from '@sol-agent-trader/contracts';
+import { CapitalAuthority, instantToMs, type ActivityState, type ActorKind, type Clock, type ColdStartGate, type ControlRequestKind, type DeploymentProfile, type Instant, type SessionPolicy, type Uuid, type VersionId, type WatchdogPolicy } from '@sol-agent-trader/contracts';
 import type { ColdStartFactRows, PendingControlRequest, PersistedTransition, SessionRow } from '@sol-agent-trader/db/server';
 import type { Logger } from '@sol-agent-trader/observability';
-import { coldStartPassed, evaluateColdStartGates, presenceState, runtimeTransition, type Presence, type RuntimeEvent, type RuntimeState } from '@sol-agent-trader/risk';
+import { coldStartPassed, evaluateColdStartGates, presenceState, runtimeTransition, windDownPlan, type LotForWindDown, type Presence, type RuntimeEvent, type RuntimeState, type StrategyOfflineTerms } from '@sol-agent-trader/risk';
 
 /**
  * Worker role `session` (blueprint D2, D60–D63, §20.21, §21.2B, §21.3, §23.3; execution plan M5a
@@ -32,6 +32,14 @@ export interface SessionRepo {
   resolveControlRequest(id: Uuid, state: 'ACCEPTED' | 'REJECTED', resolution: Record<string, unknown>, at: Instant): Promise<boolean>;
   /** §15.9 facts for a requested live authority: an ARMED Release with a valid ARM attestation exists for the account's strategies, and the readiness verdict permits. */
   armingFacts(authority: CapitalAuthority, now: Instant): Promise<{ releaseAttested: boolean; readinessPermits: boolean }>;
+  /** Sticky entry pauses that outlive sessions (§21.2C): STARTING honours them; only RESUME with step-up clears them. */
+  activeEntryPauses(): Promise<{ reason: string; setBy: string; setAt: Instant }[]>;
+  clearEntryPauses(by: Uuid, ref: string): Promise<number>;
+  /** D61 wind-down inputs: open lots with protection and safety state, strategy offline terms, watchdog telemetry. */
+  windDownLots(accountId: Uuid): Promise<LotForWindDown[]>;
+  strategyOfflineTerms(strategyVersionId: VersionId): Promise<StrategyOfflineTerms | null>;
+  watchdogLastRunAt(): Promise<Instant | null>;
+  setOfflineResumeDeadline(sessionId: Uuid, deadline: Instant | null, protectedLots: number): Promise<void>;
 }
 
 export interface SessionDeps {
@@ -46,6 +54,7 @@ export interface SessionDeps {
   autoStart: boolean;
   /** Deployment-level live capability (§15.9); false in every paper profile. */
   liveCapabilityEnabled: boolean;
+  watchdogPolicy: WatchdogPolicy;
 }
 
 export interface SessionReport {
@@ -96,7 +105,15 @@ export async function runSessionCycle(deps: SessionDeps): Promise<SessionReport>
     if (!created) throw new Error('session not created');
     const r = runtimeTransition(stateOf(created), { type: 'START', at: now, by });
     if (!r.ok) throw new Error(`START rejected: ${JSON.stringify(r.rejection)}`);
-    return persist(created, stateOf(created), r.state, by, actorRef, 'session start', null);
+    let started = await persist(created, stateOf(created), r.state, by, actorRef, 'session start', null);
+    // §21.2C: a sticky pause left by the watchdog or the dead-man rule is honoured at start; only a step-up RESUME clears it.
+    const sticky = await deps.repo.activeEntryPauses();
+    if (sticky.length) {
+      const p = runtimeTransition(stateOf(started), { type: 'PAUSE', at: now, by: 'WORKER' });
+      if (p.ok) started = await persist(started, stateOf(started), p.state, 'WORKER', 'sticky-entry-pause', 'sticky entry pause honoured at start', `STICKY:${sticky.map((x) => x.reason).join(',')}`);
+      deps.logger.warn('session_started_paused', { sessionId: started.id, sticky: sticky.map((x) => ({ reason: x.reason, setBy: x.setBy, setAt: x.setAt })) });
+    }
+    return started;
   };
 
   // 1. Operator control requests, oldest first.
@@ -158,7 +175,8 @@ export async function runSessionCycle(deps: SessionDeps): Promise<SessionReport>
               break;
             }
             session = await persist(session, state, r.state, 'OPERATOR', req.requestedBy, 'operator resume (step-up verified)', null);
-            await resolve('ACCEPTED', null, { stepUpVerified: true });
+            const stickyCleared = await deps.repo.clearEntryPauses(req.requestedBy, `control-request:${req.id}`);
+            await resolve('ACCEPTED', null, { stepUpVerified: true, stickyPausesCleared: stickyCleared });
             break;
           }
           case 'SET_REQUESTED_MODE': {
@@ -233,11 +251,27 @@ export async function runSessionCycle(deps: SessionDeps): Promise<SessionReport>
         if (report.presence === 'ABSENT') await apply({ type: 'TO_WATCH', at: now, by: 'WORKER' }, 'WORKER', 'operator presence lost');
         break;
       case 'WIND_DOWN': {
+        // §21.2B / D61: OFF only when every remaining lot is OFFLINE_PROTECTED within policy and the resume watchdog is healthy; otherwise wait (the position monitor closes paper lots meanwhile).
         const facts = await deps.repo.windDownFacts(deps.account.id);
-        if (facts.openLots > 0) report.windDownBlockers.push(`${facts.openLots} open lot(s)`);
-        if (facts.inFlightExecutions > 0) report.windDownBlockers.push(`${facts.inFlightExecutions} execution(s) in flight`);
-        if (report.windDownBlockers.length === 0) await apply({ type: 'WIND_DOWN_COMPLETE', at: now, unmanagedLots: facts.openLots, inFlightExecutions: facts.inFlightExecutions, inFlightCustodyOps: 0 }, 'WORKER', 'wind-down complete');
-        else deps.logger.info('session_wind_down_waiting', { sessionId: session.id, blockers: report.windDownBlockers });
+        const lots = await deps.repo.windDownLots(deps.account.id);
+        const terms = new Map<VersionId, StrategyOfflineTerms | null>();
+        for (const l of lots) if (!terms.has(l.strategyVersionId)) terms.set(l.strategyVersionId, await deps.repo.strategyOfflineTerms(l.strategyVersionId));
+        const lastRun = await deps.repo.watchdogLastRunAt();
+        const plan = windDownPlan({
+          lots,
+          strategyTerms: (v) => terms.get(v) ?? null,
+          inFlightExecutions: facts.inFlightExecutions,
+          inFlightCustodyOps: 0,
+          emergencyRouteFresh: null,
+          watchdog: { healthy: lastRun !== null && instantToMs(now) - instantToMs(lastRun) <= deps.watchdogPolicy.watchdogFreshMs, lastRunAt: lastRun },
+          plannedResumeAt: null,
+          now,
+        });
+        report.windDownBlockers.push(...plan.blockers);
+        if (plan.canGoOff) {
+          if (plan.offlineProtectedLots > 0) await deps.repo.setOfflineResumeDeadline(session.id, plan.resumeBy, plan.offlineProtectedLots);
+          await apply({ type: 'WIND_DOWN_COMPLETE', at: now, unmanagedLots: plan.unmanagedLots, inFlightExecutions: facts.inFlightExecutions, inFlightCustodyOps: 0 }, 'WORKER', 'wind-down complete');
+        } else deps.logger.info('session_wind_down_waiting', { sessionId: session.id, blockers: report.windDownBlockers, offlineProtectedLots: plan.offlineProtectedLots });
         break;
       }
       default:

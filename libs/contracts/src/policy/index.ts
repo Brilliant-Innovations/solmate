@@ -19,3 +19,4 @@ export * from './event-window.js';
 export * from './chain-health.js';
 export * from './readiness.js';
 export * from './notifications.js';
+export * from './watchdog.js';

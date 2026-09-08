@@ -23,6 +23,8 @@ export const AlertClass = z.enum([
   'OPERATOR_ABSENT_WITH_EXPOSURE',
   'PROVIDER_FEED_BLOCKING',
   'DEAD_MAN_PAUSE_APPLIED',
+  'OFFLINE_RESUME_OVERDUE',
+  'RUNTIME_HEARTBEAT_MISSING',
   'SYSTEM_ALIVE',
 ]);
 export type AlertClass = z.infer<typeof AlertClass>;
@@ -77,5 +79,7 @@ export const SeverityOf: Record<AlertClass, z.infer<typeof AlertSeverity>> = {
   OPERATOR_ABSENT_WITH_EXPOSURE: 'HIGH',
   PROVIDER_FEED_BLOCKING: 'NOTICE',
   DEAD_MAN_PAUSE_APPLIED: 'HIGH',
+  OFFLINE_RESUME_OVERDUE: 'CRITICAL',
+  RUNTIME_HEARTBEAT_MISSING: 'CRITICAL',
   SYSTEM_ALIVE: 'INFO',
 };

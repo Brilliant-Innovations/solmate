@@ -2156,6 +2156,39 @@ export type Database = {
         }
         Relationships: []
       }
+      entry_pauses: {
+        Row: {
+          cleared_at: string | null
+          cleared_by: string | null
+          cleared_by_ref: string | null
+          id: string
+          reason: string
+          set_at: string
+          set_by: Database["enums"]["Enums"]["actor_kind"]
+          set_by_ref: string
+        }
+        Insert: {
+          cleared_at?: string | null
+          cleared_by?: string | null
+          cleared_by_ref?: string | null
+          id?: string
+          reason: string
+          set_at?: string
+          set_by: Database["enums"]["Enums"]["actor_kind"]
+          set_by_ref: string
+        }
+        Update: {
+          cleared_at?: string | null
+          cleared_by?: string | null
+          cleared_by_ref?: string | null
+          id?: string
+          reason?: string
+          set_at?: string
+          set_by?: Database["enums"]["Enums"]["actor_kind"]
+          set_by_ref?: string
+        }
+        Relationships: []
+      }
       notification_deliveries: {
         Row: {
           attempted_at: string
@@ -2845,6 +2878,27 @@ export type Database = {
         }
         Relationships: []
       }
+      watchdog_runs: {
+        Row: {
+          findings: Json
+          id: string
+          ran_at: string
+          source: string
+        }
+        Insert: {
+          findings?: Json
+          id?: string
+          ran_at?: string
+          source?: string
+        }
+        Update: {
+          findings?: Json
+          id?: string
+          ran_at?: string
+          source?: string
+        }
+        Relationships: []
+      }
       worker_leases: {
         Row: {
           acquired_at: string
@@ -2972,6 +3026,10 @@ export type Database = {
       }
       session_aal: { Args: never; Returns: string }
       session_recent_totp: { Args: { p_within: string }; Returns: boolean }
+      session_resume_watchdog: {
+        Args: { p_heartbeat_missing_after?: string }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

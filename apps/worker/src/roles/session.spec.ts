@@ -1,5 +1,7 @@
 import { addMs, DEFAULT_SESSION_POLICY, fixedClock, toInstant, type ActivityState, type CapitalAuthority, type ColdStartGate, type ControlRequestKind, type DeploymentProfile, type Uuid } from '@sol-agent-trader/contracts';
 import type { ColdStartFactRows, PendingControlRequest, PersistedTransition, SessionRow } from '@sol-agent-trader/db/server';
+import { DEFAULT_WATCHDOG_POLICY, type Amount, type Instant, type VersionId } from '@sol-agent-trader/contracts';
+import type { LotForWindDown } from '@sol-agent-trader/risk';
 import { createLogger } from '@sol-agent-trader/observability';
 import { runSessionCycle, type SessionDeps, type SessionRepo } from './session.js';
 
@@ -17,6 +19,16 @@ class MemoryRepo implements SessionRepo {
   resolved: { id: Uuid; state: string; resolution: Record<string, unknown> }[] = [];
   facts: ColdStartFactRows = healthyFacts;
   async armingFacts() { return { releaseAttested: false, readinessPermits: false }; }
+  stickyPauses: { reason: string; setBy: string; setAt: Instant }[] = [];
+  cleared = 0;
+  watchdogAt: Instant | null = null;
+  deadlines: { sessionId: Uuid; deadline: Instant | null; protectedLots: number }[] = [];
+  async activeEntryPauses() { return this.stickyPauses; }
+  async clearEntryPauses() { const n = this.stickyPauses.length; this.stickyPauses = []; this.cleared += n; return n; }
+  async windDownLots(): Promise<LotForWindDown[]> { return Array.from({ length: this.lots }, (_, i) => ({ lotId: id(900 + i), positionId: id(950 + i), strategyVersionId: 'S0_SAFE@1.2.0' as VersionId, quantity: '1' as Amount, protectionMode: 'MONITORED_EXIT' as const, providerProtectionActive: false, safetyState: 'NORMAL' })); }
+  async strategyOfflineTerms() { return { permitted: false, maxOfflineMs: null }; }
+  async watchdogLastRunAt() { return this.watchdogAt; }
+  async setOfflineResumeDeadline(sessionId: Uuid, deadline: Instant | null, protectedLots: number) { this.deadlines.push({ sessionId, deadline, protectedLots }); }
   lots = 0;
   inFlight = 0;
   verifiedRequests = new Set<Uuid>();
@@ -43,7 +55,7 @@ class MemoryRepo implements SessionRepo {
   activity(): ActivityState { return [...this.sessions.values()].at(-1)?.activityState ?? 'OFF'; }
 }
 
-const deps = (repo: MemoryRepo, over: Partial<SessionDeps> = {}): SessionDeps => ({ repo, clock: fixedClock(NOW), logger, policy: DEFAULT_SESSION_POLICY, account: { id: ACCOUNT }, profile: 'P1A', attended: true, authority: 'PAPER', autoStart: true, liveCapabilityEnabled: false, ...over });
+const deps = (repo: MemoryRepo, over: Partial<SessionDeps> = {}): SessionDeps => ({ repo, clock: fixedClock(NOW), logger, policy: DEFAULT_SESSION_POLICY, account: { id: ACCOUNT }, profile: 'P1A', attended: true, authority: 'PAPER', autoStart: true, liveCapabilityEnabled: false, watchdogPolicy: DEFAULT_WATCHDOG_POLICY, ...over });
 const request = (n: number, kind: ControlRequestKind): PendingControlRequest => ({ id: id(n), requestedBy: OPERATOR, kind, payload: {}, createdAt: NOW });
 
 describe('worker role session (D2, D60–D63, §21.2B)', () => {
@@ -107,11 +119,11 @@ describe('worker role session (D2, D60–D63, §21.2B)', () => {
     repo.lots = 2;
     repo.requests = [request(20, 'END_SESSION')];
     const r1 = await runSessionCycle(deps(repo));
-    expect(r1).toMatchObject({ activity: 'WIND_DOWN', windDownBlockers: ['2 open lot(s)'] });
+    expect(r1).toMatchObject({ activity: 'WIND_DOWN', windDownBlockers: ['2 unmanaged lot(s): strategy forbids offline protection; no active provider-side protection; emergency route state not fresh; no planned resume'] });
     repo.lots = 0;
     repo.inFlight = 1;
     const r2 = await runSessionCycle(deps(repo));
-    expect(r2).toMatchObject({ activity: 'WIND_DOWN', windDownBlockers: ['1 execution(s) in flight'] });
+    expect(r2).toMatchObject({ activity: 'WIND_DOWN', windDownBlockers: ['1 execution/custody transition(s) in flight'] });
     repo.inFlight = 0;
     const r3 = await runSessionCycle(deps(repo));
     expect(r3.activity).toBe('OFF');
@@ -120,5 +132,29 @@ describe('worker role session (D2, D60–D63, §21.2B)', () => {
     const r4 = await runSessionCycle(deps(repo));
     expect(r4.activity).toBe('WATCH');
     expect(repo.sessions.size).toBe(2);
+  });
+});
+
+describe('sticky entry pause (§21.2C): STARTING honours it, only a step-up RESUME clears it', () => {
+  it('a session started while a watchdog pause is active begins PAUSED with the reason; RESUME with step-up clears the sticky rows and the pause', async () => {
+    const repo = new MemoryRepo();
+    repo.stickyPauses = [{ reason: 'RUNTIME_HEARTBEAT_MISSING', setBy: 'WATCHDOG', setAt: NOW }];
+    const r1 = await runSessionCycle(deps(repo));
+    expect(['STARTING', 'WATCH']).toContain(r1.activity); // cold-start gates pass in the same tick with healthy facts
+    expect(r1.paused).toBe(true);
+    const s1 = [...repo.sessions.values()].at(-1)!;
+    expect(s1.paused).toMatchObject({ active: true, reason: 'STICKY:RUNTIME_HEARTBEAT_MISSING', by: 'WORKER' });
+    // a resume without step-up is refused and clears nothing
+    repo.requests.push(request(60, 'RESUME_NEW_ENTRIES'));
+    await runSessionCycle(deps(repo));
+    expect(repo.resolved.at(-1)).toMatchObject({ state: 'REJECTED', resolution: { reason: 'STEP_UP_REQUIRED' } });
+    expect(repo.cleared).toBe(0);
+    // with step-up the pause lifts and the sticky rows are cleared
+    repo.requests.push(request(61, 'RESUME_NEW_ENTRIES'));
+    repo.verifiedRequests.add(id(61));
+    await runSessionCycle(deps(repo));
+    expect(repo.resolved.at(-1)).toMatchObject({ state: 'ACCEPTED', resolution: { stickyPausesCleared: 1 } });
+    expect(repo.cleared).toBe(1);
+    expect([...repo.sessions.values()].at(-1)!.paused.active).toBe(false);
   });
 });
