@@ -3,7 +3,7 @@ import type { ExitApplication, OpenPositionRow, PaperBook } from '@sol-agent-tra
 import { PaperExecutionAdapter, quoteOf, scriptedQuoteClient } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { s0StrategyVersion } from '@sol-agent-trader/strategies';
-import { runPositionMonitorCycle, type PositionMonitorRepo } from './position-monitor.js';
+import { executeClearedExit, runPositionMonitorCycle, type PositionMonitorRepo } from './position-monitor.js';
 
 const NOW = toInstant(Date.UTC(2026, 8, 8, 15, 0, 0));
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' as MintAddress;
@@ -37,6 +37,8 @@ class MemoryRepo implements PositionMonitorRepo {
   async updateMark(positionId: Uuid, pnl: SignedAmount) { this.marks.push({ positionId, pnl }); }
   async tightenStop(positionId: Uuid, level: number) { const p = this.positions.find((x) => x.id === positionId)!; if (p.unreviewedStop !== null && p.unreviewedStop >= level) return false; p.unreviewedStop = level; this.stops.push({ positionId, level }); return true; }
   async recordExitDecision(cycle: ActionCycle, proposal: Proposal, review: AdversarialReview, evaluation: RiskEvaluation) { this.decisions.push({ cycle, proposal, review, evaluation }); }
+  evaluations: RiskEvaluation[] = [];
+  async recordRiskEvaluation(evaluation: RiskEvaluation) { if (this.evaluations.some((e) => e.actionCycleId === evaluation.actionCycleId)) throw new Error(`cycle ${evaluation.actionCycleId} already evaluated`); this.evaluations.push(evaluation); }
   async createIntent(intent: TradeIntent) { this.intents.push({ intent, states: ['AUTHORIZED'] }); }
   async setIntentState(intentId: Uuid, state: string) { this.intents.find((i) => i.intent.id === intentId)!.states.push(state); }
   async finishAttempt(order: Order, attempt: OrderAttempt, fill: Fill | null) { this.attempts.push({ order, attempt, fill }); }
@@ -113,6 +115,27 @@ describe('worker role position-monitor (§13.4–13.5, §17.2, D31, D39, D44)', 
     // Level B capture: the mark, then the exit's decision and executable quotes bound to the position, cycle, intent and attempt
     expect(repo.probes.map((p) => p.purpose)).toEqual(['EXIT_MARK', 'DECISION', 'EXECUTABLE']);
     expect(repo.probes[1]).toMatchObject({ positionId: id(1), actionCycleId: d.cycle.id, intentId: intent.id, orderAttemptId: repo.attempts[0]!.attempt.id });
+  });
+
+  it('a cleared discretionary REDUCE executes through the same intent path: evaluation linked once, size from the proposal fraction, no new cycle', async () => {
+    const repo = new MemoryRepo();
+    const p = position();
+    repo.positions = [p];
+    const d = deps(repo, 210n);
+    const cycle: ActionCycle = { id: id(90), automationRunId: null, triggerId: p.id, candidateId: null, positionId: p.id, strategyVersionId: SAFE.versionId, skillVersionId: null, guidelineVersionId: null, speedTier: 'T2_CONTEXTUAL', decisionBudgetMs: 60_000, proposedAction: 'REDUCE', proposalId: id(91), proposerRunIds: [], adversaryRunIds: [], verdict: 'CONFIRM', reasonCodes: [], revisionRound: 0, state: 'CLEARED', unresolvedReason: null, cutoffs: [{ version: 2, at: NOW, consumedByRunIds: [] }], clearedCutoffVersion: 2, riskEvaluationId: null, intentId: null, startedAt: NOW, terminalAt: NOW };
+    const proposal: Proposal = { id: id(91), actionCycleId: cycle.id, candidateId: null, positionId: p.id, strategyVersionId: SAFE.versionId, source: 'AI', createdAt: NOW, expiresAt: addMs(NOW, 600_000), proposal: { actionType: 'REDUCE', direction: 'LONG', candidateId: null, positionId: p.id, strategyVersionId: SAFE.versionId, skillVersionId: null, triggerId: p.id, thesis: 'take some off', supportingEvidenceIds: [], contradictingEvidenceIds: [], catalystNovelty: null, expectedHorizonMinutes: 60, confidence: 0.7, invalidation: 'x', requestedFractionToReduce: 0.5, protectionIntent: null, urgency: 'normal', expiresAt: addMs(NOW, 600_000), reasoningSummary: 'r', evidenceCutoffVersion: 2 } };
+    expect(await executeClearedExit(d, p, cycle, proposal, NOW)).toBe('FILLED');
+    expect(repo.decisions).toEqual([]); // no new cycle: the cleared discretionary cycle is the authority
+    expect(repo.evaluations).toHaveLength(1);
+    expect(repo.evaluations[0]).toMatchObject({ actionCycleId: id(90), proposalId: id(91), allowed: true, reasonCodes: ['DISCRETIONARY_REDUCE'], computedPositionAmount: '1000000000' });
+    const { intent } = repo.intents[0]!;
+    expect(intent).toMatchObject({ action: 'REDUCE', side: 'SELL', exposureEffect: 'REDUCE', maxInputAmount: '1000000000', actionCycleId: id(90), clearedCutoffVersion: 2, riskEvaluationId: repo.evaluations[0]!.id, targetLotIds: [id(4)] });
+    expect(intent.idempotencyKey).toBe(`exit:${p.id}:${id(90)}`);
+    expect(repo.exits[0]).toMatchObject({ positionId: p.id, intentId: intent.id, closesPosition: false });
+    // a second execution of the same cycle is refused by the once-only evaluation link
+    await expect(executeClearedExit(d, p, cycle, proposal, NOW)).rejects.toThrow(/already evaluated/);
+    // a HOLD cycle never reaches the exit path
+    await expect(executeClearedExit(d, p, { ...cycle, proposedAction: 'HOLD' }, { ...proposal, proposal: { ...proposal.proposal, actionType: 'HOLD', requestedFractionToReduce: null } }, NOW)).rejects.toThrow(/not an exit/);
   });
 
   it('a partial tier reduces half across lots pro rata and leaves the position open; a safety CRITICAL_EXIT exits regardless of price', async () => {

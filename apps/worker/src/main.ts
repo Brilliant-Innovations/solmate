@@ -84,6 +84,9 @@ import {
   upsertDiscoveredAssets,
   upsertFeedHealth,
   writeCandles,
+  PgmqClient,
+  loadActionCycle,
+  loadProposal,
   automationHistory,
   chargeSpendUsage,
   ensureSkillVersion,
@@ -104,6 +107,8 @@ import { createReasoningModel } from '@sol-agent-trader/agents';
 import { tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
 import { primeContractDigest, runAgentsCycle, type AgentsDeps } from './roles/agents.js';
+import { executeClearedExit, type PositionMonitorDeps } from './roles/position-monitor.js';
+import { runTradingActionsCycle } from './roles/trading-actions.js';
 import { BIRDEYE_TIERS, BirdeyeClient, ComputeUnitLedger, defaultFreshnessContracts, fetchTransport, JupiterPriceClient } from '@sol-agent-trader/market';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { HeliusClient } from '@sol-agent-trader/onchain';
@@ -173,7 +178,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -259,6 +264,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('position-monitor')) loops.push(positionMonitorLoop(env, logger, shared));
   if (roles.has('session')) loops.push(sessionLoop(env, logger, shared));
   if (roles.has('agents')) loops.push(agentsLoop(env, logger, shared));
+  if (roles.has('trading-actions')) loops.push(tradingActionsLoop(env, logger, shared));
   if (roles.has('tracked-wallets')) {
     if (!env.HELIUS_API_KEY) logger.warn('roles_disabled', { roles: ['tracked-wallets'], reason: 'HELIUS_API_KEY not set' });
     else loops.push(trackedWalletsLoop(env, logger, shared, env.HELIUS_API_KEY));
@@ -765,20 +771,15 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
   });
 }
 
-async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
-  const intervalMs = env.POSITION_MONITOR_INTERVAL_MS;
-  if (!env.PAPER_TRADING_WALLET) {
-    logger.error('position_monitor_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
-    return;
-  }
+/** Shared by the position monitor (mandatory exits) and the trading-actions consumer (cleared discretionary exits): one exit path (§32 one execution boundary). */
+async function positionMonitorDeps(env: WorkerEnv, logger: Logger, shared: Shared, taker: NonNullable<WorkerEnv['PAPER_TRADING_WALLET']>, intervalMs: number): Promise<{ deps: PositionMonitorDeps; account: { id: Uuid } }> {
   const { sql } = shared;
-  const taker = env.PAPER_TRADING_WALLET;
   const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
   const startingCapital = env.PAPER_STARTING_CAPITAL_BASE_UNITS;
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: taker, settlementMint });
   const activeFrom = systemClock.now();
   const strategies: Record<string, ReturnType<typeof s0StrategyVersion>> = {};
-  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom)]) strategies[v.versionId] = v;
+  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), s1StrategyVersion(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })]) strategies[v.versionId] = v;
   const adapter = new PaperExecutionAdapter({
     quotes: shared.jupiter,
     clock: systemClock,
@@ -797,6 +798,7 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
       updateMark: (positionId: Uuid, pnl: Parameters<typeof updateMark>[2], next: Parameters<typeof updateMark>[3]) => updateMark(sql, positionId, pnl, next),
       tightenStop: (positionId: Uuid, level: number) => tightenStop(sql, positionId, level),
       recordExitDecision: (c: Parameters<typeof recordExitDecision>[1], p: Parameters<typeof recordExitDecision>[2], r: Parameters<typeof recordExitDecision>[3], e: Parameters<typeof recordExitDecision>[4]) => recordExitDecision(sql, c, p, r, e),
+      recordRiskEvaluation: (e: Parameters<typeof recordRiskEvaluation>[1]) => recordRiskEvaluation(sql, e),
       createIntent: (i: Parameters<typeof createIntent>[1], lifecycle: 'AUTHORIZED') => createIntent(sql, i, lifecycle),
       setIntentState: (id: Parameters<typeof setIntentState>[1], state: Parameters<typeof setIntentState>[2]) => setIntentState(sql, id, state),
       finishAttempt: (order: Parameters<typeof finishAttempt>[1], attempt: Parameters<typeof finishAttempt>[2], fill: Parameters<typeof finishAttempt>[3]) => finishAttempt(sql, order, attempt, fill),
@@ -826,9 +828,54 @@ async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Share
     policy: DEFAULT_RISK_POLICY,
     config: { batchSize: 50, reassessMs: intervalMs },
   };
+  return { deps, account };
+}
+
+async function positionMonitorLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.POSITION_MONITOR_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('position_monitor_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { deps, account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, intervalMs);
   logger.info('position_monitor_starting', { intervalMs, accountId: account.id, riskPolicy: DEFAULT_RISK_POLICY.version, holder: shared.holder });
   await loopUnderLease('position-monitor', intervalMs, logger, shared, async () => {
     await runPositionMonitorCycle(deps);
+  });
+}
+
+async function tradingActionsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.TRADING_ACTIONS_INTERVAL_MS;
+  if (!env.PAPER_TRADING_WALLET) {
+    logger.error('trading_actions_disabled', { reason: 'PAPER_TRADING_WALLET is not set' });
+    return;
+  }
+  const { sql } = shared;
+  const { deps: monitor, account } = await positionMonitorDeps(env, logger, shared, env.PAPER_TRADING_WALLET, env.POSITION_MONITOR_INTERVAL_MS);
+  const digest = (await getContractSetDigest()).digest;
+  const loop = {
+    sql,
+    client: new PgmqClient(sql),
+    holder: shared.holder,
+    expectedContractSetDigest: digest,
+    batch: 5,
+    leaseSeconds: 120,
+    loadCycle: (id: Uuid) => loadActionCycle(sql, id),
+    loadProposal: (id: Uuid) => loadProposal(sql, id),
+    loadPosition: async (id: Uuid) => {
+      const row = (await listOpenPositionsForAccount(sql, account.id, 500)).find((p) => p.id === id) ?? null;
+      if (!row) return null;
+      const [r] = await sql<{ review_state: string }[]>`select review_state from trading.positions where id = ${id}`;
+      return r ? { ...row, reviewState: r.review_state } : null;
+    },
+    tightenStop: (positionId: Uuid, level: number) => tightenStop(sql, positionId, level),
+    execute: (p: Parameters<typeof executeClearedExit>[1], c: Parameters<typeof executeClearedExit>[2], pr: Parameters<typeof executeClearedExit>[3], now: Parameters<typeof executeClearedExit>[4]) => executeClearedExit(monitor, p, c, pr, now),
+    clock: systemClock,
+    logger,
+  };
+  logger.info('trading_actions_starting', { intervalMs, accountId: account.id, holder: shared.holder });
+  await loopUnderLease('trading-actions', intervalMs, logger, shared, async () => {
+    await runTradingActionsCycle(loop);
   });
 }
 

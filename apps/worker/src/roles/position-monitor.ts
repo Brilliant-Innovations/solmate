@@ -26,6 +26,8 @@ export interface PositionMonitorRepo {
   updateMark(positionId: Uuid, unrealizedPnl: SignedAmount, nextReassessmentAt: Instant): Promise<void>;
   tightenStop(positionId: Uuid, level: number): Promise<boolean>;
   recordExitDecision(cycle: ActionCycle, proposal: Proposal, review: AdversarialReview, evaluation: RiskEvaluation): Promise<void>;
+  /** For a discretionary cycle already persisted by the agents role: the evaluation only, linked once (`risk_evaluation_id is null`). */
+  recordRiskEvaluation(evaluation: RiskEvaluation): Promise<void>;
   createIntent(intent: TradeIntent, lifecycle: 'AUTHORIZED'): Promise<void>;
   setIntentState(intentId: Uuid, state: TradeIntentState): Promise<void>;
   finishAttempt(order: Order, attempt: OrderAttempt, fill: Fill | null): Promise<void>;
@@ -168,17 +170,7 @@ async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action
   const strategy = deps.strategies[strategyVersionId] ?? (await deps.repo.loadStrategyVersion(strategyVersionId));
   if (!strategy) throw new Error(`no strategy ${strategyVersionId} for position ${p.id}`);
 
-  // Lot allocation: oldest lots first, exactly the named quantities (D44).
-  const allocations: { lotId: Uuid; quantity: Amount }[] = [];
-  let remaining = amountToBigInt(requested);
-  for (const lot of p.lots) {
-    if (remaining === 0n) break;
-    const take = remaining < amountToBigInt(lot.quantity) ? remaining : amountToBigInt(lot.quantity);
-    if (take > 0n) allocations.push({ lotId: lot.id, quantity: bigIntToAmount(take) });
-    remaining -= take;
-  }
-  const allocated = allocateExit(p.lots.map((l) => ({ lotId: l.id, sleeveId: l.sleeveId, quantity: l.quantity })), allocations);
-  if (!allocated.ok) throw new Error(`lot allocation failed: ${allocated.code}`);
+  const allocations = allocateLots(p, requested);
 
   // Action cycle: deterministic proposer, the policy as a non-blocking deterministic review (D31).
   let cycle = newActionCycle({ id: randomUUID() as Uuid, triggerId: p.id, strategyVersionId, speedTier: strategy.speedTier, decisionBudgetMs: strategy.maxDecisionLatencyMs, startedAt: now, positionId: p.id });
@@ -207,11 +199,67 @@ async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action
   };
   await deps.repo.recordExitDecision(cycle, proposal, review, evaluation);
 
+  return executeExitIntent(deps, p, { cycleId: cycle.id, clearedCutoffVersion: 1, strategyVersionId, evaluationId: evaluation.id, expiresAt }, action, requested, allocations, impactBps, reason, now);
+}
+
+export interface ExitCycleRef {
+  cycleId: Uuid;
+  clearedCutoffVersion: number;
+  strategyVersionId: VersionId;
+  evaluationId: Uuid;
+  expiresAt: Instant;
+}
+
+/** Oldest lots first, exactly the named quantities (D44). */
+export function allocateLots(p: OpenPositionRow, requested: Amount): { lotId: Uuid; quantity: Amount }[] {
+  const allocations: { lotId: Uuid; quantity: Amount }[] = [];
+  let remaining = amountToBigInt(requested);
+  for (const lot of p.lots) {
+    if (remaining === 0n) break;
+    const take = remaining < amountToBigInt(lot.quantity) ? remaining : amountToBigInt(lot.quantity);
+    if (take > 0n) allocations.push({ lotId: lot.id, quantity: bigIntToAmount(take) });
+    remaining -= take;
+  }
+  const allocated = allocateExit(p.lots.map((l) => ({ lotId: l.id, sleeveId: l.sleeveId, quantity: l.quantity })), allocations);
+  if (!allocated.ok) throw new Error(`lot allocation failed: ${allocated.code}`);
+  return allocations;
+}
+
+/**
+ * A discretionary REDUCE/EXIT whose cycle was adversarially cleared by the agents role (§11.8,
+ * INV-14): the cycle, proposal and review already exist; this records the deterministic risk
+ * evaluation for the exit, links it once, and executes through the same intent path as a mandatory
+ * exit. Size comes from the proposal's fraction, never from the model directly (D3).
+ */
+export async function executeClearedExit(deps: PositionMonitorDeps, p: OpenPositionRow, cycle: ActionCycle, proposal: Proposal, now: Instant): Promise<'FILLED' | 'NOT_FILLED'> {
+  const action = proposal.proposal.actionType;
+  if (action !== 'EXIT' && action !== 'REDUCE') throw new Error(`executeClearedExit: ${action} is not an exit`);
+  const strategyVersionId = cycle.strategyVersionId;
+  const strategy = deps.strategies[strategyVersionId] ?? (await deps.repo.loadStrategyVersion(strategyVersionId));
+  if (!strategy) throw new Error(`no strategy ${strategyVersionId} for position ${p.id}`);
+  const fraction = action === 'EXIT' ? 1 : (proposal.proposal.requestedFractionToReduce ?? 0);
+  const requested = action === 'EXIT' ? p.quantity : mulDiv(p.quantity, BigInt(Math.round(fraction * 1_000_000)), 1_000_000n, 'FLOOR');
+  if (amountToBigInt(requested) === 0n) throw new Error('cleared exit has zero quantity');
+  const quote = await deps.exitQuote(p.mint, deps.account.settlementMint, requested, deps.policy.maxSlippageBps, now);
+  const allocations = allocateLots(p, requested);
+  const reason = action === 'EXIT' ? 'DISCRETIONARY_EXIT' : 'DISCRETIONARY_REDUCE';
+  const evaluation: RiskEvaluation = {
+    id: randomUUID() as Uuid, proposalId: proposal.id, actionCycleId: cycle.id, policyVersion: deps.policy.version, allowed: true, reasonCodes: [reason], settlementMint: deps.account.settlementMint,
+    equityBaseUnits: '0' as Amount, equityUsd: null, exposureBaseUnits: p.costBasisBaseUnits, cohortExposure: {}, clusterExposure: {}, sleeveExposure: null, assetEligibilityEvaluationId: null,
+    computedMaxLossBaseUnits: null, computedPositionAmount: requested, maxSlippageBps: deps.policy.maxSlippageBps, maxPriceImpactBps: deps.policy.maxImpactBps, stopPolicy: p.stop, targetPolicy: p.target,
+    dailyDrawdownFraction: 0, circuitBreakerTripped: false, staleDataChecks: [], createdAt: now,
+  };
+  await deps.repo.recordRiskEvaluation(evaluation);
+  const expiresAt = proposal.expiresAt < addMs(now, strategy.liveIntentExpiryMs) ? proposal.expiresAt : addMs(now, strategy.liveIntentExpiryMs);
+  return executeExitIntent(deps, p, { cycleId: cycle.id, clearedCutoffVersion: cycle.clearedCutoffVersion ?? 1, strategyVersionId, evaluationId: evaluation.id, expiresAt }, action, requested, allocations, quote?.impactBps ?? null, reason, now);
+}
+
+async function executeExitIntent(deps: PositionMonitorDeps, p: OpenPositionRow, ref: ExitCycleRef, action: 'EXIT' | 'REDUCE', requested: Amount, allocations: { lotId: Uuid; quantity: Amount }[], impactBps: Bps | null, reason: string, now: Instant): Promise<'FILLED' | 'NOT_FILLED'> {
   const intent: TradeIntent = {
     id: randomUUID() as Uuid,
-    idempotencyKey: `exit:${p.id}:${cycle.id}` as TradeIntent['idempotencyKey'],
+    idempotencyKey: `exit:${p.id}:${ref.cycleId}` as TradeIntent['idempotencyKey'],
     accountId: p.accountId,
-    strategyVersionId,
+    strategyVersionId: ref.strategyVersionId,
     sleeveId: p.lots[0]?.sleeveId ?? null,
     assetId: p.assetId,
     action: action === 'EXIT' ? 'EXIT' : 'REDUCE',
@@ -220,16 +268,16 @@ async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action
     inputMint: p.mint,
     outputMint: deps.account.settlementMint,
     maxInputAmount: requested,
-    riskEvaluationId: evaluation.id,
-    actionCycleId: cycle.id,
-    clearedCutoffVersion: 1,
+    riskEvaluationId: ref.evaluationId,
+    actionCycleId: ref.cycleId,
+    clearedCutoffVersion: ref.clearedCutoffVersion,
     // Exits accept the policy's impact cap plus the measured impact at this size: a mandatory exit is not refused for being large.
     constraints: { maxSlippageBps: deps.policy.maxSlippageBps, maxPriceImpactBps: Math.max(deps.policy.maxImpactBps, impactBps ?? 0) as Bps, chaseToleranceBps: 10_000 as Bps, maxQuoteAgeMs: deps.policy.maxQuoteAgeMs },
     protectionPolicyRef: null,
     targetLotIds: allocations.map((a) => a.lotId),
     approvalRequired: false,
     createdAt: now,
-    expiresAt,
+    expiresAt: ref.expiresAt,
   };
   await deps.repo.createIntent(intent, 'AUTHORIZED');
   await deps.repo.setIntentState(intent.id, 'EXECUTING');
@@ -237,8 +285,8 @@ async function executeExit(deps: PositionMonitorDeps, p: OpenPositionRow, action
   const fill = exec.fill ? { ...exec.fill, lotAllocations: allocations } : null;
   await deps.repo.finishAttempt(exec.order, exec.attempt, fill);
   const taken: QuoteProbe[] = [];
-  if (exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.decisionQuote, 'DECISION', now, { assetId: p.assetId, actionCycleId: cycle.id, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
-  if (exec.result.quote && exec.result.quote !== exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.result.quote, 'EXECUTABLE', now, { assetId: p.assetId, actionCycleId: cycle.id, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
+  if (exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.decisionQuote, 'DECISION', now, { assetId: p.assetId, actionCycleId: ref.cycleId, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
+  if (exec.result.quote && exec.result.quote !== exec.decisionQuote) taken.push(quoteProbeOf(randomUUID() as Uuid, exec.result.quote, 'EXECUTABLE', now, { assetId: p.assetId, actionCycleId: ref.cycleId, intentId: intent.id, positionId: p.id, orderAttemptId: exec.attempt.id }));
   await captureQuotes(deps, taken, p.id);
   if (!fill) {
     const rejection = exec.result.rejectionReasons[0] ?? 'UNKNOWN';
