@@ -5,6 +5,7 @@ import { stageLabel } from '../../lib/cycles';
 import { lamportsToSol, loadWalletView, reserveStatus } from '../../lib/wallet';
 import { createSupabaseServerClient, getOperatorSession } from '../../lib/supabase/server';
 import { StepUpRequest } from '../../components/step-up-request';
+import { When } from '../../components/when';
 import { loadMyPasskeys } from '../../lib/settings';
 import { requestStartSession } from './actions';
 
@@ -98,7 +99,7 @@ export default async function ControlRoom() {
             </p>
             <table className="mono" style={{ borderCollapse: 'collapse' }}>
               <tbody>
-                <tr><td style={cell} className="muted">account</td><td style={cell}>{account.name} ({account.cluster}) · session {session.id.slice(0, 8)}</td></tr>
+                <tr><td style={cell} className="muted">account</td><td style={cell}>{account.name} ({account.cluster}) · session {session.id.slice(0, 8)} · started <When iso={session.actual_start_at} now={now} label="session start" /></td></tr>
                 <tr><td style={cell} className="muted">started / intended end</td><td style={cell}>{session.actual_start_at ? `${ago(session.actual_start_at, now)} (${durationLabel(now - Date.parse(session.actual_start_at))})` : 'not started'} · {extras?.intended_end_at ? `ends ${ago(extras.intended_end_at, now)}` : 'no intended end (operator END SESSION)'}</td></tr>
                 <tr><td style={cell} className="muted">market sessions / regime</td><td style={cell}>{extras && extras.market_sessions.length > 0 ? extras.market_sessions.join(', ') : 'no session label'} · {extras?.regime ?? 'regime not classified'}</td></tr>
                 <tr><td style={cell} className="muted">event window</td><td style={cell}>{extras?.event_window ? `catalyst ${extras.event_window.catalystEventId.slice(0, 8)} · source time ${ago(extras.event_window.sourceTimeT0, now)} · expires ${ago(extras.event_window.deadline, now)} · extensions ${extras.event_window.extensionsUsed}` : 'none'}</td></tr>

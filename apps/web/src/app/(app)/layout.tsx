@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { DensityToggle } from '../../components/density-toggle';
 import { MobileNav, Nav } from '../../components/nav';
 import { loadStatusSnapshot, StatusBar } from '../../components/status-bar';
 import { getOperatorSession } from '../../lib/supabase/server';
@@ -18,11 +19,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const snapshot = await loadStatusSnapshot();
   return (
     <div className="shell" data-authority={snapshot.authority ?? 'UNKNOWN'} data-paused={String(snapshot.paused)}>
+      <a href="#main" className="skip-link">Skip to content</a>
       <StatusBar />
       <MobileNav />
       <div className="body">
         <Nav />
-        <main className="main">
+        <main className="main" id="main" tabIndex={-1}>
           {!configured && (
             <div className="notice" data-tone="failed" role="alert">
               Supabase is not configured for this deployment. Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>.
@@ -45,6 +47,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             {session ? (
               <>
                 {session.displayName ?? session.email} · role <code>{session.role ?? 'none'}</code> ·{' '}
+                <DensityToggle />{' '}
                 <form action={signOut} style={{ display: 'inline' }}>
                   <button className="btn" type="submit">
                     Sign out

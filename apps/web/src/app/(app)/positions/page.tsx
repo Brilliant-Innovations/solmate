@@ -49,10 +49,28 @@ export default async function Positions() {
             <button className="btn danger" type="submit" disabled={!canControl} title="Requests EMERGENCY_CLOSE_ALL: every open position is closed at market; entries stay paused">Emergency close all</button>
           </form>
         )}
+        {open.length > 0 && (
+          <div className="card-list mobile-only" aria-label="Open positions (compact)">
+            {open.map((p) => {
+              const unreal = p.unrealized_pnl_base_units === null ? null : baseToUsd(p.unrealized_pnl_base_units);
+              const alarming = p.safety_state === 'EXIT_RECOMMENDED' || p.safety_state === 'CRITICAL_EXIT';
+              return (
+                <div key={p.id} className="card" style={{ borderColor: alarming ? 'var(--failed)' : undefined }}>
+                  <div className="mono"><strong><a href={`/positions/${p.id}`}>{p.symbol}</a></strong> · {tokens(p.quantity, p.decimals)} · {unreal === null ? 'unmarked' : usd(unreal)}</div>
+                  <div className="mono muted">safety {p.safety_state} · {reviewLabel(p, agoS).text} · stop {p.unreviewed_stop !== null ? price(p.unreviewed_stop) : p.stop?.level ? price(p.stop.level) : 'none'}</div>
+                  <div className="controls" style={{ marginTop: '0.4rem' }}>
+                    <form action={requestManualClose}><input type="hidden" name="positionId" value={p.id} /><button className="btn danger" type="submit" disabled={!canControl}>Close</button></form>
+                    <form action={requestManualReduce}><input type="hidden" name="positionId" value={p.id} /><input type="hidden" name="fraction" value="0.5" /><button className="btn" type="submit" disabled={!canControl}>Reduce ½</button></form>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {open.length === 0 ? (
           <p className="muted">No open positions.</p>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
+          <div style={{ overflowX: 'auto' }} className="desktop-only">
             <table className="mono" style={{ borderCollapse: 'collapse', fontSize: '0.82rem' }}>
               <thead>
                 <tr>

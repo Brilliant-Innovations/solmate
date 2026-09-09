@@ -1,3 +1,4 @@
+import { When } from '../../../components/when';
 import { ago } from '../../../lib/paper';
 import { loadAlerts, remaining } from '../../../lib/ops';
 import { getOperatorSession } from '../../../lib/supabase/server';
@@ -33,7 +34,7 @@ export default async function Alerts() {
             return (
               <div key={n.id} style={{ borderTop: '1px solid var(--rule)', padding: '0.6rem 0' }}>
                 <p className="mono" style={{ margin: 0 }}>
-                  <span className="chip" data-tone={tone(n.severity)}><span className="v">{n.severity}</span></span> <strong>{n.alert_class}</strong> · raised {ago(n.raised_at, now)}
+                  <span className="chip" data-tone={tone(n.severity)}><span className="v">{n.severity}</span></span> <strong>{n.alert_class}</strong> · raised <When iso={n.raised_at} now={now} label="raised" />
                   {n.escalation_level > 0 ? ` · escalation ${n.escalation_level}` : ''}
                   {n.acknowledged_at ? ` · acknowledged ${ago(n.acknowledged_at, now)}` : ' · unacknowledged'}
                 </p>

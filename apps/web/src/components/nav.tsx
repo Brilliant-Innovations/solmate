@@ -12,11 +12,14 @@ const SECTIONS: { title: string; items: { href: string; label: string; note?: st
   { title: 'System', items: [{ href: '/risk', label: 'Risk & Policy' }, { href: '/wallet', label: 'Wallet / Custody' }, { href: '/alerts', label: 'Alert Center' }, { href: '/health', label: 'System Health' }, { href: '/readiness', label: 'Live Readiness' }, { href: '/releases', label: 'Releases' }, { href: '/audit', label: 'Audit Log' }, { href: '/settings', label: 'Settings' }] },
 ];
 
-/** The four routes that must work on a phone: control room (pause/end), positions (close), alerts, wallet (§20.2). */
+/** §20.22 mobile operational surface: mode/live state and pause (status bar), equity/exposure/drawdown/reserves and recent actions (Control), positions with close, alerts, the approval queue, agent activity, health summary, wallet. */
 const MOBILE: { href: string; label: string }[] = [
   { href: '/', label: 'Control' },
   { href: '/positions', label: 'Positions' },
   { href: '/alerts', label: 'Alerts' },
+  { href: '/approvals', label: 'Approvals' },
+  { href: '/agent-activity', label: 'Agent' },
+  { href: '/health', label: 'Health' },
   { href: '/wallet', label: 'Wallet' },
 ];
 

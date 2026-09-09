@@ -142,7 +142,45 @@ button {
   max-width: 11rem;
 }
 
+/* tablet: keep the nav but narrow it */
+@media (max-width: 1100px) {
+  .body {
+    grid-template-columns: 170px 1fr;
+  }
+  .main {
+    padding: 1rem 1rem 3rem;
+  }
+  .statusbar {
+    font-size: 0.74rem;
+  }
+}
+
+.mobile-only {
+  display: none;
+}
+
 @media (max-width: 760px) {
+  .mobile-only {
+    display: block;
+  }
+  .desktop-only {
+    display: none;
+  }
+  .statusbar .chip .k {
+    display: none;
+  }
+  .statusbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    gap: 0.35rem 0.5rem;
+  }
+  .panel {
+    padding: 0.8rem 0.8rem;
+  }
+  h1 {
+    font-size: 1.3rem;
+  }
   .body {
     grid-template-columns: 1fr;
   }
@@ -393,4 +431,66 @@ a:focus-visible {
   height: 1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
+}
+
+/* --- accessibility and density (§20.24) ------------------------------------------------------- */
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  padding: 0.5rem 0.8rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
+
+:root[data-density='compact'] table td,
+:root[data-density='compact'] table th {
+  padding-top: 0.05rem !important;
+  padding-bottom: 0.05rem !important;
+  font-size: 0.76rem;
+}
+
+:root[data-density='compact'] .panel {
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.6rem;
+}
+
+:root[data-density='compact'] .chip {
+  padding: 0.05rem 0.4rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* status never by colour alone: every chip carries its text; failed/paused states also get a border */
+.chip[data-tone='failed'] {
+  border-color: var(--failed);
+}
+
+.notice[role='alert'] {
+  font-weight: 500;
+}
+
+/* mobile position cards (§20.22): emergency close one position without desktop navigation */
+.card-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.card-list .card {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+  background: var(--surface);
 }
