@@ -1853,6 +1853,7 @@ async function shadowSyncLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
       ? {
           openAlertExists: async (alertClass) => (await listOpenNotifications(sql)).some((n) => n.alertClass === alertClass),
           raise: (n) => raiseNotification(sql, { ...n, deadManDeadline: null }),
+          insertEntryPauseOnce: (reason, ref) => insertEntryPauseOnce(sql, reason, 'WORKER', ref),
         }
       : null,
     price: async (mint, quantity, decimals, now) => {

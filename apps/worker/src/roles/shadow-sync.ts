@@ -32,6 +32,8 @@ export interface ShadowExecutor {
 export interface ShadowSyncAlerts {
   openAlertExists(alertClass: string): Promise<boolean>;
   raise(n: { id: Uuid; severity: 'CRITICAL' | 'HIGH'; alertClass: string; summary: string; affected: Record<string, unknown>; automatedResponse: string | null; raisedAt: Instant }): Promise<void>;
+  /** §21.2C sticky pause; cleared only by the step-up RESUME path. Returns false when one is already open. */
+  insertEntryPauseOnce(reason: string, ref: string): Promise<boolean>;
 }
 
 export interface ShadowSyncDeps {
@@ -54,6 +56,8 @@ export interface ShadowSyncState {
 
 /** Raised once while the executor's shadow is ahead of ours; see the regression branch below. */
 export const SHADOW_REGRESSION_ALERT = 'SHADOW_SEQUENCE_REGRESSION';
+/** Sticky entry pause set alongside it: no new exposure while it provably cannot be protected. */
+export const SHADOW_REGRESSION_PAUSE = 'SHADOW_PROTECTION_UNAVAILABLE';
 
 export interface ShadowSyncReport {
   mode: 'SYNCED' | 'UNCHANGED' | 'DB_DOWN' | 'DB_ERROR';
@@ -129,18 +133,27 @@ export async function runShadowSyncCycle(deps: ShadowSyncDeps, state: ShadowSync
          * repeating the push changes either side.
          *
          * Refusing loudly was already right. Refusing loudly into a log line that nobody watches is
-         * the same shape as the defect this audit was chartered to find, one level up, so it raises.
-         * It deliberately does *not* pause new entries: that is a trading-behaviour policy call for
-         * the operator, and it is flagged as an open question rather than decided here.
+         * the same shape as the defect this audit was chartered to find, one level up, so it raises
+         * *and* stops new entries.
+         *
+         * Blocking entries is not a new policy invention: §13.6 already pauses them whenever the
+         * infrastructure that makes trading safe is absent — `FEEDS_STALE`, `SESSION_NOT_ACTIVE`,
+         * `CUSTODY_MISMATCH`, `DB_UNAVAILABLE`. This is the same category and arguably its strongest
+         * instance, because opening a position you provably cannot protect is the one thing the whole
+         * protection stack exists to prevent. It rides on the §21.2C sticky pause rather than a new
+         * `RISK_REASONS` member: `entryHealth` already blocks on any uncleared `ops.entry_pauses` row,
+         * so this needs no change to the versioned risk policy, and `journal-import` sets its
+         * comparable pause exactly this way. Only the step-up RESUME path clears it.
          */
         if (deps.alerts && !(await deps.alerts.openAlertExists(SHADOW_REGRESSION_ALERT))) {
+          const paused = await deps.alerts.insertEntryPauseOnce(SHADOW_REGRESSION_PAUSE, 'shadow-sync');
           await deps.alerts.raise({
             id: newId(),
             severity: 'CRITICAL',
             alertClass: SHADOW_REGRESSION_ALERT,
-            summary: `The executor refused our position shadow at sequence ${shadow.sequence}: it holds ${r.lastSynced ?? 'a newer one'}. Our shadow journal is behind the executor's, which does not self-correct, and DB-down protection is disabled in both directions until an operator reconciles them (§15.10A, D22).`.slice(0, 512),
-            affected: { assetId: null, strategyVersionId: null, positionId: null, system: 'shadow-sync', sequence: shadow.sequence, lastSynced: r.lastSynced ?? null },
-            automatedResponse: null,
+            summary: `The executor refused our position shadow at sequence ${shadow.sequence}: it holds ${r.lastSynced ?? 'a newer one'}. Our shadow journal is behind the executor's, which does not self-correct, and DB-down protection is disabled in both directions — the executor would plan against a book from before our journal was lost, and it refuses our emergency closes as SHADOW_STALE. New entries are paused until an operator reconciles the two journals and resumes with step-up (§15.10A, D22, §21.2C).`.slice(0, 512),
+            affected: { assetId: null, strategyVersionId: null, positionId: null, system: 'shadow-sync', sequence: shadow.sequence, lastSynced: r.lastSynced ?? null, entryPauseSet: paused },
+            automatedResponse: 'PAUSE_NEW_ENTRIES (sticky, operator review)',
             raisedAt: now,
           });
         }

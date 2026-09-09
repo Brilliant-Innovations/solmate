@@ -17,7 +17,7 @@ The reviewer should not assume the M3 status document describes what is there no
 | When | Change | Why it matters to this review |
 | --- | --- | --- |
 | 2026-09-09 (WP0) | `ExecutorPipeline.syncShadow` — `shadow.sequence <= last` split into `< last` (`SHADOW_REGRESSION`) and `=== last` (`{ok: true, state: 'IN_SYNC'}`). The return type gained `state: 'APPENDED' \| 'IN_SYNC'`. | It relaxes a refusal in the DB-down protection path (D22, §15.10A). The safety argument is that the worker derives sequences from an append-only journal, so an equal sequence implies an equal book, and a wiped worker journal restarts at 1 and is still refused as strictly lower. **That argument deserves adversarial attention** — it is the one place where a check that used to refuse now accepts. Rationale and reproduction: `docs/probes/profile-0-executor-attached-2026-09-09.md` (DEFECT-1). |
-| 2026-09-09 (WP0 follow-up) | `apps/risk-authorizer/src/main.ts` — `chainStanding()`'s cache key now names both stores (`chainStandingCacheKey(ledgerHead, replicaCheckpoint)`, exported from `libs/db/src/server/audit.ts`) and the entry expires after `CHAIN_STANDING_TTL_MS = 30_000`. `chainStanding` itself was **not** restructured. | **This is inside one of the two deployables the gate scrutinises**, and it changes an integrity control (ADR-0009 P2). Two things to weigh: the replica is now read on every call, where before it was read only on a cache miss — a per-request file read in the authorizer's hot path, deliberately accepted because it is the cheap half of the verification and the half that makes a vanished replica visible. And 30 s is a chosen number with no derivation behind it: it bounds how long a *silent* divergence can persist, and a reviewer may well argue it should be shorter, longer, or configurable. Identity cases: `libs/db/src/server/audit-cache-key.spec.ts`. |
+| 2026-09-09 (WP0 follow-up) | `apps/risk-authorizer/src/main.ts` — `chainStanding()`'s cache key now names both stores (`chainStandingCacheKey(ledgerHead, replicaCheckpoint)`, exported from `libs/db/src/server/audit.ts`) and the entry expires after `CHAIN_STANDING_TTL_MS = 30_000`. `chainStanding` itself was **not** restructured. | **This is inside one of the two deployables the gate scrutinises**, and it changes an integrity control (ADR-0009 P2). Two things to weigh: the replica is now read on every call, where before it was read only on a cache miss — a per-request file read in the authorizer's hot path, deliberately accepted because it is the cheap half of the verification and the half that makes a vanished replica visible. And the 30 s TTL has a derivation, which is the right way to argue about it: it bounds how long a vanished replica stays invisible, so the question is how many authorizations can pass inside that window. At Profile 2's attended tiny-live entry rate — `LIVE_ENTRY_INTERVAL_MS` 15 s, and candidates that clear the adversarial cycle far more rarely than every other tick — that is on the order of **one trade**. The number to argue about is therefore "at most one authorization may pass on an unverified replica", not "30 seconds". A reviewer who wants zero should say so, and the cost of zero is the full `verifyAuditChain` walk on every request. Identity cases: `libs/db/src/server/audit-cache-key.spec.ts`. |
 | 2026-09-09 (WP0 follow-up) | `apps/worker/src/roles/journal-import.ts` — a `page.head` below the import cursor now raises `EXECUTOR_JOURNAL_RESET` and stops importing (DEFECT-2). | `apps/worker`, so outside review #1's two deployables, but it changes what the executor's journal API is trusted to mean, and the reviewer is looking at the other end of that contract. It also newly relies on the executor reporting `head` honestly. |
 | 2026-09-09 (WP0 follow-up) | `apps/worker/src/roles/shadow-sync.ts` — a refused push now raises `SHADOW_SEQUENCE_REGRESSION` once, via a new optional `alerts` dependency. | Same: worker-side, but it is the observability half of the `syncShadow` contract above. It deliberately does **not** pause new entries — see the open question below. |
 
@@ -35,14 +35,19 @@ or disputing the severities is fair game; rediscovering them is waste.
 ~~DEFECT-2 and DEFECT-3 are open.~~ **Both were fixed on 2026-09-09, later the same day** — see the
 table above for what changed and what to weigh. What remains open is one deliberate omission:
 
-- **Open question for the gate: should a persistent shadow regression pause new entries?** The
-  asymmetric wipe — our shadow journal lost, the executor's intact — disables DB-down protection in
-  both directions: the executor would plan against a book from before the wipe, and it refuses our
-  monitor commands as `SHADOW_STALE` because our sequence is below what it holds. It never
-  self-corrects. It now raises a CRITICAL, which is observability. Whether the system should also
-  stop opening new exposure while its DB-down protection is known-broken is a trading-behaviour
-  policy question, and it was left to the operator rather than decided in a defect fix. `journal-import`
-  sets a sticky entry pause for its comparable case, which is an argument that this should too.
+- **~~Open question: should a persistent shadow regression pause new entries?~~ Decided yes by the
+  operator, 2026-09-09, and implemented.** The asymmetric wipe — our shadow journal lost, the
+  executor's intact — disables DB-down protection in both directions and never self-corrects, so
+  `shadow-sync` now sets the sticky entry pause `SHADOW_PROTECTION_UNAVAILABLE` alongside the CRITICAL.
+  The reasoning was that this is not a new policy invention: §13.6 already blocks entries whenever the
+  infrastructure that makes trading safe is absent (`FEEDS_STALE`, `SESSION_NOT_ACTIVE`,
+  `CUSTODY_MISMATCH`, `DB_UNAVAILABLE`), and opening a position that provably cannot be protected is
+  the strongest instance of that category, not a new one. It rides on §21.2C's `ops.entry_pauses`
+  rather than a new `RISK_REASONS` member, so the versioned risk policy and the contract lock are
+  untouched — the same mechanism `journal-import` uses. Cleared only by step-up `RESUME_NEW_ENTRIES`,
+  with the reconciliation procedure in `docs/runbooks/infrastructure-loss-chain-first-recovery.md`.
+  **What is still worth a reviewer's attention:** this makes a worker-side role able to halt trading,
+  which is correct here but is a capability worth confirming is narrowly held.
 
 All three defects are instances of one class described at the end of that probe document: *a cheap
 local value stands in for an expensive remote one, and the substitution is sound only while the two
@@ -50,6 +55,26 @@ cannot diverge.* The 2026-09-09 review's two CRITICALs were the same family, mak
 looking for more of these is looking in a productive direction — and the audit that found DEFECT-2
 and DEFECT-3 covered worker roles and the authorizer's cache, **not** `pipeline.ts`'s internals,
 which is this review's ground.
+
+## A structural note the reviewer should weigh: the authorizer's startup path cannot be tested
+
+`apps/risk-authorizer/src/main.ts` calls `main()` at module load. Nothing in it can be imported, so
+nothing in it can be unit tested — and `main()` is where the environment is validated fail-closed, the
+signing keys are imported, the RPC allowlist is enforced, the internal-API secrets are required, and
+the chain-standing cache lives. That is a meaningful surface of one of the two deployables this gate
+exists to scrutinise, and it is covered today only by the service-level specs beneath it and by
+running the process.
+
+It surfaced concretely while fixing DEFECT-3: the cache-key logic had to be **moved** into
+`libs/db/src/server/audit.ts` to be testable at all. That is defensible on its own terms — checkpoint
+identity does belong with the checkpoint code — but the reason it moved was testability, not design,
+and "we could not test it there, so we moved the testable part elsewhere" is a pattern that will
+recur and will gradually hollow out `main.ts` into the one place nothing is verified. Worth a finding
+either way: either the entrypoint should be split so its startup path is importable, or the review
+should say explicitly that this surface is accepted as process-tested only.
+
+Not fixed, because restructuring the authorizer's entrypoint is exactly the kind of change this gate
+should authorise rather than inherit.
 
 ## What the boundary has and has not executed
 

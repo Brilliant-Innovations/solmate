@@ -2,7 +2,7 @@ import { addMs, fixedClock, fixtures, type Amount, type Instant, type MintAddres
 import type { ShadowSourcePosition } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { MemoryShadowJournal } from '../shadow/journal.js';
-import { runShadowSyncCycle, SHADOW_REGRESSION_ALERT, type ShadowExecutor, type ShadowSyncDeps, type ShadowSyncState } from './shadow-sync.js';
+import { runShadowSyncCycle, SHADOW_REGRESSION_ALERT, SHADOW_REGRESSION_PAUSE, type ShadowExecutor, type ShadowSyncDeps, type ShadowSyncState } from './shadow-sync.js';
 
 const T0 = fixtures.T0 as Instant;
 const USDC = fixtures.MINTS.USDC as MintAddress;
@@ -126,11 +126,13 @@ describe('worker shadow-sync role (§15.10A, D22)', () => {
    */
   it('a shadow the executor is ahead of raises once, because a regression never self-corrects', async () => {
     const state: ShadowSyncState = { consecutiveDbFailures: 0 };
-    const raised: { alertClass: string; summary: string }[] = [];
+    const raised: { alertClass: string; summary: string; automatedResponse: string | null }[] = [];
+    const pauses: string[] = [];
     const f = fake();
     f.deps.alerts = {
       async openAlertExists(cls) { return raised.some((a) => a.alertClass === cls); },
-      async raise(a) { raised.push({ alertClass: a.alertClass, summary: a.summary }); },
+      async raise(a) { raised.push({ alertClass: a.alertClass, summary: a.summary, automatedResponse: a.automatedResponse }); },
+      async insertEntryPauseOnce(reason) { if (pauses.includes(reason)) return false; pauses.push(reason); return true; },
     };
     (f.executor as FakeExecutor).last = 7; // an executor journal that outlived ours
 
@@ -138,10 +140,16 @@ describe('worker shadow-sync role (§15.10A, D22)', () => {
     expect(r.pushed).toBe('REGRESSION');
     expect(raised.map((a) => a.alertClass)).toEqual([SHADOW_REGRESSION_ALERT]);
     expect(raised[0]?.summary).toContain('7');
+    // And it stops new entries: §13.6 already pauses them whenever the infrastructure that makes
+    // trading safe is absent, and this is that — no opening exposure we provably cannot protect.
+    // The §21.2C sticky pause carries it, so no RISK_REASONS member and no contract-lock change.
+    expect(pauses).toEqual([SHADOW_REGRESSION_PAUSE]);
+    expect(raised[0]?.automatedResponse).toBe('PAUSE_NEW_ENTRIES (sticky, operator review)');
 
-    // Repeating the push changes neither side, so it must not repeat the alert either.
+    // Repeating the push changes neither side, so it must not repeat the alert or the pause.
     await runShadowSyncCycle(f.deps, state);
     expect(raised).toHaveLength(1);
+    expect(pauses).toHaveLength(1);
 
     // With no alert sink wired (a paper profile with no executor to disagree with) it still refuses.
     const quiet = fake();

@@ -251,3 +251,23 @@ Every one of the three fixes was proved against its own pre-fix code rather than
 `shadow-sync.ts` alone fails the DEFECT-1 cases, reverting `journal-import.ts` alone fails the reset
 case, and disabling only the alert branch fails the asymmetric-wipe case. A regression test that
 cannot fail is decoration.
+
+### The entry block, decided (operator, 2026-09-09)
+
+The open question above was settled rather than routed to review #1, on the grounds that routing it
+there sends it behind probes that are behind a Turnkey account — which is how a known
+unprotected-entry window survives to live.
+
+`shadow-sync` now sets the sticky entry pause `SHADOW_PROTECTION_UNAVAILABLE` alongside the CRITICAL.
+It is not a new policy invention: §13.6 already blocks entries whenever the infrastructure that makes
+trading safe is absent — `FEEDS_STALE`, `SESSION_NOT_ACTIVE`, `CUSTODY_MISMATCH`, `DB_UNAVAILABLE` —
+and opening a position that provably cannot be protected is the strongest instance of that category,
+not a new one.
+
+The mechanism is §21.2C's `ops.entry_pauses`, not a new `RISK_REASONS` member. `entryHealth` already
+blocks on any uncleared row, so the versioned risk policy and the contract lock are untouched, and it
+is the same path `journal-import` uses for its comparable case. Cleared only by the step-up
+`RESUME_NEW_ENTRIES`. The reconciliation procedure — which side is authoritative, and how the worker's
+journal is rebuilt — is in `docs/runbooks/infrastructure-loss-chain-first-recovery.md`, alongside the
+matching procedure for `EXECUTOR_JOURNAL_RESET`. Raising a CRITICAL with no procedure behind it only
+relocates the guessing.

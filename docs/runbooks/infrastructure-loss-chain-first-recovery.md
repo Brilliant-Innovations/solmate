@@ -27,6 +27,44 @@ Blueprint D36, §22.5, §21.2B/C, §26.1, §35 step 21; plan M11. Applies when t
 9. **Reconcile chain and custody into the application.** The reconciliation role compares the wallet against the ledger and pauses on any unexplained balance or movement; the journal-import role replays the executor's durable journal into the audit ledger and holds `DB_OUTAGE_EMERGENCY_REVIEW` until an operator reviews it. Explain every movement from step 3 (fill, provider deposit/withdraw, break-glass action, manual funding) before clearing. Held-asset safety and emergency-route refresh complete before entries can re-open (§21.2B).
 10. **Re-run Live Readiness and record the drill.** All rows must be green for the profile before `RESUME_NEW_ENTRIES`; record `node tools/record-readiness-evidence.mjs --env <worker env> --row BREAK_GLASS_SWEEP_DRILL --kind DRILL --verdict PASS|FAIL --evidence <link>` (if step 4 signed), and the same for `--row DB_DOWN_EMERGENCY_CLOSE` and `--row OFFLINE_CARRY`, with links to the enumeration and the reconciliation report. Resume requires the passkey step-up (D41).
 
+## When the executor's journal did not survive — `EXECUTOR_JOURNAL_RESET`
+
+Step 7 says to restore the executor's journal volume before the executor starts. When that is not
+possible — the volume is gone, or a Profile 2 workstation was rebuilt — the journal restarts its
+sequences at 1 while the audit ledger's import cursor is still at whatever it reached before the
+loss. `journal-import` detects that (`page.head` below the cursor), raises `EXECUTOR_JOURNAL_RESET`
+as CRITICAL and **stops importing**. It deliberately does not move the cursor itself: the records
+between the cursor and the new head are gone, and advancing over them would erase the gap from the
+audit ledger silently rather than recording that it happened.
+
+The alert is not self-clearing, and the role stays stopped until an operator does this:
+
+1. **Establish what the gap contains, from anything but the lost journal.** The missing sequences
+   covered executor-local records — emergency commands, pauses, shadow syncs, and the attempt lines
+   of emergency intents. Chain signatures (step 2's enumeration) and the protection provider's own
+   console are the surviving evidence. Anything the executor did that reached chain is recoverable
+   there; anything it recorded but did not broadcast is not.
+2. **Decide whether the gap is material.** A gap spanning a period with no open exposure and no
+   emergency action is an availability event. A gap that overlaps a DB outage in which an emergency
+   close may have fired is a custody question, and step 4's reconstruction answers it, not this step.
+3. **Write it down before clearing it.** File the gap as an audit note — the old cursor, the new
+   head, the wall-clock window they span, what the chain enumeration shows for that window, and the
+   conclusion. This is the record that the gap was examined rather than skipped; the audit ledger's
+   hash chain stays intact either way, because nothing is back-dated into it.
+4. **Move the cursor deliberately.** Only after (3): reset the import cursor to the new journal's
+   base so import resumes from the rebuilt journal, and resolve `EXECUTOR_JOURNAL_RESET`. There is no
+   automated verb for this and that is intentional — it is the one place where an operator asserts
+   that lost records were accounted for by other means.
+5. **Resume entries the normal way.** The sticky pause and step-up `RESUME_NEW_ENTRIES` in step 10,
+   unchanged. A cleared journal-reset alert is not on its own a reason to resume.
+
+The same shape applies to `SHADOW_PROTECTION_UNAVAILABLE`, raised when the worker's shadow journal is
+lost but the executor's is not: the executor refuses our pushes as `SHADOW_REGRESSION` and refuses our
+emergency closes as `SHADOW_STALE`, so DB-down protection is unavailable in both directions and new
+entries are paused. It does not self-correct. The operator reconciles by deciding which side is
+authoritative — normally the executor's, since it holds the later sequence — and rebuilding the
+worker's journal from the current open book rather than trying to replay the lost one.
+
 ## Checks that make this runbook honest
 
 - The enumeration in step 2 must be reproducible by a second operator from public data plus the wallet address alone.
