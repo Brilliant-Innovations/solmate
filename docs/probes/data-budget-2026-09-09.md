@@ -152,7 +152,13 @@ productive requests/day over 43 assets = **one refresh per ~65 minutes**.
 **Step 3 — re-measure for a full week with the worker continuously up**, then decide the tier. The
 present window is 2.171 days with several restarts.
 
-**Step 4 — the tier decision, with the numbers.** CU/month = assets × (43,200/R) × 45:
+**Step 4 — ~~the tier decision, with the numbers~~ WITHDRAWN. See the correction at the end of this
+file.** The table below is wrong twice over and is kept only so the errors are visible: it compares
+OHLCV-only cost against the whole allowance while ignoring ~492 k/month of non-OHLCV overhead, and
+every figure in its "Refresh" column is derived from `maxCandidateAgeMs`, which this same document
+says is the wrong requirement. Do not price a tier from it.
+
+CU/month = assets × (43,200/R) × 45:
 
 | Universe | Refresh | CU/month | Cheapest tier |
 | --- | --- | ---: | --- |
@@ -164,9 +170,10 @@ present window is 2.171 days with several restarts.
 | 20 assets | 20 min | 1.94 M | Lite $39 ✓ |
 | 20 assets | 5 min | 7.78 M | Starter $99 |
 
-Reading it: **Lite already covers S2 and S3 once steps 1–2 are done.** S1 at 20 minutes and S4 at 30
-minutes need Starter ($99) at a 43-asset universe — or stay on Lite by cutting the eligible universe
-to ~20, which is a strategy-coverage decision, not a budget one.
+~~Reading it: **Lite already covers S2 and S3 once steps 1–2 are done.**~~ **False, and the operator
+caught it: 65 minutes is larger than 45.** The two figures were not even the same quantity — 65 min is
+what today's *observed spend* would deliver at zero waste, while 45 min is what the *allowance* would
+permit. Both then rest on the wrong requirement column. Corrected below.
 
 **Caveat on that mapping, stated rather than buried:** the table treats `maxCandidateAgeMs` as the
 required candle-refresh interval. That is an assumption. The honest requirement is whatever data age
@@ -179,3 +186,109 @@ Steps 1 and 2 are the operator-gated WP1b. They are code-only, cost nothing, and
 any paper evaluation begins — a run started on eight-hour-old candles produces exactly the evidence
 that has to be discarded later. The recording gap (no input age on a feature snapshot) should land
 with them, or the evaluation cannot tell warm from cold after the fact.
+
+---
+
+# Correction, and DEFECT-4 — the freshness gate measures the wrong quantity
+
+The operator caught an inconsistency in step 4 ("~65 min is enough for S2/S3 at 45 min"; 65 > 45) and
+asked for it to be re-derived before it informed a purchase. Re-deriving it found a second error, and
+then answering the operator's own question — *does the existing freshness gate already refuse
+stale-input candidates?* — found a defect that makes the whole tier table beside the point.
+
+## Two arithmetic errors, both mine
+
+1. **65 vs 45 are different quantities.** 65 min is what *today's observed spend* (59,656 CU/day)
+   would deliver over 43 assets at zero waste. 45 min is what the *full allowance* would permit.
+   Comparing them as if they were the same thing produced a claim that is false on its face.
+2. **The tier table charged OHLCV against the whole allowance.** Non-OHLCV endpoints
+   (`token_security`, `token_overview`, `token_trending`) ran at ~492 k CU/month in the observed
+   window and scale with universe and eligibility cadence, not with refresh interval. Including them,
+   and the planner's own 0.9 safety factor, Lite fully utilised and perfectly efficient over 43
+   eligible assets yields **≈48 minutes**, not 45 — so even the corrected row would not have met
+   S2/S3.
+
+## The requirement column was wrong, and the real one is far stricter
+
+`maxCandidateAgeMs` bounds how long a *candidate* may sit before it is stale. The founded requirement
+is `FRESHNESS_REQUIREMENTS` (ADR-0011, `libs/contracts/src/policy/freshness.ts`), and for candles it
+is identical across all three speed tiers:
+
+```
+{ dataClass: 'CANDLES', freshMaxAgeMs: 90_000, degradedMaxAgeMs: 300_000, effectOnEntries: 'BLOCK' }
+```
+
+**90 seconds fresh, 5 minutes degraded, blocking entries beyond that** — not 20–45 minutes. What that
+costs by REST polling, including the ~492 k/month overhead and the 0.9 factor:
+
+| Universe | Target | OHLCV CU/month | Cheapest tier |
+| --- | --- | ---: | --- |
+| 43 eligible | 90 s (fresh) | 55.7 M | Business $499 |
+| 43 eligible | 5 min (degraded floor) | 16.7 M | Premium $199 |
+| 20 assets | 5 min | 7.8 M | Starter $99 |
+| ~5 assets | 5 min | 1.9 M | **Lite $39** |
+| ~1 asset | 90 s | 1.3 M | **Lite $39** |
+
+So the honest statement is not "Lite versus Starter". It is: **REST polling on Lite can hold roughly
+one asset genuinely fresh, or about five at the degraded bound.** Meeting ADR-0011 for a useful
+universe requires Premium or above — which is exactly where Birdeye's WebSocket stream begins, as
+`libs/market/src/birdeye/tiers.ts` already notes ("REST first, WebSocket when the tier allows").
+The gap is architectural, not a $60 purchase.
+
+This independently confirms the operator's instinct to hold the tier, for a stronger reason than the
+one given: no affordable tier fixes this by polling harder.
+
+## DEFECT-4 — `HEALTHY` means "the call succeeded", not "the data is current"
+
+The operator's question was whether the existing gate already refuses candidates built on stale
+inputs, in which case cold features would mean *fewer* decisions rather than *wrong* ones. Measured on
+the hosted project:
+
+| `ops.provider_health` for `BIRDEYE:CANDLES` | Reality for the same 43 eligible assets |
+| --- | --- |
+| `state: HEALTHY` | newest 1m candle **232–347 min old**, mean **307 min** |
+| `freshness_age_ms: 2306` (2.3 s) | **0 of 43** meet the 90 s fresh bound |
+| `effect_on_entries: NONE` | **0 of 43** meet even the 5 min degraded bound |
+
+The cause is one line, `libs/market/src/freshness/evaluate.ts:34`:
+
+```ts
+const age = input.lastSuccessAt === null ? null : Math.max(0, instantToMs(input.now) - instantToMs(input.lastSuccessAt));
+```
+
+`age` is the time since the last successful **provider call**, never the age of the newest **datum**.
+The worker calls OHLCV every cycle and the call succeeds — it just returns nothing new 78% of the
+time — so `lastSuccessAt` is always seconds old, the class is always `HEALTHY`, and `effectOnEntries`
+is therefore always `NONE`. `entriesBlocked()` filters on `effectOnEntries === 'BLOCK'`, so
+`FEEDS_STALE` can never be raised for candles no matter how old they get.
+
+**The answer to the operator's question is no.** The gate does not refuse stale-input candidates, and
+it cannot, because it is not measuring input age. Cold features therefore produce *wrong* decisions,
+not merely fewer of them. The two `QUALIFIED` candidates in this window were qualified against candles
+already hours old, with the feed reporting healthy throughout. The 20 rejections were
+`ELIGIBILITY_STALE` — a different clock, on a 10-minute cadence — and one was `FEATURES_STALE`, which
+almost never fires because `feature_snapshots.as_of` is recomputed every 60 s regardless of input age.
+
+**This was already observed once and misdiagnosed.** The 2026-09-08 M4 entry records the exact
+symptom — "`WARMUP_SUFFICIENT` never passed because 1m candles for every eligible asset had stopped
+hours earlier **while CANDLES reported HEALTHY**". The fix that followed corrected the planner
+starvation, which was the cause of the missing data. Nobody fixed the alarm that failed to announce
+it, so it is still reporting HEALTHY today, five hours stale, a day later.
+
+It is the same family as DEFECT-1 through 3 one more time: a cheap local proxy — "did our call
+succeed?" — standing in for the expensive real question — "is the data current?" — and the two
+diverging silently the moment the provider starts returning empty pages.
+
+## What this changes
+
+- **Hold the tier.** Confirmed, and for the stronger reason above.
+- **DEFECT-4 goes into WP1b ahead of everything else.** Recording input age on a feature snapshot is
+  necessary but not sufficient; the freshness evaluator has to take the newest datum's timestamp, not
+  the call's. Until it does, every entry-blocking freshness requirement in ADR-0011 is inert for
+  candles, and no paper evidence collected under it can be trusted to have been gated.
+- **The eviction and narrowing fixes stay first in implementation order** but are no longer the
+  headline: they raise the refresh rate, while DEFECT-4 is what lets a stale rate pass unnoticed.
+- **WP2 inherits a harder question than "pin the requirement".** The requirement is already pinned at
+  90 s and REST cannot meet it. WP2 has to state what data age each trigger's lookback *actually*
+  tolerates and whether ADR-0011's candle bound is right, because if it is, the evaluation universe
+  has to be small enough to keep fresh — single digits on Lite — or the architecture has to change.

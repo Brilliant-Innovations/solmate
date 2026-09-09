@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  compareInstants,
   type DataClass,
   addMs,
   type CandleResolution,
@@ -64,6 +65,15 @@ export interface MarketIngestDeps {
     /** Backoff for assets whose candle fetch adds nothing: base doubles per consecutive empty fetch up to the cap. */
     backoffBaseMs: number;
     backoffMaxMs: number;
+    /**
+     * Consecutive empty fetches after which an asset stops being requested at all this process.
+     *
+     * Backoff alone decays to a fixed retry and never stops: at the 6-hour cap a dead token still
+     * costs four requests a day, forever, and 78% of measured OHLCV spend was requests that wrote
+     * nothing. Eviction is the stop. It is deliberately in-process — eligibility re-promoting an asset
+     * is what brings it back, and a restart re-tests everything once, which is cheap and self-healing.
+     */
+    evictAfterEmptyFetches: number;
   };
 }
 
@@ -92,6 +102,8 @@ export interface CycleReport {
   candlesRejected: number;
   /** Candle refreshes skipped this cycle because the asset is backed off. */
   candlesBackedOff: number;
+  /** Assets dropped from tracking this cycle: repeated empty fetches (WP1b). */
+  candlesEvicted: number;
   assetsDiscovered: number;
   snapshots: number;
   quotes: number;
@@ -101,9 +113,33 @@ export interface CycleReport {
 
 const RESOLUTIONS: Readonly<Record<TrackedAsset['priority'], readonly CandleResolution[]>> = { POSITION: ['1m', '15s'], CANDIDATE: ['1m'], WATCH: ['1m'] };
 
+/**
+ * The newest 1m bucket held anywhere in the tracked set, or null when we hold none (DEFECT-4).
+ *
+ * Deliberately the newest across the set rather than the oldest: this answers "has the candle feed
+ * stopped", which is the failure that has now occurred twice, and it cannot be masked by one dead
+ * asset the way an oldest-of would trip on one. It equally cannot detect a single stale asset among
+ * fresh ones — that needs a per-asset gate at the candidate, which is named as an open gap.
+ */
+function newerOf(a: Instant | null, b: Instant | null): Instant | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return compareInstants(a, b) >= 0 ? a : b;
+}
+
+function newestCandleHeld(tracked: readonly TrackedAsset[]): Instant | null {
+  let newest: Instant | null = null;
+  for (const t of tracked) {
+    for (const bucket of t.held['1m'] ?? []) {
+      if (newest === null || compareInstants(bucket, newest) > 0) newest = bucket;
+    }
+  }
+  return newest;
+}
+
 export async function runMarketIngestCycle(deps: MarketIngestDeps, state: IngestState): Promise<CycleReport> {
   const now = deps.clock.now();
-  const report: CycleReport = { actions: 0, deferred: 0, candlesWritten: 0, candlesRejected: 0, candlesBackedOff: 0, assetsDiscovered: 0, snapshots: 0, quotes: 0, errors: [], health: [] };
+  const report: CycleReport = { actions: 0, deferred: 0, candlesWritten: 0, candlesRejected: 0, candlesBackedOff: 0, candlesEvicted: 0, assetsDiscovered: 0, snapshots: 0, quotes: 0, errors: [], health: [] };
   const ok = (cls: string, latencyMs: number) => {
     state.lastSuccess[cls] = deps.clock.now();
     state.lastLatencyMs[cls] = latencyMs;
@@ -126,6 +162,13 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
       const from = addMs(to, -(deps.config.lookbackBuckets[res] - 1) * RESOLUTION_MS[res]);
       held[res] = await deps.repo.heldBucketTimes(a.id, res, from, to);
     }
+    // Evicted: repeated empty fetches mean this asset has no candles to give (dead or delisted), and
+    // a held position is never evicted however quiet it is.
+    const failures = state.candleBackoff[a.id]?.failures ?? 0;
+    if (a.priority !== 'POSITION' && failures >= deps.config.evictAfterEmptyFetches) {
+      report.candlesEvicted++;
+      continue;
+    }
     tracked.push({ assetId: a.id, mintAddress: a.mintAddress, priority: a.priority ?? 'WATCH', held, candleBackoffUntil: state.candleBackoff[a.id]?.until ?? null });
   }
 
@@ -139,6 +182,9 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
   const discovered: DiscoveredToken[][] = [];
   const quotes: PriceQuote[] = [];
   const touchedAssets = new Set<Uuid>();
+  // DEFECT-4: health is published at the end of the cycle, so it must account for what this cycle
+  // just wrote; `tracked[].held` was read before the fetch and would report one cycle stale.
+  let newestWritten: Instant | null = null;
   for (const action of plan.actions) {
     try {
       await executeAction(action);
@@ -159,6 +205,7 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
         report.candlesWritten += w.inserted + w.replacedOpen;
         report.candlesRejected += res.rejected.length;
         touchedAssets.add(action.assetId);
+        for (const c of res.candles) if (newestWritten === null || compareInstants(c.bucketTime, newestWritten) > 0) newestWritten = c.bucketTime;
         // A fetch that adds nothing new means the provider has no more for this gap: back the asset off (doubling, capped) so the budget rotates to assets that still move.
         if (w.inserted + w.replacedOpen === 0) {
           const failures = (state.candleBackoff[action.assetId]?.failures ?? 0) + 1;
@@ -242,6 +289,14 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
       latencyMs: state.lastLatencyMs[cls] ?? null,
       rateLimitState: c.provider === 'BIRDEYE' ? rateLimitState : null,
       lastError: state.lastError[cls] ?? null,
+      // DEFECT-4: candles are backed by a store, so their age is the newest bucket we hold, not the
+      // recency of our last call. `tracked[].held` already carries it; nothing had ever read it here.
+      //
+      // Its honest limit: `ops.provider_health` is one row per (provider, class), so it can only say
+      // whether the feed as a whole has stopped — which is the failure that actually happened, twice.
+      // It cannot say that one asset among many is stale. A per-asset check belongs at the candidate
+      // gate and does not exist yet; see the WP1 report.
+      ...(c.dataClass === 'CANDLES' ? { newestDatumAt: newerOf(newestCandleHeld(tracked), newestWritten) } : {}),
     });
     if (!(demand[c.dataClass] ?? false)) {
       health.effectOnEntries = 'NONE';
@@ -251,7 +306,7 @@ export async function runMarketIngestCycle(deps: MarketIngestDeps, state: Ingest
     await deps.repo.upsertFeedHealth(health);
     report.health.push(health);
   }
-  deps.logger.info('market_ingest_cycle', { actions: report.actions, deferred: report.deferred, candlesWritten: report.candlesWritten, candlesRejected: report.candlesRejected, candlesBackedOff: report.candlesBackedOff, backedOffAssets: Object.keys(state.candleBackoff).length, assetsDiscovered: report.assetsDiscovered, snapshots: report.snapshots, quotes: report.quotes, errors: report.errors.length, cu: deps.birdeye.ledger.snapshot().used });
+  deps.logger.info('market_ingest_cycle', { actions: report.actions, deferred: report.deferred, candlesWritten: report.candlesWritten, candlesRejected: report.candlesRejected, candlesBackedOff: report.candlesBackedOff, backedOffAssets: Object.keys(state.candleBackoff).length, candlesEvicted: report.candlesEvicted, tracked: tracked.length, assetsDiscovered: report.assetsDiscovered, snapshots: report.snapshots, quotes: report.quotes, errors: report.errors.length, cu: deps.birdeye.ledger.snapshot().used });
   return report;
 }
 

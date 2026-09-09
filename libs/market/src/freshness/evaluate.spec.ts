@@ -14,6 +14,41 @@ describe('freshness → health (§21.1, §21.2)', () => {
     expect(entriesBlocked([h]).blocked).toBe(true);
   });
 
+  /**
+   * DEFECT-4 (2026-09-09), measured on the hosted project before being fixed: `BIRDEYE:CANDLES`
+   * reported HEALTHY with `freshness_age_ms: 2306` while the newest 1m candle for all 43 eligible
+   * assets was 232–347 minutes old, because the worker keeps calling OHLCV successfully and the call
+   * returns nothing new 78% of the time. ADR-0011's BLOCK for candles could therefore never fire.
+   */
+  it('a succeeding call over a store that has stopped advancing is stale, not healthy', () => {
+    const candles: FreshnessContract = { provider: 'BIRDEYE', dataClass: 'CANDLES', freshMaxAgeMs: 90_000, degradedMaxAgeMs: 300_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' };
+    // The exact shape observed: we spoke to the provider 2.3s ago, the newest datum is five hours old.
+    const h = evaluateFreshness(candles, { lastSuccessAt: addMs(NOW, -2_306), newestDatumAt: addMs(NOW, -307 * 60_000), now: NOW });
+    expect(h.state).toBe('FAILED');
+    expect(h.effectOnEntries).toBe('BLOCK');
+    expect(h.freshnessAgeMs).toBe(307 * 60_000);
+    expect(entriesBlocked([h]).blocked).toBe(true);
+
+    // The feed is only as fresh as the worse of the two: a recent datum does not excuse a provider
+    // that has stopped answering either.
+    const stalled = evaluateFreshness(candles, { lastSuccessAt: addMs(NOW, -600_000), newestDatumAt: addMs(NOW, -1_000), now: NOW });
+    expect(stalled.state).toBe('FAILED');
+
+    // Both current is the only way to be HEALTHY.
+    const good = evaluateFreshness(candles, { lastSuccessAt: addMs(NOW, -2_000), newestDatumAt: addMs(NOW, -30_000), now: NOW });
+    expect(good.state).toBe('HEALTHY');
+    expect(good.effectOnEntries).toBe('NONE');
+
+    // A class backed by a store that holds nothing is FAILED, not "as fresh as our last call".
+    const empty = evaluateFreshness(candles, { lastSuccessAt: addMs(NOW, -1_000), newestDatumAt: null, now: NOW });
+    expect(empty.state).toBe('FAILED');
+    expect(empty.freshnessAgeMs).toBeNull();
+
+    // A class where the call *is* the datum omits the field and keeps call-recency semantics.
+    const callOnly = evaluateFreshness(candles, { lastSuccessAt: addMs(NOW, -2_000), now: NOW });
+    expect(callOnly.state).toBe('HEALTHY');
+  });
+
   it('property: state is monotone in age and HEALTHY never blocks entries', () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 600_000 }), (age) => {

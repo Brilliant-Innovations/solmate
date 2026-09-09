@@ -176,7 +176,13 @@ export async function listTrackedAssets(sql: Sql, limit: number, referenceMints:
   const rows = await sql<{ id: string; mint_address: string; held: boolean }[]>`
     select a.id, a.mint_address, exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED') as held
     from core.assets a
-    where a.status in ('DISCOVERED', 'EVALUATING', 'ELIGIBLE') or a.mint_address = any(${refs}::text[]) or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
+    -- WP1b (2026-09-09): candles are bought for assets we can actually trade — held, ELIGIBLE, and the
+    -- reference series. DISCOVERED and EVALUATING used to be here too, which is how 181 assets came to
+    -- share a budget sized for tens: measured, eligible assets were refreshing once per eight hours
+    -- while 137 ineligible ones each took a slot. Eligibility itself reads token_overview and
+    -- token_security, never candles, so nothing needs candle history to *become* eligible; a newly
+    -- eligible asset backfills through the planner's normal BackfillRequest path instead.
+    where a.status = 'ELIGIBLE' or a.mint_address = any(${refs}::text[]) or exists (select 1 from trading.positions p where p.asset_id = a.id and p.status <> 'CLOSED')
     -- held first, then ELIGIBLE and reference series (the strategies' universe and its context), then the rest newest first:
     -- a capped list never drops an eligible asset for a fresh discovery
     order by held desc, (a.status = 'ELIGIBLE' or a.mint_address = any(${refs}::text[])) desc, a.first_observed_at desc
