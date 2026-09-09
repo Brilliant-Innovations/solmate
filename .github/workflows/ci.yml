@@ -40,6 +40,8 @@ jobs:
           cp /tmp/main.bak apps/risk-authorizer/src/main.ts
       - name: Terraform cloud-init renders valid shell and systemd units (M11; review 2026-09-09 C-1/H-9)
         run: node tools/check-cloud-init.mjs
+      - name: No migration renames or drops a view column (42P16; create or replace matches by position)
+        run: node tools/check-view-columns.mjs
       - name: Transitive dependency closure carries no forbidden package; SBOM per deployable (§24.8, M11)
         run: |
           set -euo pipefail
