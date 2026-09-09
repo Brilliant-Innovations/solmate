@@ -26,7 +26,13 @@ export function TotpEnrollment({ hasVerifiedFactor }: { hasVerifiedFactor: boole
       setBusy(false);
       return;
     }
-    const { data, error: err } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: `authenticator ${new Date().toISOString().slice(0, 10)}` });
+    // Without an issuer Supabase derives one from the request host, so an enrolment run against a
+    // dev server labelled the authenticator entry "localhost" — indistinguishable from any other
+    // localhost app, and wrong on the deployment the operator actually signs in to. The SDK defines
+    // issuer as "domain which the user is enrolled with", so it is the host, which also keeps a
+    // local and a hosted enrolment tellable apart in the authenticator.
+    const host = typeof window === 'undefined' ? 'solmate' : window.location.host;
+    const { data, error: err } = await supabase.auth.mfa.enroll({ factorType: 'totp', issuer: host, friendlyName: `${host} · ${new Date().toISOString().slice(0, 10)}` });
     setBusy(false);
     if (err || !data) {
       setError(err?.message ?? 'Enrolment failed.');

@@ -23,8 +23,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const supabase = await createSupabaseServerClient();
   const now = Date.now();
   const factors = supabase ? (await supabase.auth.mfa.listFactors()).data : null;
-  const totp = factors?.totp ?? [];
+  // `listFactors().totp` holds *verified* factors only (see the SDK: it pushes into the per-type
+  // bucket behind a `status === 'verified'` check). Reading it left an abandoned enrolment invisible
+  // and unremovable, while the page kept offering to enrol and minted another unverified factor each
+  // time. `all` is the honest list, and the status column now has something to say.
+  const totp = (factors?.all ?? []).filter((f) => f.factor_type === 'totp');
   const hasVerified = totp.some((f) => f.status === 'verified');
+  const unverified = totp.filter((f) => f.status !== 'verified').length;
   const profile = supabase ? ((await supabase.schema('ops').from('runtime_sessions').select('profile').order('created_at', { ascending: false }).limit(1).maybeSingle()).data?.profile ?? null) : null;
   const view = await loadSettings(session?.userId ?? null, profile);
   const canControl = session?.aal === 'aal2' && (session.role === 'operator' || session.role === 'admin');
@@ -49,6 +54,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           Signed in as <code>{session?.email ?? '—'}</code>, role <code>{session?.role ?? 'none'}</code>, session assurance <code>{session?.aal ?? 'unknown'}</code>.
           {session?.aal !== 'aal2' && <strong> Controls are locked until this session is aal2.</strong>}
         </p>
+        {unverified > 0 && !hasVerified ? (
+          <p className="notice" role="note">
+            {unverified} enrolment{unverified === 1 ? ' was' : 's were'} started but never verified, so {unverified === 1 ? 'it grants' : 'they grant'} no aal2 and controls stay locked. Enter the six-digit code from that authenticator entry to finish, or remove it below and enrol again.
+          </p>
+        ) : null}
         <TotpEnrollment hasVerifiedFactor={hasVerified} />
         {totp.length > 0 && (
           <div className="card">
