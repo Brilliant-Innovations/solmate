@@ -224,7 +224,7 @@ Every project carries exactly one `type:` tag, one `trust:` tag and one `scope:`
 - `trust:worker`: `@turnkey/*`, `@privy-io/*` (signer credential path lives only in `execution-service`).
 - `trust:web`: `@turnkey/*`, `@privy-io/*`, `@jup-ag/*`, direct-DEX SDKs, any module that reads the service-role key.
 
-The exact package list is versioned in `nx.json`/ESLint config from M1 and in the artifact scan from M8a. Adding a package to a financial deployable is a reviewed change, not a convenience.
+The exact package list is versioned in `nx.json`/ESLint config from M1, in the artifact scan from M8a and in the transitive lockfile policy (`tools/check-transitive.mjs`, which also emits the CycloneDX SBOM per deployable) from M11. Adding a package to a financial deployable is a reviewed change, not a convenience.
 
 ### Credentials
 

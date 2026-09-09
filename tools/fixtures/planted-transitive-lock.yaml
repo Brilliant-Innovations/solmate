@@ -1,0 +1,70 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      typescript:
+        specifier: 6.0.2
+        version: 6.0.2
+
+  apps/worker:
+    dependencies:
+      '@sol-agent-trader/contracts':
+        specifier: workspace:*
+        version: link:../../libs/contracts
+      harmless-lib:
+        specifier: ^1.0.0
+        version: 1.0.0
+    devDependencies:
+      '@turnkey/sdk-server':
+        specifier: ^1.0.0
+        version: 1.0.0
+
+  libs/contracts:
+    dependencies:
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
+
+packages:
+
+  '@turnkey/http@2.0.0':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+
+  '@turnkey/sdk-server@1.0.0':
+    resolution: {integrity: sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==}
+
+  harmless-lib@1.0.0:
+    resolution: {integrity: sha512-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC==}
+
+  signer-helper@3.1.0:
+    resolution: {integrity: sha512-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD==}
+
+  typescript@6.0.2:
+    resolution: {integrity: sha512-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE==}
+
+  zod@4.5.4:
+    resolution: {integrity: sha512-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF==}
+
+snapshots:
+
+  '@turnkey/http@2.0.0': {}
+
+  '@turnkey/sdk-server@1.0.0': {}
+
+  harmless-lib@1.0.0:
+    dependencies:
+      signer-helper: 3.1.0
+
+  signer-helper@3.1.0:
+    optionalDependencies:
+      '@turnkey/http': 2.0.0
+
+  typescript@6.0.2: {}
+
+  zod@4.5.4: {}

@@ -38,6 +38,22 @@ jobs:
           fi
           grep -q 'enforce-module-boundaries' /tmp/lint.log || { echo "::error::lint failed for a different reason"; cat /tmp/lint.log; exit 1; }
           cp /tmp/main.bak apps/risk-authorizer/src/main.ts
+      - name: Transitive dependency closure carries no forbidden package; SBOM per deployable (§24.8, M11)
+        run: |
+          set -euo pipefail
+          node tools/check-transitive.mjs
+          if node tools/check-transitive.mjs --lockfile tools/fixtures/planted-transitive-lock.yaml --service worker --no-sbom >/tmp/transitive.log 2>&1; then
+            echo "::error::transitive policy did not reject a planted signer SDK reached through an optional dependency"; cat /tmp/transitive.log; exit 1
+          fi
+          grep -q '@turnkey/http@2.0.0' /tmp/transitive.log || { echo "::error::transitive policy failed for a different reason"; cat /tmp/transitive.log; exit 1; }
+          grep -q 'harmless-lib -> signer-helper' /tmp/transitive.log || { echo "::error::transitive policy did not report the dependency chain"; cat /tmp/transitive.log; exit 1; }
+          if grep -q 'sdk-server' /tmp/transitive.log; then echo "::error::a devDependency was counted as shipped"; cat /tmp/transitive.log; exit 1; fi
+      - name: SBOMs (CycloneDX 1.5) as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: dist/sbom/*.cdx.json
+          if-no-files-found: error
       - name: Clock discipline is live (Date.now in strategy code must fail lint)
         run: |
           cp libs/strategies/src/s0/gate.ts /tmp/strat.bak
