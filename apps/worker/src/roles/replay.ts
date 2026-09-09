@@ -51,6 +51,8 @@ export interface ReplayRoleDeps {
   loadDataset: (run: ReplayRun, assetIds: Uuid[] | null) => Promise<ReplayDataset>;
   /** Injected in tests; default runs the engine. */
   execute?: (deps: ReplayEngineDeps) => Promise<ReplayOutput>;
+  /** D37 layer 2: the live model cost the recorded strategies incurred inside the window, per strategy version (0 for deterministic strategies). */
+  directCosts?: (run: ReplayRun) => Promise<Record<string, { modelUsd: number; runs: number }>>;
   newId: () => Uuid;
   config: { batchSize: number; maxWindowMs: number };
 }
@@ -182,7 +184,8 @@ export async function runReplayExecutionCycle(deps: ReplayRoleDeps): Promise<Rep
     const dataset = await deps.loadDataset(run, claimed.assetIds);
     const strategies = strategiesFor(run, deps.versions.strategies, deps.policies);
     const out = await (deps.execute ?? runReplay)({ run, dataset, strategies, policies: deps.policies, account: deps.account, logger: deps.logger });
-    const results = buildResults(out, run, deps.account, deps.platformMonthlyUsd);
+    const directCosts = deps.directCosts ? await deps.directCosts(run) : {};
+    const results = buildResults(out, run, deps.account, deps.platformMonthlyUsd, directCosts);
     const [dDigest, rDigest] = await Promise.all([decisionsDigest(out.decisions), resultsDigest(results)]);
     const decisions = await deps.repo.insertDecisions(out.decisions);
     const trades = await deps.repo.insertTrades(out.trades.map((t) => ({
@@ -221,7 +224,7 @@ export async function runReplayExecutionCycle(deps: ReplayRoleDeps): Promise<Rep
 const DIMENSIONS: AttributionDimension[] = ['candidateFamily', 'regime', 'session', 'liquidityBand', 'relativeVolumeBand', 'confidenceBin', 'adversaryVerdict', 'hourOfDayUtc', 'dayOfWeekUtc', 'durationBand', 'executionPath'];
 
 /** §19.1–19.4 over the engine output; every row carries its strategy version and variant. */
-export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayAccount, platformMonthlyUsd: number): ReplayResults {
+export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayAccount, platformMonthlyUsd: number, directCosts: Record<string, { modelUsd: number; runs: number }> = {}): ReplayResults {
   const scale = 10 ** account.settlementDecimals;
   const startingEquity = Number(account.startingCapital) / scale;
   const window = { from: run.window.from, to: run.window.to };
@@ -236,7 +239,7 @@ export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayA
     }
   }
   const others = run.strategyVersionIds.filter((id) => id !== run.baselineStrategyVersionId);
-  const incremental = others.map((id) => incrementalValue(out.decisions, run.baselineStrategyVersionId, id, 0, scale) as unknown as Record<string, unknown>);
+  const incremental = others.map((id) => incrementalValue(out.decisions, run.baselineStrategyVersionId, id, directCosts[id]?.modelUsd ?? 0, scale) as unknown as Record<string, unknown>);
   const disagreement = others.map((id) => disagreementAttribution(out.decisions, id, run.baselineStrategyVersionId, scale) as unknown as Record<string, unknown>);
   const latency = run.strategyVersionIds.map((id) => latencyCost(out.decisions, id, run.baselineStrategyVersionId, scale) as unknown as Record<string, unknown>);
   const calib = run.strategyVersionIds.map((id) => calibration(out.decisions, id, run.calibrationTarget.kind, confidenceBin, CONFIDENCE_BINS.map((b) => b.label), scale) as unknown as Record<string, unknown>);
@@ -249,7 +252,7 @@ export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayA
     strategies: run.strategyVersionIds.map((id) => {
       const mine = out.trades.filter((t) => t.strategyVersionId === id && t.variant === 'FULL');
       const m = coreMetrics({ trades: mine, failedExecutions: 0, startingEquity, window });
-      return { strategyVersionId: id, tradingNetUsd: m.netPnl, turnoverUsd: m.turnover, direct: { modelUsd: 0, dataUsd: 0, rpcUsd: 0 } };
+      return { strategyVersionId: id, tradingNetUsd: m.netPnl, turnoverUsd: m.turnover, direct: { modelUsd: directCosts[id]?.modelUsd ?? 0, dataUsd: 0, rpcUsd: 0 } };
     }),
     platformMonthlyUsd,
     allocation: 'BY_TURNOVER',

@@ -308,3 +308,13 @@ export async function listFeatureValuesByMint(sql: Sql, mint: string, feature: s
     where a.mint_address = ${mint} and s.as_of >= ${from} and s.as_of <= ${to} order by s.as_of asc`;
   return rows.filter((r) => r.value !== null).map((r) => ({ asOf: iso(r.as_of), value: r.value as number }));
 }
+
+/** Direct model cost per strategy version inside a window (D37 layer 2): every agents.runs row joined to its cycle's strategy. */
+export async function modelCostByStrategyBetween(sql: Sql, from: Instant, to: Instant): Promise<Record<string, { modelUsd: number; runs: number }>> {
+  const rows = await sql<{ strategy_version_id: string; model_usd: number; runs: number }[]>`
+    select c.strategy_version_id, coalesce(sum(r.cost_usd), 0)::double precision as model_usd, count(*)::int as runs
+    from agents.runs r join agents.action_cycles c on c.id = r.action_cycle_id
+    where r.created_at >= ${from} and r.created_at <= ${to}
+    group by c.strategy_version_id`;
+  return Object.fromEntries(rows.map((r) => [r.strategy_version_id, { modelUsd: Number(r.model_usd), runs: Number(r.runs) }]));
+}

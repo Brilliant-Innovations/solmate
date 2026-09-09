@@ -155,7 +155,7 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
             <thead><tr><th style={th}>strategy</th><th style={th}>trading net</th><th style={th}>direct cost</th><th style={th}>strategy economic</th><th style={th}>platform share</th><th style={th}>platform economic</th><th style={th}>cost / edge</th></tr></thead>
             <tbody>{d.economic.map((r) => <tr key={r.strategy_version_id}><td style={cell}>{r.strategy_version_id}</td><td style={cell}>{num(r.trading_net_usd)}</td><td style={cell}>{num(r.direct_cost_usd)}</td><td style={cell}>{num(r.strategy_economic_usd)}</td><td style={cell}>{num(r.platform_share_usd)}</td><td style={cell}>{num(r.platform_economic_usd)}</td><td style={cell}>{num(r.cost_to_edge_ratio)}</td></tr>)}</tbody>
           </table>
-          {d.economic[0] ? <p className="muted" style={{ margin: '0.4rem 0 0' }}>Platform run-rate for the {num(d.economic[0].window_days, 1)}-day window {num(d.economic[0].platform_cost_for_window_usd)} USD, allocated {d.economic[0].allocation === 'BY_TURNOVER' ? 'by turnover' : 'equally'}. Direct model/data/RPC cost is 0 in replay until the spend ledger is joined per strategy.</p> : null}
+          {d.economic[0] ? <p className="muted" style={{ margin: '0.4rem 0 0' }}>Platform run-rate for the {num(d.economic[0].window_days, 1)}-day window {num(d.economic[0].platform_cost_for_window_usd)} USD, allocated {d.economic[0].allocation === 'BY_TURNOVER' ? 'by turnover' : 'equally'}. Direct cost is the live model cost (agents.runs) the recorded strategies incurred inside the window; deterministic strategies carry none; data/RPC cost is not yet attributed per strategy.</p> : null}
         </section>
       </div>
 
