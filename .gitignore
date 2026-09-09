@@ -28,10 +28,11 @@ supabase/.temp
 *.tfstate
 *.tfstate.*
 *.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
 !*.tfvars.example
 backend.hcl
-*.tfstate.*
-*.tfvars
 
 # tooling
 .DS_Store

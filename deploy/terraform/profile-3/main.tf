@@ -38,7 +38,9 @@ module "vm" {
   services = [
     { name = "worker", listen = {}, journal_env = "AUDIT_CHECKPOINT_PATH", extra_env = { SHADOW_JOURNAL_PATH = "/journal/shadow.jsonl" } },
     { name = "risk-authorizer", listen = { INTERNAL_API_LISTEN = var.risk_authorizer_port }, journal_env = "AUDIT_CHECKPOINT_PATH" },
-    { name = "execution-service", listen = { INTERNAL_API_LISTEN = var.execution_service_port, OUT_OF_BAND_LISTEN = var.out_of_band_port }, journal_env = "EXECUTOR_JOURNAL_PATH" },
+    # OUT_OF_BAND_LISTEN binds all interfaces: traderctl reaches it from an operator machine outside
+    # the VPC (D25 plane 1). The firewall below admits that port from operator_cidrs only.
+    { name = "execution-service", listen = { INTERNAL_API_LISTEN = var.execution_service_port }, public_listen = { OUT_OF_BAND_LISTEN = var.out_of_band_port }, journal_env = "EXECUTOR_JOURNAL_PATH" },
   ]
 }
 

@@ -54,10 +54,14 @@ resource "digitalocean_droplet" "this" {
     operator   = var.operator_user
   })
 
-  lifecycle {
-    # Replacing a host must be a deliberate operator action (runbook: infrastructure loss); volumes
-    # outlive the Droplet and are re-attached to its replacement.
-    prevent_destroy = false
-    ignore_changes  = [user_data]
-  }
+  # No `ignore_changes = [user_data]`: `image_tag` is baked into the systemd units inside user_data,
+  # and user_data is ForceNew in the DigitalOcean provider, so a tag bump replaces the Droplet. That
+  # is the intended deploy path — immutable hosts, with the journal/checkpoint volumes surviving as
+  # separate resources and re-attaching to the replacement. Ignoring user_data instead would make a
+  # tag bump a silent no-op (the host would keep pulling the old tag), which is worse. The ordered
+  # procedure, including draining a host that holds live exposure, is in deploy/terraform/README.md.
+  #
+  # `prevent_destroy` is deliberately NOT set: it would also block the legitimate replacement above,
+  # and Terraform's plan output is the operator's confirmation step. The infrastructure-loss runbook
+  # covers deliberate replacement.
 }

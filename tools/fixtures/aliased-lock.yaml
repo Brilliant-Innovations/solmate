@@ -1,0 +1,31 @@
+# Regression fixture (adversarial review 2026-09-09): a banned package pulled in under a pnpm alias
+# (`telemetry-shim: npm:@turnkey/sdk-server@^1`). The lockfile records the alias in the key and the
+# REAL package as the version, so concatenating `depName@version` invents the name `telemetry-shim@…`
+# and the banned-pattern match runs against a name that is not the package. Source-level lint does not
+# catch it either: the import specifier is `telemetry-shim`.
+lockfileVersion: '9.0'
+
+importers:
+
+  apps/worker:
+    dependencies:
+      telemetry-shim:
+        specifier: npm:@turnkey/sdk-server@^1.0.0
+        version: '@turnkey/sdk-server@1.0.0'
+      honest-lib:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  '@turnkey/sdk-server@1.0.0':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+
+  honest-lib@1.0.0:
+    resolution: {integrity: sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==}
+
+snapshots:
+
+  '@turnkey/sdk-server@1.0.0': {}
+
+  honest-lib@1.0.0: {}

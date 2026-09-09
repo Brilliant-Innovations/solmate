@@ -2,8 +2,15 @@
 # Solmate host bootstrap (${profile}, ${hostname}). Installs Docker, mounts one Block Storage volume
 # per service, and installs one hardened systemd unit per service that runs the GHCR image with the
 # same container restrictions as deploy/profile-0/docker-compose.yml: read-only root, all
-# capabilities dropped, no new privileges, init, private-address listeners. Secrets are never here:
-# each unit needs /etc/solmate/<service>.env placed by the operator after apply.
+# capabilities dropped, no new privileges, init. Secrets are never here: each unit needs
+# /etc/solmate/<service>.env placed by the operator after apply.
+#
+# Network model (declared, not implied): containers run with `--network host`, so the container
+# boundary is NOT a network boundary. Internal listeners bind the private VPC address and are
+# firewalled to the calling Droplet; the out-of-band emergency listener binds all interfaces and is
+# firewalled to the operator CIDRs, because `traderctl` reaches it from outside the VPC. On a
+# single-host profile every service therefore shares one network namespace and INTERNAL_API_SECRET
+# is the boundary between them — see deploy/terraform/README.md, "What the manifests do not prove".
 hostname: ${hostname}
 package_update: true
 package_upgrade: true
@@ -30,29 +37,37 @@ write_files:
         /etc/solmate/${s.name}.env
 %{ endfor ~}
       Then: systemctl start solmate-<service>. Listen addresses are written by solmate-listen.service
-      from the Droplet's private VPC address; do not put INTERNAL_API_LISTEN / OUT_OF_BAND_LISTEN in
-      the env files. Images: ${registry}/solmate-<service>:${image_tag}.
+      (private VPC address for internal APIs, 0.0.0.0 for the out-of-band emergency endpoint); do not
+      put INTERNAL_API_LISTEN / OUT_OF_BAND_LISTEN in the env files.
+      Images: ${registry}/solmate-<service>:${image_tag} — the tag is baked into the unit at boot, so
+      a tag change is a Droplet replacement (see deploy/terraform/README.md, "Deploying a new image").
   - path: /usr/local/sbin/solmate-listen
     permissions: '0755'
     content: |
       #!/bin/sh
-      # Writes the private-address listener env for every service from the Droplet metadata service.
+      # Writes the listener env for every service from the Droplet metadata service. Internal APIs
+      # bind the private VPC address; the out-of-band emergency endpoint binds all interfaces so the
+      # operator can reach it from outside the VPC (the firewall restricts it to operator CIDRs).
+      # Each file is truncated first and appended to, so a service with no listeners yields an empty
+      # file rather than an empty shell group (which is a syntax error).
       set -eu
       ip=$(curl -fsS http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address)
       install -d -m 0750 /etc/solmate
 %{ for s in services ~}
-      {
+      : > /etc/solmate/${s.name}.listen.env
 %{ for key, port in s.listen ~}
-        echo "${key}=$ip:${port}"
+      echo "${key}=$ip:${port}" >> /etc/solmate/${s.name}.listen.env
 %{ endfor ~}
-      } > /etc/solmate/${s.name}.listen.env
+%{ for key, port in s.public_listen ~}
+      echo "${key}=0.0.0.0:${port}" >> /etc/solmate/${s.name}.listen.env
+%{ endfor ~}
       chmod 0640 /etc/solmate/${s.name}.listen.env
 %{ endfor ~}
   - path: /etc/systemd/system/solmate-listen.service
     permissions: '0644'
     content: |
       [Unit]
-      Description=Solmate private listener addresses from Droplet metadata
+      Description=Solmate listener addresses from Droplet metadata
       After=network-online.target
       Wants=network-online.target
       [Service]
@@ -67,8 +82,11 @@ write_files:
     content: |
       [Unit]
       Description=Solmate ${s.name} (${profile})
-      After=docker.service solmate-listen.service var-lib-solmate-${s.name}.mount
-      Requires=docker.service solmate-listen.service var-lib-solmate-${s.name}.mount
+      After=docker.service solmate-listen.service
+      Requires=docker.service solmate-listen.service
+      # systemd escapes the mount unit name itself (a literal '-' in a path component becomes \x2d),
+      # so name the path and let it resolve the unit.
+      RequiresMountsFor=/var/lib/solmate/${s.name}
       ConditionPathExists=/etc/solmate/${s.name}.env
       [Service]
       Restart=always

@@ -32,6 +32,23 @@ variable "image_tag" {
   type        = string
 }
 
+variable "https_egress_cidrs" {
+  description = <<-EOT
+    Outbound 443 destinations for every host. The default permits the whole internet, which leaves a
+    compromised risk-authorizer or executor free to exfiltrate over TLS; narrow it to the provider
+    ranges (Supabase, Sentry, the RPC endpoints, Turnkey) or to an egress proxy before Profile 4
+    carries meaningful capital. Recorded as an open item in deploy/terraform/README.md.
+  EOT
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "dns_egress_cidrs" {
+  description = "Outbound 53 destinations. Narrow to the resolvers the hosts actually use (DigitalOcean's are 67.207.67.2/3) to close DNS as an exfiltration channel."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "worker_size" {
   type    = string
   default = "s-2vcpu-4gb"

@@ -104,6 +104,16 @@ export function splitSpec(spec) {
   return { name, version: paren >= 0 ? rest.slice(0, paren) : rest, spec };
 }
 
+/**
+ * The lockfile spec for one dependency edge. pnpm records an alias — `foo: npm:@scope/bar@1.2.3` —
+ * as a version that is itself a full `name@version`, so concatenating the alias would invent a
+ * package name and the banned-pattern match would run against a name that is not the package.
+ * A real version always starts with a digit; anything else is an alias carrying its own name.
+ */
+export function specFor(depName, version) {
+  return /^\d/.test(version) ? `${depName}@${version}` : version;
+}
+
 function patternToRegex(pattern) {
   return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
 }
@@ -117,20 +127,30 @@ export function closureOf(lock, importerPath) {
   const importers = lock.importers ?? {};
   const snapshots = lock.snapshots ?? {};
   const packages = lock.packages ?? {};
+  // Keyed by the full spec, peer suffix included: two peer variants of one package have different
+  // dependency sets, and deduping by `name@version` walks only the first and hides whatever the
+  // other one drags in.
   const out = new Map();
   const seenImporters = new Set();
+  const missing = [];
   const visitSnapshot = (spec, chain) => {
+    if (out.has(spec)) return;
     const { name, version } = splitSpec(spec);
     const id = `${name}@${version}`;
-    if (out.has(id)) return;
-    const pkg = packages[id] ?? {};
-    out.set(id, { name, version, integrity: pkg.resolution?.integrity ?? null, via: chain });
-    const snap = snapshots[spec] ?? snapshots[id] ?? {};
+    const pkg = packages[id] ?? packages[spec] ?? {};
+    out.set(spec, { name, version, integrity: pkg.resolution?.integrity ?? null, via: chain });
+    const snap = snapshots[spec] ?? snapshots[id];
+    if (snap === undefined) {
+      // Fail closed: an unresolvable snapshot means the reader did not understand the lockfile, and
+      // a silently truncated closure reports `violations: 0` for a deployable it never walked.
+      missing.push(spec);
+      return;
+    }
     for (const section of ['dependencies', 'optionalDependencies']) {
       for (const [depName, depVersion] of Object.entries(snap[section] ?? {})) {
         if (typeof depVersion !== 'string') continue;
         if (depVersion.startsWith('link:')) continue;
-        visitSnapshot(`${depName}@${depVersion}`, [...chain, name]);
+        visitSnapshot(specFor(depName, depVersion), [...chain, name]);
       }
     }
   };
@@ -144,26 +164,35 @@ export function closureOf(lock, importerPath) {
         const version = typeof entry === 'string' ? entry : entry.version;
         if (typeof version !== 'string') continue;
         if (version.startsWith('link:')) visitImporter(posix.normalize(posix.join(path, version.slice(5))), [...chain, depName]);
-        else visitSnapshot(`${depName}@${version}`, chain);
+        else visitSnapshot(specFor(depName, version), chain);
       }
     }
   };
   visitImporter(importerPath, []);
-  return out;
+  // pnpm hoists the root importer's production dependencies into <root>/node_modules, from which
+  // every app's source resolves — the same module graph esbuild bundles from — so they are part of
+  // what each deployable could load even though no app declares them.
+  if (importerPath !== '.' && importers['.']) visitImporter('.', ['<root>']);
+  return { closure: out, missing };
 }
 
 export function violations(closure, banned) {
   const rules = banned.map((p) => ({ pattern: p, re: patternToRegex(p) }));
-  const found = [];
+  const found = new Map();
   for (const entry of closure.values()) {
     const hit = rules.find((r) => r.re.test(entry.name));
-    if (hit) found.push({ package: `${entry.name}@${entry.version}`, pattern: hit.pattern, via: entry.via });
+    const id = `${entry.name}@${entry.version}`;
+    // The closure is keyed by peer-variant spec, so one package can appear several times; report the
+    // shortest path to it.
+    if (hit && (!found.has(id) || entry.via.length < found.get(id).via.length)) found.set(id, { package: id, pattern: hit.pattern, via: entry.via });
   }
-  return found.sort((a, b) => a.package.localeCompare(b.package));
+  return [...found.values()].sort((a, b) => a.package.localeCompare(b.package));
 }
 
 export function sbomOf(service, closure, version) {
-  const components = [...closure.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version)).map((c) => ({
+  const unique = new Map();
+  for (const c of closure.values()) if (!unique.has(`${c.name}@${c.version}`)) unique.set(`${c.name}@${c.version}`, c);
+  const components = [...unique.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version)).map((c) => ({
     type: 'library',
     'bom-ref': `pkg:npm/${c.name}@${c.version}`,
     name: c.name,
@@ -192,6 +221,18 @@ function main() {
   const lockPath = resolve(ROOT, arg('--lockfile') ?? 'pnpm-lock.yaml');
   const sbomDir = args.includes('--no-sbom') ? null : resolve(ROOT, arg('--sbom-dir') ?? 'dist/sbom');
   const lock = parseLockfile(readFileSync(lockPath, 'utf8'));
+
+  // Fail closed on a lockfile this reader did not understand. Without this, a pnpm format change (as
+  // v6 → v9 was) collapses every closure to its direct dependencies and the tool reports `ok: true`
+  // for four deployables it never walked — the policy silently switches itself off.
+  const shape = { importers: Object.keys(lock.importers ?? {}).length, snapshots: Object.keys(lock.snapshots ?? {}).length, packages: Object.keys(lock.packages ?? {}).length };
+  const floors = args.includes('--fixture') ? { importers: 1, snapshots: 1, packages: 1 } : { importers: 5, snapshots: 100, packages: 100 };
+  const tooSmall = Object.entries(floors).filter(([k, min]) => shape[k] < min);
+  if (tooSmall.length) {
+    console.error(JSON.stringify({ check: 'transitive', ok: false, error: 'lockfile did not parse into a plausible shape; refusing to report a pass', shape, expected: floors, hint: 'pass --fixture for a hand-written test lockfile' }));
+    process.exit(1);
+  }
+
   const targets = services.length ? services : Object.keys(TRANSITIVE_POLICY);
   let failed = false;
   for (const service of targets) {
@@ -201,7 +242,12 @@ function main() {
       failed = true;
       continue;
     }
-    const closure = closureOf(lock, policy.importer);
+    const { closure, missing } = closureOf(lock, policy.importer);
+    if (missing.length) {
+      console.error(JSON.stringify({ check: 'transitive', service, ok: false, error: 'unresolvable snapshot(s); the closure is incomplete and no pass can be reported', missing: missing.slice(0, 10), missingCount: missing.length }));
+      failed = true;
+      continue;
+    }
     const found = violations(closure, policy.banned);
     let version = '0.0.0';
     const pkgJson = resolve(ROOT, policy.importer, 'package.json');

@@ -1,0 +1,47 @@
+# Regression fixture (adversarial review 2026-09-09): a banned package reachable only through the
+# SECOND peer variant of a shared dependency. Deduping the closure by `name@version` walks only the
+# first variant and never sees @turnkey/http. The closure must be keyed by the full spec.
+lockfileVersion: '9.0'
+
+importers:
+
+  apps/worker:
+    dependencies:
+      alpha:
+        specifier: ^1.0.0
+        version: 1.0.0(react@18.0.0)
+      beta:
+        specifier: ^1.0.0
+        version: 1.0.0(react@19.0.0)
+
+packages:
+
+  '@turnkey/http@2.0.0':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+
+  alpha@1.0.0:
+    resolution: {integrity: sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==}
+
+  beta@1.0.0:
+    resolution: {integrity: sha512-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC==}
+
+  shared@2.0.0:
+    resolution: {integrity: sha512-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD==}
+
+snapshots:
+
+  '@turnkey/http@2.0.0': {}
+
+  alpha@1.0.0(react@18.0.0):
+    dependencies:
+      shared: 2.0.0(react@18.0.0)
+
+  beta@1.0.0(react@19.0.0):
+    dependencies:
+      shared: 2.0.0(react@19.0.0)
+
+  shared@2.0.0(react@18.0.0): {}
+
+  shared@2.0.0(react@19.0.0):
+    dependencies:
+      '@turnkey/http': 2.0.0

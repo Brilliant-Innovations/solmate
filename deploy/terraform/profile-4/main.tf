@@ -77,19 +77,29 @@ module "execution_service" {
   image_tag   = var.image_tag
   tags        = ["trust:execution-service"]
   services = [{
-    name        = "execution-service"
-    listen      = { INTERNAL_API_LISTEN = var.execution_service_port, OUT_OF_BAND_LISTEN = var.out_of_band_port }
-    journal_env = "EXECUTOR_JOURNAL_PATH"
+    name = "execution-service"
+    listen = { INTERNAL_API_LISTEN = var.execution_service_port }
+    # D25 plane 1: traderctl reaches this from an operator machine outside the VPC, so it cannot bind
+    # the private address. The firewall admits it from operator_cidrs only.
+    public_listen = { OUT_OF_BAND_LISTEN = var.out_of_band_port }
+    journal_env   = "EXECUTOR_JOURNAL_PATH"
   }]
 }
 
 # --- firewalls: default deny; every rule below is the whole allowed surface -----------------------
 
+# DigitalOcean firewalls filter by address, not hostname, so the application-layer egress allowlist
+# (Supabase, Sentry, Birdeye, Helius, Jupiter, Turnkey, Jito) is enforced by the runtime egress test
+# in CI, not here. `https_egress_cidrs` is the knob that narrows the network layer: leaving it at
+# 0.0.0.0/0 means a post-build compromise of the risk-authorizer — the process that holds the
+# risk-authorization private key and is meant to be the most isolated of the three — can reach any
+# host on 443 (§32 "Can … arbitrary public egress appear inside the built risk-authorizer artifact").
+# Pin it to provider ranges or an egress proxy before Profile 4 carries meaningful capital.
 locals {
   egress = [
-    { protocol = "tcp", port_range = "443", destination_addresses = ["0.0.0.0/0"] },
-    { protocol = "tcp", port_range = "53", destination_addresses = ["0.0.0.0/0"] },
-    { protocol = "udp", port_range = "53", destination_addresses = ["0.0.0.0/0"] },
+    { protocol = "tcp", port_range = "443", destination_addresses = var.https_egress_cidrs },
+    { protocol = "tcp", port_range = "53", destination_addresses = var.dns_egress_cidrs },
+    { protocol = "udp", port_range = "53", destination_addresses = var.dns_egress_cidrs },
     { protocol = "udp", port_range = "123", destination_addresses = ["0.0.0.0/0"] },
   ]
 }
@@ -102,6 +112,20 @@ resource "digitalocean_firewall" "worker" {
     protocol         = "tcp"
     port_range       = "22"
     source_addresses = var.operator_cidrs
+  }
+
+  # A DigitalOcean firewall drops every outbound flow that no rule admits, so the worker's calls to
+  # the two isolated services need explicit egress; without these, every risk authorization and every
+  # execute times out and D52 fails entries closed — a total trading outage.
+  outbound_rule {
+    protocol                = "tcp"
+    port_range              = tostring(var.risk_authorizer_port)
+    destination_droplet_ids = [module.risk_authorizer.droplet_id]
+  }
+  outbound_rule {
+    protocol                = "tcp"
+    port_range              = tostring(var.execution_service_port)
+    destination_droplet_ids = [module.execution_service.droplet_id]
   }
 
   dynamic "outbound_rule" {

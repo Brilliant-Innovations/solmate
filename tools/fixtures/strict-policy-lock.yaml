@@ -1,0 +1,43 @@
+# Regression fixture (adversarial review 2026-09-09, M-16): the CI negative test previously exercised
+# only the `worker` policy, whose banned list is two patterns long. This fixture plants a package that
+# is legal for the worker and illegal for the risk-authorizer (`react`, banned at trust:risk-authorizer
+# because that process must carry no browser code), reachable only transitively. Running it against
+# both services proves the per-service list is actually applied and not collapsed to the worker's.
+lockfileVersion: '9.0'
+
+importers:
+
+  apps/risk-authorizer:
+    dependencies:
+      policy-helper:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+  apps/worker:
+    dependencies:
+      policy-helper:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  policy-helper@1.0.0:
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+
+  render-util@1.0.0:
+    resolution: {integrity: sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==}
+
+  react@19.0.0:
+    resolution: {integrity: sha512-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC==}
+
+snapshots:
+
+  policy-helper@1.0.0:
+    dependencies:
+      render-util: 1.0.0
+
+  render-util@1.0.0:
+    dependencies:
+      react: 19.0.0
+
+  react@19.0.0: {}

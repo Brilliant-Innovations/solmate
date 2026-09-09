@@ -64,14 +64,21 @@ variable "operator_user" {
 
 variable "services" {
   description = <<-EOT
-    Services this host runs. `listen` entries are the env variables that must bind to the private VPC
-    address (INTERNAL_API_LISTEN, OUT_OF_BAND_LISTEN) with their ports; `journal_env` names the env
-    variable that receives the volume mount path inside the container (/journal).
+    Services this host runs.
+
+    `listen`        env variables that bind the private VPC address (INTERNAL_API_LISTEN), with their ports.
+                    Reachable only from the Droplets the firewall names.
+    `public_listen` env variables that bind all interfaces (OUT_OF_BAND_LISTEN), with their ports. The
+                    out-of-band emergency plane must be reachable by operator machines outside the VPC
+                    (D25 plane 1), so it cannot bind the private address; the firewall restricts it to
+                    `operator_cidrs`.
+    `journal_env`   the env variable that receives the volume mount path inside the container (/journal).
   EOT
   type = list(object({
-    name        = string
-    listen      = map(number)
-    journal_env = string
-    extra_env   = optional(map(string), {})
+    name          = string
+    listen        = map(number)
+    public_listen = optional(map(number), {})
+    journal_env   = string
+    extra_env     = optional(map(string), {})
   }))
 }

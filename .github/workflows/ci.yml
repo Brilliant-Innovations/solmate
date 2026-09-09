@@ -38,16 +38,38 @@ jobs:
           fi
           grep -q 'enforce-module-boundaries' /tmp/lint.log || { echo "::error::lint failed for a different reason"; cat /tmp/lint.log; exit 1; }
           cp /tmp/main.bak apps/risk-authorizer/src/main.ts
+      - name: Terraform cloud-init renders valid shell and systemd units (M11; review 2026-09-09 C-1/H-9)
+        run: node tools/check-cloud-init.mjs
       - name: Transitive dependency closure carries no forbidden package; SBOM per deployable (§24.8, M11)
         run: |
           set -euo pipefail
           node tools/check-transitive.mjs
-          if node tools/check-transitive.mjs --lockfile tools/fixtures/planted-transitive-lock.yaml --service worker --no-sbom >/tmp/transitive.log 2>&1; then
-            echo "::error::transitive policy did not reject a planted signer SDK reached through an optional dependency"; cat /tmp/transitive.log; exit 1
+          # Fail closed on a lockfile the reader does not understand, or a pnpm format change silently
+          # switches the whole policy off (adversarial review 2026-09-09, H-6).
+          sed 's/^snapshots:$/snapshotz:/' pnpm-lock.yaml > /tmp/unparseable-lock.yaml
+          if node tools/check-transitive.mjs --lockfile /tmp/unparseable-lock.yaml --no-sbom >/tmp/shape.log 2>&1; then
+            echo "::error::transitive policy reported a pass on a lockfile it could not parse"; cat /tmp/shape.log; exit 1
           fi
-          grep -q '@turnkey/http@2.0.0' /tmp/transitive.log || { echo "::error::transitive policy failed for a different reason"; cat /tmp/transitive.log; exit 1; }
-          grep -q 'harmless-lib -> signer-helper' /tmp/transitive.log || { echo "::error::transitive policy did not report the dependency chain"; cat /tmp/transitive.log; exit 1; }
-          if grep -q 'sdk-server' /tmp/transitive.log; then echo "::error::a devDependency was counted as shipped"; cat /tmp/transitive.log; exit 1; fi
+          grep -q 'plausible shape' /tmp/shape.log || { echo "::error::unparseable lockfile rejected for a different reason"; cat /tmp/shape.log; exit 1; }
+          # Each fixture plants a banned package reachable only through one lockfile shape: an optional
+          # dependency, the second peer variant of a shared package, an `npm:` alias, and a package that
+          # is legal for the worker but illegal at trust:risk-authorizer (review 2026-09-09, M-16).
+          for fixture in 'planted-transitive|worker|@turnkey/http@2.0.0|harmless-lib -> signer-helper' \
+                         'peer-variant|worker|@turnkey/http@2.0.0|beta -> shared' \
+                         'aliased|worker|@turnkey/sdk-server@1.0.0|"via":"apps/worker"' \
+                         'strict-policy|risk-authorizer|react@19.0.0|policy-helper -> render-util'; do
+            IFS='|' read -r name service pkg chain <<< "$fixture"
+            if node tools/check-transitive.mjs --lockfile "tools/fixtures/${name}-lock.yaml" --service "$service" --no-sbom --fixture >/tmp/transitive.log 2>&1; then
+              echo "::error::transitive policy did not reject the ${name} fixture for ${service}"; cat /tmp/transitive.log; exit 1
+            fi
+            grep -q "$pkg" /tmp/transitive.log || { echo "::error::${name}: expected $pkg in the finding"; cat /tmp/transitive.log; exit 1; }
+            grep -q "$chain" /tmp/transitive.log || { echo "::error::${name}: expected the chain '$chain' to be reported"; cat /tmp/transitive.log; exit 1; }
+            if [ "$name" = planted-transitive ] && grep -q 'sdk-server' /tmp/transitive.log; then
+              echo "::error::${name}: a devDependency was counted as shipped"; cat /tmp/transitive.log; exit 1
+            fi
+          done
+          # The same fixture must pass for the worker, or the per-service lists have collapsed into one.
+          node tools/check-transitive.mjs --lockfile tools/fixtures/strict-policy-lock.yaml --service worker --no-sbom --fixture
       - name: SBOMs (CycloneDX 1.5) as a build artifact
         uses: actions/upload-artifact@v4
         with:
