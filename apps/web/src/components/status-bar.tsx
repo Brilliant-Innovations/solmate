@@ -1,4 +1,5 @@
 import type { ActivityState, AlertSeverity, CapitalAuthority, ProviderHealth } from '@sol-agent-trader/contracts';
+import { PresenceHeartbeat } from './presence';
 import { requestEndSession, requestPauseNewEntries } from '../app/(app)/actions';
 import { activityTone, alertsLabel, authorityTone, entriesLabel, freshnessLabel, healthTone, valueOrMissing, worstHealth, type Tone } from '../lib/status';
 import { baseToUsd, loadEquity, loadPaperAccount } from '../lib/paper';
@@ -97,6 +98,7 @@ export async function StatusBar() {
       {s.paused && <Chip k="override" v="PAUSED" tone="paused" />}
       <Chip k="entries" v={entries.text} tone={entries.tone} />
       <Chip k="attended" v={s.attended === null ? '—' : s.attended ? `YES ${freshnessLabel(s.presenceAgeMs, 60_000).text}` : 'NO'} tone={s.attended === null ? 'unknown' : 'ok'} />
+      {s.attended ? <PresenceHeartbeat /> : null}
       <Chip k="feeds" v={feeds.text} tone={feeds.tone} />
       <Chip k="providers" v={s.worstProvider ?? 'NO DATA'} tone={healthTone(s.worstProvider)} />
       <Chip k="db" v={s.db.toUpperCase()} tone={s.db === 'ok' ? 'ok' : s.db === 'failed' ? 'failed' : 'unknown'} />

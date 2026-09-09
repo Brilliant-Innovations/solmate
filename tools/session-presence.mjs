@@ -7,7 +7,12 @@
  * Reads SUPABASE_DB_URL from the env file (never printed), finds the open runtime session of the
  * paper account and stamps `last_presence_heartbeat_at` every 60 s while this process runs. Close
  * it and the session role drops ACTIVE → WATCH after the presence timeout. This is operator
- * tooling: it holds no trading authority and the web app's presence widget replaces it.
+ * tooling: it holds no trading authority.
+ *
+ * Prefer the app: the status bar's presence widget calls `ops.record_operator_presence()` and holds
+ * presence only while the tab is visible and recently interacted with, which is a truer attendance
+ * signal than a process that runs whether or not anyone is watching. This tool remains for a
+ * headless attended run and for `--once` stamps.
  */
 import fs from 'node:fs';
 import { createRequire } from 'node:module';

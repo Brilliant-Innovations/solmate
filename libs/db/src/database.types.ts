@@ -3159,6 +3159,7 @@ export type Database = {
         Args: { p_holder: string; p_role: string; p_ttl_seconds: number }
         Returns: boolean
       }
+      record_operator_presence: { Args: never; Returns: Json }
       release_lease: {
         Args: { p_holder: string; p_role: string }
         Returns: boolean
