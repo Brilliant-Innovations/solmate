@@ -25,6 +25,16 @@ pnpm nx serve @sol-agent-trader/risk-authorizer
 pnpm nx serve @sol-agent-trader/execution-service
 ```
 
+To run the built bundles instead — closest to what the images do, and what the drill evidence in `docs/probes/profile-0-executor-attached-2026-09-09.md` was collected from:
+
+```sh
+node --env-file=deploy/profile-0/.env.risk-authorizer   apps/risk-authorizer/dist/main.js
+node --env-file=deploy/profile-0/.env.execution-service apps/execution-service/dist/main.js
+node --env-file=deploy/profile-0/.env.worker            apps/worker/dist/main.js
+```
+
+Use `--env-file`, not `set -a; . .env.execution-service`. The shell strips the quotes out of `EXECUTOR_GUARDRAILS_JSON={"liveCapabilityEnabled":false}` and the service dies with `env_invalid: Expected property name or '}' in JSON at position 1`, which reads like a corrupt file rather than a corrupt shell.
+
 Each reads its own env file from the shell you start it in; `.env.example` at the repo root lists the names per service. Every service validates its environment before anything else runs (`libs/contracts/src/config/env.ts`): a missing required name or a credential outside its trust class is fatal (`event: env_invalid`, names only, never values). `node main.js --print-digest` prints the contract digest without touching the environment; CI and the image workflow use it.
 
 ## First worker run (market ingestion against the hosted Supabase)
