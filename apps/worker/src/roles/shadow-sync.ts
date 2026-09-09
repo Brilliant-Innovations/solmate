@@ -20,7 +20,7 @@ export interface ShadowSyncRepo {
 }
 
 export interface ShadowExecutor {
-  syncShadow(shadow: PositionRiskShadow): Promise<{ ok: boolean; sequence?: number; reason?: string }>;
+  syncShadow(shadow: PositionRiskShadow): Promise<{ ok: boolean; sequence?: number; state?: 'APPENDED' | 'IN_SYNC'; reason?: string; lastSynced?: number }>;
   emergencyMonitor(cmd: { commandId: Uuid; type: 'EMERGENCY_CLOSE_ASSET'; mint: MintAddress; maxAmount: Amount; reason: string; shadowSequence: number }): Promise<{ outcome: string; reasons?: string[] }>;
 }
 
@@ -44,7 +44,8 @@ export interface ShadowSyncState {
 export interface ShadowSyncReport {
   mode: 'SYNCED' | 'UNCHANGED' | 'DB_DOWN' | 'DB_ERROR';
   sequence: number | null;
-  pushed: 'OK' | 'REGRESSION' | 'FAILED' | 'NO_EXECUTOR' | 'SKIPPED';
+  /** `IN_SYNC`: the executor already held this sequence — the ordinary answer while the book is quiet. */
+  pushed: 'OK' | 'IN_SYNC' | 'REGRESSION' | 'FAILED' | 'NO_EXECUTOR' | 'SKIPPED';
   stopsHit: number;
   commandsIssued: number;
   unpriced: number;
@@ -70,22 +71,46 @@ export async function runShadowSyncCycle(deps: ShadowSyncDeps, state: ShadowSync
 
   const latest = await deps.journal.latest();
   const nextSequence = ((latest?.shadow.sequence ?? 0) + 1) as Sequence;
-  const shadow = buildPositionRiskShadow({ sequence: nextSequence, asOf: now, settlementMints: deps.settlementMints, positions });
-  const fingerprint = await shadowFingerprint(shadow);
-  if (latest && latest.fingerprint === fingerprint) return { mode: 'UNCHANGED', sequence: latest.shadow.sequence, pushed: 'SKIPPED', stopsHit: 0, commandsIssued: 0, unpriced: 0, error: null };
-  const decimals = Object.fromEntries(positions.map((p) => [p.mint, p.decimals]));
-  await deps.journal.append({ shadow, fingerprint, decimals, recordedAt: now });
+  const built = buildPositionRiskShadow({ sequence: nextSequence, asOf: now, settlementMints: deps.settlementMints, positions });
+  const fingerprint = await shadowFingerprint(built);
+
+  /**
+   * DEFECT-1 (2026-09-09): an unchanged book must still be pushed.
+   *
+   * This used to return here, before the executor was ever contacted, whenever the newly built shadow
+   * matched the newest entry in *our own* journal. That treated local state as proof of remote state.
+   * An executor attached after the fact, or restarted while the book happened to be quiet, then never
+   * received a shadow at all — and `db-down-close` reported `shadowSequence: null` indefinitely, which
+   * is to say the DB-down emergency close had no bounds to plan against precisely when Postgres was
+   * gone. Reproduced against real processes: a journal entry from the previous day matched every cycle
+   * and nothing was ever pushed.
+   *
+   * So the journal keeps its append optimisation — an unchanged book is not a new sequence — but the
+   * push happens every cycle, carrying the shadow of record. While the book is quiet that re-sends one
+   * sequence repeatedly, which the executor answers `IN_SYNC`; only a strictly lower sequence is a
+   * regression. A fresh or wiped executor holds nothing, so the push lands and self-corrects.
+   */
+  const unchanged = latest !== null && latest.fingerprint === fingerprint;
+  const shadow = unchanged ? latest.shadow : built;
+  if (!unchanged) {
+    const decimals = Object.fromEntries(positions.map((p) => [p.mint, p.decimals]));
+    await deps.journal.append({ shadow: built, fingerprint, decimals, recordedAt: now });
+  }
+
   let pushed: ShadowSyncReport['pushed'] = 'NO_EXECUTOR';
   if (deps.executor) {
     try {
       const r = await deps.executor.syncShadow(shadow);
-      pushed = r.ok ? 'OK' : 'REGRESSION';
-      if (!r.ok) deps.logger.error('shadow_push_rejected', { sequence: shadow.sequence, reason: r.reason });
+      pushed = !r.ok ? 'REGRESSION' : r.state === 'IN_SYNC' ? 'IN_SYNC' : 'OK';
+      // A regression is the executor refusing a stale or replayed shadow, which is a real problem.
+      // The executor already holding this sequence is the ordinary quiet-book answer, not an error.
+      if (!r.ok) deps.logger.error('shadow_push_rejected', { sequence: shadow.sequence, reason: r.reason, lastSynced: r.lastSynced });
     } catch (err) {
       pushed = 'FAILED';
       deps.logger.warn('shadow_push_failed', { sequence: shadow.sequence, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  if (unchanged) return { mode: 'UNCHANGED', sequence: shadow.sequence, pushed, stopsHit: 0, commandsIssued: 0, unpriced: 0, error: null };
   deps.logger.info('shadow_synced', { sequence: shadow.sequence, positions: shadow.positions.length, lots: shadow.positions.reduce((n, p) => n + p.lots.length, 0), pushed });
   return { mode: 'SYNCED', sequence: shadow.sequence, pushed, stopsHit: 0, commandsIssued: 0, unpriced: 0, error: null };
 }

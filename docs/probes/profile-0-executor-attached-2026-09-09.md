@@ -53,11 +53,20 @@ lifetimes, which only a real deployment has. This is the "does this actually exe
 environment" gap the 2026-09-09 review named, and it is the second time that gap has produced the
 real finding.
 
-**Not fixed here.** It is a change in the execution boundary, which is what adversarial review #1 is
-meant to scrutinise, and the operator's ranking is to run that review before writing more code
-there. The shape of the fix: `syncShadow` already returns `lastSynced`, so the worker can push when
-the executor is behind rather than when its own journal changed — which also covers the
-executor-restart case, not just the attach case.
+**~~Not fixed here.~~ Fixed in WP0 later the same day — see the follow-up at the end of this file.**
+The original paragraph deferred it to adversarial review #1 and proposed a fix shape that does not
+work, and both are left visible rather than edited away:
+
+> It is a change in the execution boundary, which is what adversarial review #1 is meant to
+> scrutinise… The shape of the fix: `syncShadow` already returns `lastSynced`, so the worker can push
+> when the executor is behind rather than when its own journal changed.
+
+Two things wrong with that. The deferral argument applies to *refactoring* the execution boundary,
+not to repairing a live high-severity defect adjacent to it, and `shadow-sync.ts` is `apps/worker`
+anyway. And `lastSynced` is returned **only on the refusal branch** (`pipeline.ts:698`); the success
+branch returns `{ok: true, sequence}`, so there was nothing to read it from. Worker-side memory of
+the last push would also have missed the case that matters most — an *executor* restart, which the
+worker has no way to observe.
 
 ## What the two drills actually reach on a paper profile
 
@@ -118,3 +127,71 @@ node --env-file=deploy/profile-0/.env.worker            apps/worker/dist/main.js
 
 Then file the two drills from Live Readiness `Run drill`, or call `dbDownCloseDrill` /
 `persistBeforeSubmitDrill` directly against an `ExecutorClient` built from the worker's env.
+
+---
+
+# WP0 follow-up: DEFECT-1 fixed, and an audit of its defect class
+
+## The fix
+
+Three edits, no behaviour added:
+
+- `apps/worker/src/roles/shadow-sync.ts` — the early return on a matching local fingerprint no longer
+  skips the executor. The journal keeps its append optimisation (an unchanged book is not a new
+  sequence), but the push happens every cycle, carrying the **shadow of record** — the sequence
+  already in the journal, not a freshly minted one. So a quiet book re-sends one sequence repeatedly
+  rather than inflating the sequence space.
+- `apps/execution-service/src/pipeline/pipeline.ts` — `shadow.sequence <= last` split into
+  `< last` (a genuine `SHADOW_REGRESSION`) and `=== last` (`{ok: true, state: 'IN_SYNC'}`). One
+  comparison and one return shape; nothing else in that file changed.
+- `apps/worker/src/roles/shadow-sync.ts` reports `IN_SYNC` instead of `REGRESSION` and no longer logs
+  the benign case at error level.
+
+**Why the equal case is safe without a content check.** The worker derives the sequence from its own
+append-only journal, so sequence K maps to exactly one book there. A worker whose journal was wiped
+restarts at 1, which is strictly lower than what the executor holds and is still refused — the D22
+protection this check exists for is untouched. A fresh or wiped executor has `last === null`, so the
+push lands and self-corrects, which is the case DEFECT-1 was about.
+
+**The regression test was proved to fail against the old code**, not merely asserted: reverting
+`shadow-sync.ts` alone makes both the new case and the amended existing case fail, and restoring it
+makes all four pass. The new test covers an executor holding nothing against a populated journal (the
+attach/restart case) and an executor whose sequence is behind the journal's newest (the catch-up
+case). Neither can arise from an empty journal, which is why the suite passed throughout.
+
+## The defect class
+
+"Early return on locally computed or locally cached state, placed before the remote push or read it
+is standing in for." The question asked of each site: **does the remote side's state get consulted,
+or is local state being treated as proof of remote state?**
+
+### Found
+
+| # | Where | Judgement |
+| --- | --- | --- |
+| DEFECT-1 | `apps/worker/src/roles/shadow-sync.ts` | **Fixed here.** Local journal fingerprint treated as proof the executor held the shadow. |
+| DEFECT-2 | `apps/worker/src/roles/journal-import.ts:60-63` | **Open.** `page.head` is assigned to the report and never compared against `lastImported`. The cursor comes from our own audit ledger; the journal it indexes lives on the executor. An executor whose journal was reset — new volume, wiped `EXECUTOR_JOURNAL_PATH`, replaced host — restarts its sequences below our cursor, returns an empty page, and the role reports a healthy `fetched: 0` cycle indefinitely. Consequence: emergency actions taken during a DB outage never reach the audit ledger and the §15.10 operator review gate never fires. Audit-completeness, not live-trading safety, which is why it is reported rather than fixed inside WP0. **Fix shape:** when `page.head !== null && page.head < lastImported`, the executor's journal is not the one our cursor refers to — raise and stop advancing, rather than treating an empty page as "nothing new". |
+| DEFECT-3 | `apps/risk-authorizer/src/main.ts:72` | **Open, and the most interesting of the three.** `chainStanding()` caches the verification verdict keyed on the **ledger head hash** read from Postgres, but what it verifies is the **external checkpoint replica file** written by the worker. Two different stores. While the ledger head is unchanged, loss of, truncation of, or tampering with the replica is never noticed, and the cache has no TTL and never expires within the process. The primary threat ADR-0009 P2 defends against — rewriting `audit.events` — still moves the head hash and still misses the cache, so it is caught. What is not caught is the replica going bad while the ledger is quiet: a long-lived authorizer keeps returning a stale `ok: true`. This is the same class in the most safety-critical deployable, and it is one the artifact and boundary rules cannot see. **Fix shape:** key the cache on both the ledger head and the replica's own identity (its latest checkpoint sequence and hash), or give it a short TTL so a quiet ledger still re-reads the replica. |
+
+### Checked and cleared
+
+| Where | Why it is not this class |
+| --- | --- |
+| `roles/audit-checkpoint.ts` + `FileCheckpointReplicator` | Replicates and re-verifies against the file every cycle. No short-circuit on unchanged state. |
+| `roles/state-projector.ts` | No early return; signs and stores a projection every cycle. |
+| `roles/readiness.ts` | `signerHealth()` and `computeRows` both run **before** the `same` check, and that check skips a duplicate database *write*, not a remote read. Ordering is the thing that makes it safe, and it is correct. |
+| `roles/emergency-dry-run.ts:79-84` | The `due` filter is a cadence gate on the timestamps of our own prior runs — local state throttling local activity. It asserts nothing about the remote. |
+| `roles/market-ingest.ts:164-167` | `candleBackoff` is failure-driven exponential backoff, set on failure and cleared on success. Same reasoning: it throttles our own calls, it does not claim the provider's state is unchanged. Cleared for this class — but flagged for WP1, since it is a candidate explanation for unspent Birdeye allowance. |
+| `roles/reconciliation.ts`, `chain-health.ts`, `position-monitor.ts`, `live-entry.ts`, `recovery.ts` | Contact their remote every cycle; the returns found are terminal, not short-circuits. |
+| `libs/agents/src/action-cycle/machine.ts:205` | An in-memory comparison between two fields of one object. No remote involved. |
+
+### The pattern worth naming
+
+All three found instances share a shape that no boundary rule, artifact scan or unit test catches:
+**a cheap local value stands in for an expensive remote one, and the substitution is sound only while
+the two cannot diverge.** They diverge exactly when a process restarts, a volume is replaced, or a
+file is lost — none of which a test fixture does, because fixtures start empty and live for one test.
+
+That is why this is the third finding in the family after the 2026-09-09 review's two CRITICALs, and
+why the useful defence is not another rule but the thing that found it: running the deployables as
+real processes with state that outlives them.

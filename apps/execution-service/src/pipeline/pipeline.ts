@@ -694,12 +694,23 @@ export class ExecutorPipeline {
   /**
    * §15.10A: the worker's sequenced position shadow, journaled here so DB-down protection can rest on a
    * durable local copy. Sequences never regress; a stale or replayed shadow is refused, never merged.
+   *
+   * Re-sending the sequence we already hold is not a regression. The worker pushes every cycle so that
+   * an executor which started later, or restarted, is corrected rather than left empty (DEFECT-1,
+   * 2026-09-09) — and while the book is quiet those pushes carry the same sequence over and over. Only
+   * a strictly *lower* sequence is evidence of a stale or replayed shadow.
+   *
+   * Treating an equal sequence as in-sync without re-checking the content is safe because the worker
+   * derives the sequence from its own append-only journal: sequence K maps to exactly one book there.
+   * A worker whose journal was wiped restarts at 1, which is strictly lower than what we hold and is
+   * still refused — so the D22 protection that this check exists for is untouched.
    */
-  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: true; sequence: number } | { ok: false; reason: 'SHADOW_REGRESSION'; lastSynced: number }> {
+  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: true; sequence: number; state: 'APPENDED' | 'IN_SYNC' } | { ok: false; reason: 'SHADOW_REGRESSION'; lastSynced: number }> {
     const last = this.lastShadowSequence();
-    if (last !== null && shadow.sequence <= last) return { ok: false, reason: 'SHADOW_REGRESSION', lastSynced: last };
+    if (last !== null && shadow.sequence < last) return { ok: false, reason: 'SHADOW_REGRESSION', lastSynced: last };
+    if (last !== null && shadow.sequence === last) return { ok: true, sequence: shadow.sequence, state: 'IN_SYNC' };
     await this.deps.journal.append('SHADOW_SYNCED', `shadow:${shadow.sequence}`, { sequence: shadow.sequence, asOf: shadow.asOf, positions: shadow.positions.length, shadow: shadow as unknown as JsonRecord });
-    return { ok: true, sequence: shadow.sequence };
+    return { ok: true, sequence: shadow.sequence, state: 'APPENDED' };
   }
 
   /** Total open non-settlement exposure the ledger holds (for the harness and health surfaces). */

@@ -65,8 +65,12 @@ export class ExecutorClient {
     return this.call('POST', '/v1/journal', { after, limit });
   }
 
-  /** §15.10A: push the sequenced position shadow; a regression comes back as a refusal, not an exception. */
-  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: boolean; sequence?: number; reason?: string; lastSynced?: number }> {
+  /**
+   * §15.10A: push the sequenced position shadow; a regression comes back as a refusal, not an exception.
+   * `state` distinguishes a shadow the executor appended from one it already held (`IN_SYNC`), which is
+   * the ordinary answer while the book is quiet and the worker keeps re-pushing (DEFECT-1).
+   */
+  async syncShadow(shadow: PositionRiskShadow): Promise<{ ok: boolean; sequence?: number; state?: 'APPENDED' | 'IN_SYNC'; reason?: string; lastSynced?: number }> {
     try {
       return await this.call('POST', '/v1/shadow', shadow);
     } catch (err) {

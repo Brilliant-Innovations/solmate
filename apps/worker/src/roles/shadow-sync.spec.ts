@@ -10,11 +10,22 @@ const RISK = fixtures.MINTS.RISK as MintAddress;
 const logger = createLogger({ service: 'worker', minLevel: 'error' });
 const pos = (over: Partial<ShadowSourcePosition & { decimals: number }> = {}): ShadowSourcePosition & { decimals: number } => ({ positionId: fixtures.IDS.position as Uuid, assetId: fixtures.IDS.asset as Uuid, mint: RISK, quantity: '1000000000' as Amount, decimals: 9, stop: { model: 'ATR', level: 96 }, unreviewedStop: 97, lots: [{ lotId: fixtures.IDS.lot as Uuid, quantity: '1000000000' as Amount, protectionMode: 'MONITORED_EXIT', providerOrderId: null }], ...over });
 
+/**
+ * Mirrors `ExecutorPipeline.syncShadow` exactly, including the distinction DEFECT-1 turned on: an
+ * equal sequence is `IN_SYNC`, and only a strictly lower one is a regression. `last` is public so a
+ * test can stand up an executor that is behind, or one that holds nothing at all.
+ */
 class FakeExecutor implements ShadowExecutor {
   synced: PositionRiskShadow[] = [];
   commands: { mint: MintAddress; maxAmount: Amount; shadowSequence: number; reason: string }[] = [];
-  regressAt: number | null = null;
-  async syncShadow(shadow: PositionRiskShadow) { if (this.regressAt !== null && shadow.sequence <= this.regressAt) return { ok: false, reason: 'SHADOW_REGRESSION' }; this.synced.push(shadow); return { ok: true, sequence: shadow.sequence }; }
+  last: number | null = null;
+  async syncShadow(shadow: PositionRiskShadow) {
+    if (this.last !== null && shadow.sequence < this.last) return { ok: false as const, reason: 'SHADOW_REGRESSION', lastSynced: this.last };
+    if (this.last !== null && shadow.sequence === this.last) return { ok: true as const, sequence: shadow.sequence, state: 'IN_SYNC' as const };
+    this.last = shadow.sequence;
+    this.synced.push(shadow);
+    return { ok: true as const, sequence: shadow.sequence, state: 'APPENDED' as const };
+  }
   async emergencyMonitor(cmd: { mint: MintAddress; maxAmount: Amount; shadowSequence: number; reason: string }) { this.commands.push(cmd); return { outcome: 'CLOSED' }; }
 }
 
@@ -45,24 +56,65 @@ describe('worker shadow-sync role (§15.10A, D22)', () => {
     expect(f.journal.entries).toHaveLength(1);
     expect(f.journal.entries[0]?.decimals).toEqual({ [RISK]: 9 });
     expect(f.executor?.synced.map((s) => s.sequence)).toEqual([1]);
+    // An unchanged book still reaches the executor; it answers IN_SYNC because it already holds it.
     const r2 = await runShadowSyncCycle(f.deps, state);
-    expect(r2).toMatchObject({ mode: 'UNCHANGED', sequence: 1, pushed: 'SKIPPED' });
+    expect(r2).toMatchObject({ mode: 'UNCHANGED', sequence: 1, pushed: 'IN_SYNC' });
     expect(f.journal.entries).toHaveLength(1);
+    expect(f.executor?.synced.map((s) => s.sequence)).toEqual([1]);
     // a tightened stop is a new shadow with the next sequence
     const g = fake({ positions: [pos({ unreviewedStop: 98 })] });
     g.deps.journal = f.journal;
     const r3 = await runShadowSyncCycle(g.deps, state);
     expect(r3).toMatchObject({ mode: 'SYNCED', sequence: 2, pushed: 'OK' });
-    // an executor that reports a regression is surfaced, the local journal still holds the truth
+    // an executor already ahead of us refuses a stale shadow; the local journal still holds the truth
     const h = fake({ positions: [pos({ unreviewedStop: 99 })] });
     h.deps.journal = f.journal;
-    (h.executor as FakeExecutor).regressAt = 99;
+    (h.executor as FakeExecutor).last = 99;
     expect((await runShadowSyncCycle(h.deps, state)).pushed).toBe('REGRESSION');
     expect(f.journal.entries).toHaveLength(3);
     // no executor configured (paper profile): synced locally only
     const paper = fake({ executor: null, positions: [pos({ unreviewedStop: 95 })] });
     paper.deps.journal = f.journal;
     expect((await runShadowSyncCycle(paper.deps, state)).pushed).toBe('NO_EXECUTOR');
+  });
+
+  /**
+   * DEFECT-1 (2026-09-09), reproduced against real processes before being fixed here.
+   *
+   * Neither case can arise in a spec that starts from an empty journal, which is why the suite above
+   * passed throughout: the first cycle is always a change and always pushes. Both need a journal that
+   * outlives the executor — state across process lifetimes, which only a real deployment had.
+   */
+  it('pushes to an executor that holds nothing even when our own book has not changed, and catches up one that is behind', async () => {
+    const state: ShadowSyncState = { consecutiveDbFailures: 0 };
+
+    // (a) The attach/restart case. A journal written by an earlier process, an unchanged book, and an
+    // executor that has never seen a shadow. Before the fix this returned UNCHANGED/SKIPPED without
+    // contacting the executor at all, and `db-down-close` reported shadowSequence: null forever.
+    const first = fake();
+    await runShadowSyncCycle(first.deps, state);
+    expect(first.journal.entries).toHaveLength(1);
+
+    const fresh = fake();
+    fresh.deps.journal = first.journal; // same durable journal, brand-new executor holding nothing
+    const r = await runShadowSyncCycle(fresh.deps, state);
+    expect(r).toMatchObject({ mode: 'UNCHANGED', sequence: 1, pushed: 'OK' });
+    expect(fresh.executor?.synced.map((s) => s.sequence)).toEqual([1]);
+    // and it is the shadow of record, not a freshly minted sequence: the journal did not grow
+    expect(first.journal.entries).toHaveLength(1);
+
+    // (b) The behind case. The executor holds an older sequence than our journal's newest.
+    const ahead = fake({ positions: [pos({ unreviewedStop: 98 })] });
+    ahead.deps.journal = first.journal;
+    await runShadowSyncCycle(ahead.deps, state); // journal advances to sequence 2
+    expect(first.journal.entries).toHaveLength(2);
+
+    const behind = fake({ positions: [pos({ unreviewedStop: 98 })] });
+    behind.deps.journal = first.journal;
+    (behind.executor as FakeExecutor).last = 1;
+    const caught = await runShadowSyncCycle(behind.deps, state);
+    expect(caught).toMatchObject({ mode: 'UNCHANGED', sequence: 2, pushed: 'OK' });
+    expect(behind.executor?.synced.map((s) => s.sequence)).toEqual([2]);
   });
 
   it('a first database failure only warns; from the threshold on, the last shadow and fresh prices drive emergency closes for hit stops only, at the shadow sequence', async () => {

@@ -275,10 +275,20 @@ invariants:
       - apps/execution-service/src/emergency
       - apps/execution-service/src/pipeline/pipeline.ts
       - libs/execution/src/emergency/plan.ts
+      - apps/worker/src/roles/shadow-sync.ts
     tests:
       - apps/execution-service/src/harness/emergency.spec.ts
+      - apps/execution-service/src/api/api.spec.ts
+      - apps/worker/src/roles/shadow-sync.spec.ts
     evidence:
       - docs/CHANGELOG.md
+      - docs/probes/profile-0-executor-attached-2026-09-09.md
+    # The sequenced shadow is the bound a DB-independent emergency plan is drawn against, so the
+    # staleness refusal in syncShadow belongs to this invariant. DEFECT-1 (2026-09-09) did not
+    # violate it — a missing shadow means no plan at all, which is fail-closed — but it disabled the
+    # capability silently, and the fix relaxes the refusal from `<=` to `<`. The specs above cover
+    # both directions: an equal sequence is IN_SYNC, a lower one is still SHADOW_REGRESSION, and a
+    # worker journal wiped back to sequence 1 is still refused against an executor that is ahead.
     status: mapped
 
   - id: INV-13

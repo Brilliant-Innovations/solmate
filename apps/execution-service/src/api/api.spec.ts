@@ -148,9 +148,14 @@ describe('executor internal API and out-of-band endpoint', () => {
     try {
       const client = new ExecutorClient({ baseUrl: s.internalUrl, secretHex: SECRET, clock: w.clock });
       const shadow = (sequence: number) => ({ sequence, asOf: AT, settlementMints: [TOKEN], positions: [] });
-      expect(await client.syncShadow(shadow(1) as never)).toEqual({ ok: true, sequence: 1 });
-      expect(await client.syncShadow(shadow(3) as never)).toEqual({ ok: true, sequence: 3 });
+      expect(await client.syncShadow(shadow(1) as never)).toEqual({ ok: true, sequence: 1, state: 'APPENDED' });
+      expect(await client.syncShadow(shadow(3) as never)).toEqual({ ok: true, sequence: 3, state: 'APPENDED' });
+      // Re-sending the sequence we already hold is the ordinary quiet-book answer, not a regression:
+      // the worker pushes every cycle so a later or restarted executor is corrected (DEFECT-1).
+      expect(await client.syncShadow(shadow(3) as never)).toEqual({ ok: true, sequence: 3, state: 'IN_SYNC' });
+      // Only a strictly lower sequence is a stale or replayed shadow.
       expect(await client.syncShadow(shadow(2) as never)).toEqual({ ok: false, reason: 'SHADOW_REGRESSION', lastSynced: 3 });
+      // and the in-sync re-send journaled nothing: one entry per distinct sequence
       expect(w.pipeline.journal.all().filter((e) => e.kind === 'SHADOW_SYNCED').map((e) => e.payload['sequence'])).toEqual([1, 3]);
       // a monitor command from an older shadow is refused; one at the synced sequence acts (a pause here: nothing to sell)
       const stale = await client.emergencyMonitor({ commandId: newId(), type: 'PAUSE_NEW_ENTRIES', mint: null, maxAmount: null, reason: 'db down, stop hit', shadowSequence: 2 });
