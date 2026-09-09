@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { When } from '../../../components/when';
-import { EXIT_REASONS, loadTradeHistory, parseTradeFilters, type TradeFilters } from '../../../lib/history';
+import { EXIT_REASONS, loadTradeHistory, parseTradeFilters, type TradeFilters, type TradeRow } from '../../../lib/history';
 import { listStrategyVersionOptions } from '../../../lib/replay';
 
 export const dynamic = 'force-dynamic';
@@ -10,6 +10,12 @@ const hold = (ms: number | null): string => (ms === null ? '—' : ms >= 3_600_0
 /** Null propagates: a fee that could not be priced makes the sum unknown, never a smaller number. */
 const add = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a + b);
 const money = (v: number | null, digits = 3): string => (v === null ? 'not measured' : v.toFixed(digits));
+/**
+ * The cost basis a row should show: what a closed lot paid at entry, and the ledger's remaining
+ * basis while a lot is still open. The lot column alone is 0 for every closed lot, which is what
+ * used to render "0.00 USDC cost basis" beside a real loss.
+ */
+const basisOf = (r: TradeRow): number | null => (r.status === 'CLOSED' ? (r.entryCostBasisBaseUnits === null ? null : Number(r.entryCostBasisBaseUnits)) : Number(r.remainingCostBasisBaseUnits));
 
 /**
  * Trade History (§20.10): closed strategy lots (open ones on request), filterable by strategy
@@ -28,7 +34,7 @@ export default async function TradeHistory({ searchParams }: { searchParams: Pro
   const query = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '')).toString();
   // Fee totals carry the same null discipline as the rows: one unpriced fee makes the total unknown
   // rather than smaller (review 2026-09-09, H-3). Same for the SOL-denominated column.
-  const totals = rows.reduce<{ realized: number; cost: number; wins: number; fees: number | null; slippage: number; lamports: number }>((t, r) => ({ realized: t.realized + Number(r.realizedPnlBaseUnits), cost: t.cost + Number(r.costBasisBaseUnits), wins: t.wins + (Number(r.realizedPnlBaseUnits) > 0 ? 1 : 0), fees: add(t.fees, add(r.fees.routerSettlement, r.fees.transferSettlement)), slippage: t.slippage + r.slippageSettlement, lamports: t.lamports + r.fees.networkLamports + r.fees.priorityLamports }), { realized: 0, cost: 0, wins: 0, fees: 0, slippage: 0, lamports: 0 });
+  const totals = rows.reduce<{ realized: number; cost: number | null; wins: number; fees: number | null; slippage: number; lamports: number }>((t, r) => ({ realized: t.realized + Number(r.realizedPnlBaseUnits), cost: add(t.cost, basisOf(r)), wins: t.wins + (Number(r.realizedPnlBaseUnits) > 0 ? 1 : 0), fees: add(t.fees, add(r.fees.routerSettlement, r.fees.transferSettlement)), slippage: t.slippage + r.slippageSettlement, lamports: t.lamports + r.fees.networkLamports + r.fees.priorityLamports }), { realized: 0, cost: 0, wins: 0, fees: 0, slippage: 0, lamports: 0 });
   const unknownBook = rows.filter((r) => r.book === 'UNKNOWN').length;
   const paths = [...new Set(rows.flatMap((r) => r.executionPaths))];
   const sel = (name: keyof TradeFilters, options: readonly string[], label: string) => (
@@ -85,7 +91,7 @@ export default async function TradeHistory({ searchParams }: { searchParams: Pro
         ) : null}
         {rows.length > 0 ? (
           <p className="mono" style={{ margin: '0 0 0.6rem' }}>
-            realized {fmt(totals.realized)} USDC on {fmt(totals.cost)} USDC cost basis · {totals.wins} winner(s) of {rows.length} · router + transfer fees {money(totals.fees, 2)} USDC · slippage {totals.slippage.toFixed(2)} USDC · network + priority {(totals.lamports / 1e9).toFixed(4)} SOL
+            realized {fmt(totals.realized)} USDC on {totals.cost === null ? 'an unmeasured' : fmt(totals.cost)} USDC cost basis · {totals.wins} winner(s) of {rows.length} · router + transfer fees {money(totals.fees, 2)} USDC · slippage {totals.slippage.toFixed(2)} USDC · network + priority {(totals.lamports / 1e9).toFixed(4)} SOL
           </p>
         ) : null}
         {rows.length === 0 ? <p className="muted">No lot matches{truncated ? ` in the ${scanned} most recent lot(s) scanned — an older match would not be visible here` : ''}. Closed lots appear here once the position monitor or an operator control closes a position.</p> : (
@@ -101,7 +107,7 @@ export default async function TradeHistory({ searchParams }: { searchParams: Pro
                     <td style={cell}>{hold(r.holdMs)}</td>
                     <td style={cell}><Link href={`/assets/${r.assetId}`}>{r.symbol}</Link></td>
                     <td style={cell}>{r.strategyVersionId}</td>
-                    <td style={cell}>{fmt(r.costBasisBaseUnits)}</td>
+                    <td style={cell}>{basisOf(r) === null ? 'not measured' : fmt(basisOf(r)!)}</td>
                     <td style={cell}>{r.status === 'CLOSED' ? fmt(r.proceedsBaseUnits) : '—'}</td>
                     <td style={cell}><span className="chip" data-tone={Number(r.realizedPnlBaseUnits) > 0 ? 'ok' : Number(r.realizedPnlBaseUnits) < 0 ? 'failed' : 'unknown'}>{fmt(r.realizedPnlBaseUnits)}</span></td>
                     <td style={cell}>{money(add(r.fees.routerSettlement, r.fees.transferSettlement))}</td>

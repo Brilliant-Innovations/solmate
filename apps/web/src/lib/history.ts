@@ -42,7 +42,21 @@ export interface TradeRow {
   openedAt: string;
   closedAt: string | null;
   quantity: string;
-  costBasisBaseUnits: string;
+  /**
+   * What the lot cost at entry, summed from its entry fills. This is the basis the realized P&L was
+   * earned against, and what the operator means by "cost basis".
+   *
+   * It is NOT `trading.position_lots.cost_basis_base_units`: that column is the *remaining* basis,
+   * decremented as the lot is reduced (`positions-repo.ts`), so it is exactly 0 for every fully
+   * closed lot — which is every row this page exists to show. Reading it as the cost basis rendered
+   * "0.00 USDC cost basis" beside a correct realized loss (found by clicking through the live app,
+   * 2026-09-09; the same defect class as the replay engine's E1).
+   *
+   * `null` when an entry fill could not be loaded: not measured, never zero.
+   */
+  entryCostBasisBaseUnits: string | null;
+  /** The ledger's current remaining basis: meaningful for an open lot, 0 for a closed one. */
+  remainingCostBasisBaseUnits: string;
   realizedPnlBaseUnits: string;
   proceedsBaseUnits: string;
   entryFills: FillLite[];
@@ -288,7 +302,9 @@ async function enrichLots(supabase: Supabase, lots: LotRow[], problems: string[]
       openedAt: l.opened_at,
       closedAt: l.closed_at,
       quantity: l.quantity,
-      costBasisBaseUnits: l.cost_basis_base_units,
+      // Every entry fill must have resolved, or the sum would silently understate what was paid.
+      entryCostBasisBaseUnits: (l.entry_fill_ids ?? []).length === entryFills.length ? String(entryFills.reduce((a, x) => a + n(x.input_amount), 0)) : null,
+      remainingCostBasisBaseUnits: l.cost_basis_base_units,
       realizedPnlBaseUnits: l.realized_pnl_base_units,
       proceedsBaseUnits: String(Math.round(proceeds)),
       entryFills,
@@ -392,7 +408,8 @@ const CSV_COLUMNS: [string, (r: TradeRow) => string | number | null][] = [
   ['closed_at', (r) => r.closedAt],
   ['hold_ms', (r) => r.holdMs],
   ['quantity_base_units', (r) => r.quantity],
-  ['cost_basis_base_units', (r) => r.costBasisBaseUnits],
+  ['entry_cost_basis_base_units', (r) => r.entryCostBasisBaseUnits],
+  ['remaining_cost_basis_base_units', (r) => r.remainingCostBasisBaseUnits],
   ['proceeds_base_units', (r) => r.proceedsBaseUnits],
   ['realized_pnl_base_units', (r) => r.realizedPnlBaseUnits],
   ['fees_network_lamports', (r) => r.fees.networkLamports],

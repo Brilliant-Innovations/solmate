@@ -15,7 +15,12 @@ export interface PaperLeaderboardRow {
   openLots: number;
   wins: number;
   realizedUsdc: number;
-  costBasisUsdc: number;
+  /**
+   * Cost basis paid at entry, summed from the lots' entry fills. `null` when a fill could not be
+   * read. The lot column `cost_basis_base_units` is the *remaining* basis and is 0 for every closed
+   * lot, so summing it here reported 0 for every strategy (found in the live app, 2026-09-09).
+   */
+  costBasisUsdc: number | null;
   expectancyUsdc: number | null;
   firstOpenedAt: string | null;
   lastClosedAt: string | null;
@@ -81,17 +86,31 @@ export async function loadStrategyLab(): Promise<StrategyLabView> {
   const [versions, runs, lots, releases] = await Promise.all([
     listStrategyVersionOptions(),
     listReplayRuns(30),
-    supabase.schema('trading').from('position_lots').select('strategy_version_id, status, realized_pnl_base_units, cost_basis_base_units, opened_at, closed_at').order('opened_at', { ascending: false }).limit(2000),
+    supabase.schema('trading').from('position_lots').select('strategy_version_id, status, realized_pnl_base_units, cost_basis_base_units, entry_fill_ids, opened_at, closed_at').order('opened_at', { ascending: false }).limit(2000),
     supabase.schema('research').from('releases').select('id, digest, status, binding, created_at, promoted_at, retired_at').order('created_at', { ascending: false }).limit(50),
   ]);
   const paperBy = new Map<string, PaperLeaderboardRow>();
-  for (const l of (lots.data as unknown as { strategy_version_id: string; status: string; realized_pnl_base_units: string; cost_basis_base_units: string; opened_at: string; closed_at: string | null }[] | null) ?? []) {
+  const lotRows = (lots.data as unknown as { strategy_version_id: string; status: string; realized_pnl_base_units: string; cost_basis_base_units: string; entry_fill_ids: string[] | null; opened_at: string; closed_at: string | null }[] | null) ?? [];
+  // What each closed lot actually paid, from its entry fills. PostgREST encodes an id list into the
+  // URL, so the lookup is chunked like every other one on these surfaces.
+  const entryPaid = new Map<string, number>();
+  const fillIds = [...new Set(lotRows.filter((l) => l.status === 'CLOSED').flatMap((l) => l.entry_fill_ids ?? []))];
+  let fillsComplete = true;
+  for (let i = 0; i < fillIds.length; i += 120) {
+    const { data, error } = await supabase.schema('trading').from('fills').select('id, input_amount').in('id', fillIds.slice(i, i + 120));
+    if (error) fillsComplete = false;
+    for (const f of (data as { id: string; input_amount: string }[] | null) ?? []) entryPaid.set(f.id, Number(f.input_amount));
+  }
+  if (entryPaid.size !== fillIds.length) fillsComplete = false;
+  for (const l of lotRows) {
     const row = paperBy.get(l.strategy_version_id) ?? { strategyVersionId: l.strategy_version_id, closedLots: 0, openLots: 0, wins: 0, realizedUsdc: 0, costBasisUsdc: 0, expectancyUsdc: null, firstOpenedAt: null, lastClosedAt: null };
     if (l.status === 'CLOSED') {
       row.closedLots++;
       const realized = Number(l.realized_pnl_base_units) / 1e6;
       row.realizedUsdc += realized;
-      row.costBasisUsdc += Number(l.cost_basis_base_units) / 1e6;
+      // Null propagates: one unreadable fill makes the strategy's basis unknown, not smaller.
+      const paid = (l.entry_fill_ids ?? []).reduce<number | null>((acc, id) => (acc === null || !entryPaid.has(id) ? null : acc + (entryPaid.get(id) as number)), 0);
+      row.costBasisUsdc = row.costBasisUsdc === null || paid === null || !fillsComplete ? null : row.costBasisUsdc + paid / 1e6;
       if (realized > 0) row.wins++;
       if (l.closed_at && (!row.lastClosedAt || l.closed_at > row.lastClosedAt)) row.lastClosedAt = l.closed_at;
     } else row.openLots++;

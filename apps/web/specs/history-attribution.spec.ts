@@ -88,3 +88,30 @@ describe('Attribution period arithmetic (§20.16)', () => {
     );
   });
 });
+describe('a closed lot reports what it paid, not what is left (live-app finding 2026-09-09)', () => {
+  // `trading.position_lots.cost_basis_base_units` is decremented as a lot is reduced, so it is 0 for
+  // every fully closed lot. Reading it as "cost basis" rendered `0.00 USDC cost basis` next to a
+  // correct realized loss on all three closed lots in the hosted ledger.
+  const basisOf = (r: { status: 'OPEN' | 'CLOSED'; entryCostBasisBaseUnits: string | null; remainingCostBasisBaseUnits: string }): number | null =>
+    r.status === 'CLOSED' ? (r.entryCostBasisBaseUnits === null ? null : Number(r.entryCostBasisBaseUnits)) : Number(r.remainingCostBasisBaseUnits);
+
+  it('uses the entry fills for a closed lot and the ledger remainder for an open one', () => {
+    expect(basisOf({ status: 'CLOSED', entryCostBasisBaseUnits: '200000000', remainingCostBasisBaseUnits: '0' })).toBe(200_000_000);
+    expect(basisOf({ status: 'OPEN', entryCostBasisBaseUnits: '200000000', remainingCostBasisBaseUnits: '150000000' })).toBe(150_000_000);
+  });
+
+  it('is unmeasured, never zero, when an entry fill could not be read', () => {
+    expect(basisOf({ status: 'CLOSED', entryCostBasisBaseUnits: null, remainingCostBasisBaseUnits: '0' })).toBeNull();
+  });
+
+  it('never reports a closed lot as having cost nothing while it realized a loss', () => {
+    // The exact shape observed live: proceeds 198.64, realized -1.36, ledger remainder 0.
+    const row = { status: 'CLOSED' as const, entryCostBasisBaseUnits: '200000000', remainingCostBasisBaseUnits: '0' };
+    const basis = basisOf(row);
+    const realized = -1_356_014;
+    const proceeds = 198_643_986;
+    expect(basis).not.toBe(0);
+    // Internal consistency: proceeds minus what was paid is the realized outcome, to the base unit.
+    expect(proceeds - (basis as number)).toBe(realized);
+  });
+});

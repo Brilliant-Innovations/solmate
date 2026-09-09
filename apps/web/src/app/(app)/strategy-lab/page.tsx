@@ -53,7 +53,7 @@ export default async function StrategyLab() {
           {v.paper.length === 0 ? <p className="muted">No lot yet.</p> : (
             <table className="mono" style={{ borderCollapse: 'collapse' }}>
               <thead><tr><th style={th}>strategy</th><th style={th}>closed</th><th style={th}>open</th><th style={th}>win rate</th><th style={th}>realized USDC</th><th style={th}>expectancy</th><th style={th}>cost basis traded</th><th style={th}>last close</th></tr></thead>
-              <tbody>{v.paper.map((r) => <tr key={r.strategyVersionId}><td style={cell}>{r.strategyVersionId}</td><td style={cell}>{r.closedLots}</td><td style={cell}>{r.openLots}</td><td style={cell}>{r.closedLots ? pctOf(r.wins / r.closedLots) : '—'}</td><td style={cell}>{num(r.realizedUsdc)}</td><td style={cell}>{num(r.expectancyUsdc)}</td><td style={cell}>{num(r.costBasisUsdc, 0)}</td><td style={cell}>{r.lastClosedAt ? <When iso={r.lastClosedAt} now={now} /> : '—'}</td></tr>)}</tbody>
+              <tbody>{v.paper.map((r) => <tr key={r.strategyVersionId}><td style={cell}>{r.strategyVersionId}</td><td style={cell}>{r.closedLots}</td><td style={cell}>{r.openLots}</td><td style={cell}>{r.closedLots ? pctOf(r.wins / r.closedLots) : '—'}</td><td style={cell}>{num(r.realizedUsdc)}</td><td style={cell}>{num(r.expectancyUsdc)}</td><td style={cell}>{r.costBasisUsdc === null ? 'not measured' : num(r.costBasisUsdc, 0)}</td><td style={cell}>{r.lastClosedAt ? <When iso={r.lastClosedAt} now={now} /> : '—'}</td></tr>)}</tbody>
             </table>
           )}
           <p className="muted" style={{ margin: '0.4rem 0 0' }}>Level C, live paper. Full rows and export in <Link href="/history">Trade History</Link>.</p>
