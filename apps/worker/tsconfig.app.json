@@ -28,6 +28,9 @@
   ],
   "references": [
     {
+      "path": "../../libs/replay/tsconfig.lib.json"
+    },
+    {
       "path": "../../libs/intelligence/tsconfig.lib.json"
     },
     {

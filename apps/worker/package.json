@@ -137,6 +137,7 @@
     "@sol-agent-trader/strategies": "workspace:*",
     "@sol-agent-trader/agents": "workspace:*",
     "@sol-agent-trader/skills": "workspace:*",
-    "@sol-agent-trader/intelligence": "workspace:*"
+    "@sol-agent-trader/intelligence": "workspace:*",
+    "@sol-agent-trader/replay": "workspace:*"
   }
 }
