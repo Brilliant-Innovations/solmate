@@ -131,3 +131,38 @@ jobs:
           diff -u libs/db/src/database.types.ts /tmp/database.types.ts || { echo "::error::libs/db/src/database.types.ts is stale; regenerate with supabase gen types"; exit 1; }
       - if: always()
         run: pnpm exec supabase stop --no-backup
+
+  e2e:
+    name: §24.7 UI/UX end-to-end (Playwright against local Supabase)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Start local Supabase (applies every migration)
+        run: pnpm exec supabase start -x studio,imgproxy,inbucket,mailpit,logflare,vector,edge-runtime
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Build the libraries the seed imports
+        env:
+          NX_DAEMON: 'false'
+        run: pnpm nx run-many -t build -p @sol-agent-trader/contracts @sol-agent-trader/db --skip-nx-cache
+      - name: Playwright (seeds, builds the web app, runs desktop + mobile projects)
+        env:
+          CI: 'true'
+          NX_DAEMON: 'false'
+        run: pnpm exec playwright test -c apps/web/e2e/playwright.config.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+          retention-days: 7
+      - if: always()
+        run: pnpm exec supabase stop --no-backup

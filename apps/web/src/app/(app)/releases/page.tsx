@@ -94,7 +94,7 @@ export default async function Releases() {
             );
           })
         )}
-        <p className="muted">{accounts.length} account(s): {accounts.map((a) => `${a.name} (${a.mode})`).join(', ') || 'none'}.</p>
+        <p className="muted">{accounts.length} account(s): {accounts.map((a) => `${a.name} (${a.mode})`).join(', ') || 'none'}. Live artifacts are never edited in place: editing a bound strategy, skill, guideline, automation set or policy creates a draft Release (D38).</p>
       </section>
 
       <section className="panel">

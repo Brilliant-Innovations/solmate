@@ -45,11 +45,12 @@ export async function loadStatusSnapshot(): Promise<StatusSnapshot> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return empty;
   try {
-    const [session, providers, alerts, operator] = await Promise.all([
+    const [session, providers, alerts, operator, assurance] = await Promise.all([
       supabase.schema('ops').from('runtime_sessions').select('activity_state, capital_authority, paused, attended, profile, last_presence_heartbeat_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.schema('ops').from('provider_health').select('state, freshness_age_ms'),
       supabase.schema('ops').from('notifications').select('severity').is('resolved_at', null),
       supabase.auth.getUser().then(async ({ data }) => (data.user ? supabase.schema('ops').from('operators').select('role').eq('user_id', data.user.id).maybeSingle() : { data: null })),
+      supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
     ]);
     const account = await loadPaperAccount();
     const equity = account ? await loadEquity(account.id) : { latest: null, dayStart: null };
@@ -74,7 +75,8 @@ export async function loadStatusSnapshot(): Promise<StatusSnapshot> {
       equityUsd: latestEquity,
       exposureFraction: equity.latest?.exposure_fraction ?? null,
       dayPnlFraction: latestEquity !== null && dayStartEquity !== null && dayStartEquity > 0 ? (latestEquity - dayStartEquity) / dayStartEquity : null,
-      canControl: role === 'operator' || role === 'admin',
+      // Every control request needs an aal2 (TOTP-verified) session at the database (RLS); an aal1 operator sees the control locked, never a refusal after the click.
+      canControl: (role === 'operator' || role === 'admin') && assurance.data?.currentLevel === 'aal2',
     };
   } catch {
     return { ...empty, db: 'failed' };

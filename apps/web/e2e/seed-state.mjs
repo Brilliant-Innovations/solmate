@@ -1,0 +1,41 @@
+/**
+ * Deterministic identifiers the E2E seed writes and the tests read (§24.7). Fixed so a test can
+ * navigate straight to a seeded cycle or Release without reading the database itself.
+ */
+export const seeded = {
+  symbol: 'E2E',
+  mint: 'E2E1111111111111111111111111111111111111111',
+  paperAccountId: 'e2e00000-0000-4000-8000-00000000a001',
+  liveAccountId: 'e2e00000-0000-4000-8000-00000000a002',
+  strategyVersionId: 'S0_SAFE@e2e',
+  sleeveId: 'e2e00000-0000-4000-8000-00000000b001',
+  assetId: 'e2e00000-0000-4000-8000-00000000c001',
+  eligibilityId: 'e2e00000-0000-4000-8000-00000000c002',
+  featureSnapshotId: 'e2e00000-0000-4000-8000-00000000c003',
+  candidateId: 'e2e00000-0000-4000-8000-00000000c004',
+  entryCycleId: 'e2e00000-0000-4000-8000-00000000d001',
+  entryProposalId: 'e2e00000-0000-4000-8000-00000000d002',
+  entryReviewId: 'e2e00000-0000-4000-8000-00000000d003',
+  entryEvaluationId: 'e2e00000-0000-4000-8000-00000000d004',
+  entryIntentId: 'e2e00000-0000-4000-8000-00000000d005',
+  orderId: 'e2e00000-0000-4000-8000-00000000d006',
+  attemptId: 'e2e00000-0000-4000-8000-00000000d007',
+  fillId: 'e2e00000-0000-4000-8000-00000000d008',
+  positionId: 'e2e00000-0000-4000-8000-00000000e001',
+  lotId: 'e2e00000-0000-4000-8000-00000000e002',
+  holdCycleId: 'e2e00000-0000-4000-8000-00000000e003',
+  holdProposalId: 'e2e00000-0000-4000-8000-00000000e004',
+  holdReviewId: 'e2e00000-0000-4000-8000-00000000e005',
+  snapshotId: 'e2e00000-0000-4000-8000-00000000e006',
+  notificationId: 'e2e00000-0000-4000-8000-00000000f001',
+  reconciliationId: 'e2e00000-0000-4000-8000-00000000f002',
+  releaseId: 'e2e00000-0000-4000-8000-00000000f003',
+  verdictId: 'e2e00000-0000-4000-8000-00000000f004',
+  approvalIntentId: 'e2e00000-0000-4000-8000-00000000f005',
+  authorizationId: 'e2e00000-0000-4000-8000-00000000f006',
+  authorizationHash: 'ef'.repeat(32),
+  releaseDigest: 'ab'.repeat(32),
+  contractSetDigest: 'cd'.repeat(32),
+  /** cost basis of the single open lot, base units of USDC */
+  lotCostBaseUnits: 200_000_000,
+};

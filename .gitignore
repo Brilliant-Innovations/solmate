@@ -54,3 +54,7 @@ vitest.config.*.timestamp*
 out
 # vercel local/build state
 .vercel/
+
+# Playwright (§24.7) run artifacts
+apps/web/test-results/
+apps/web/playwright-report/

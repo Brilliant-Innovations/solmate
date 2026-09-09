@@ -12,7 +12,19 @@
       "type:app",
       "trust:web",
       "scope:web"
-    ]
+    ],
+    "targets": {
+      "e2e": {
+        "command": "pnpm exec playwright test -c apps/web/e2e/playwright.config.ts",
+        "dependsOn": [
+          "^build"
+        ],
+        "cache": false,
+        "options": {
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
