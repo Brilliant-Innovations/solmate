@@ -43,6 +43,20 @@ export const SignerTransactionPolicy = z.strictObject({
   allowedTransferRecipients: z.array(SolanaAddress),
   /** Mints the wallet may move. A transfer whose mint is not policy-visible fails this by construction. */
   allowedSplMints: z.array(MintAddress),
+  /**
+   * Break-glass only: permit any mint, with the destination constraint doing the work.
+   *
+   * An incident has to be able to sell whatever the wallet actually holds, which may include mints
+   * no Release ever enabled, so an allowlist cannot be written in advance. Dropping the mint
+   * constraint is safe *only* because `allowedSplRecipients` still pins every destination to an
+   * account we own: the mint of a transfer into our own account does not change who ends up with
+   * the value. `TransferChecked` is still required, so the mint appears in the provider's incident
+   * log even though it is not constrained.
+   *
+   * The autonomous builders never set this. `profile2SignerPolicy` and `sweepSignerPolicy` both
+   * enumerate their mints.
+   */
+  anySplMint: z.boolean().default(false),
   /** Token accounts an SPL transfer may credit: the wallet's own accounts and the registered custody set. */
   allowedSplRecipients: z.array(SolanaAddress),
   /** Whether the shape set uses lookup tables for account loading at all (a program via one is always denied). */
@@ -87,9 +101,11 @@ export function renderTurnkeyPolicy(policy: SignerTransactionPolicy): TurnkeyPol
     p.allowedTransferRecipients.length === 0
       ? 'solana.tx.transfers.count() == 0'
       : `solana.tx.transfers.all(t, t.from == '${p.tradingWallet}' && t.to in ${list(p.allowedTransferRecipients)})`,
-    p.allowedSplMints.length === 0
-      ? 'solana.tx.spl_transfers.count() == 0'
-      : `solana.tx.spl_transfers.all(t, t.owner == '${p.tradingWallet}' && t.token_mint in ${list(p.allowedSplMints)} && t.to in ${list(p.allowedSplRecipients)})`,
+    p.anySplMint
+      ? `solana.tx.spl_transfers.all(t, t.owner == '${p.tradingWallet}' && t.to in ${list(p.allowedSplRecipients)})`
+      : p.allowedSplMints.length === 0
+        ? 'solana.tx.spl_transfers.count() == 0'
+        : `solana.tx.spl_transfers.all(t, t.owner == '${p.tradingWallet}' && t.token_mint in ${list(p.allowedSplMints)} && t.to in ${list(p.allowedSplRecipients)})`,
   ];
   if (!p.allowLookupTables) allow.push('solana.tx.address_table_lookups.count() == 0');
 

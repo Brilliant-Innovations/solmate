@@ -5,6 +5,15 @@
  *
  *   node tools/recoveryctl.mjs <recovery-env-file> enumerate     # chain-first: what the wallet holds right now
  *   node tools/recoveryctl.mjs <recovery-env-file> runbook       # the ordered incident steps (D54: revoke first)
+ *   node tools/recoveryctl.mjs <recovery-env-file> verify-record <record.json>
+ *   node tools/recoveryctl.mjs <recovery-env-file> render-policy <record.json>
+ *   node tools/recoveryctl.mjs <recovery-env-file> check-sweep   <record.json> <unsigned-tx-hex|base64>
+ *
+ * The last three exist so the break-glass sweep can be rehearsed *before* an incident rather than
+ * discovered during one (INV-27): verify-record proves every pinned token account is the canonical
+ * ATA of the pinned cold wallet, render-policy prints the conditions to pin at the provider, and
+ * check-sweep evaluates a candidate transaction against the policy the record implies. None of them
+ * signs, and none takes a recipient: the destination comes only from the record (D54).
  *
  * This skeleton has no signing capability and never routes through the executor. Every step that
  * signs (executor identity revocation, time-boxed incident identity, provider vault recovery,
@@ -20,9 +29,10 @@ import fs from 'node:fs';
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
-const [envFile, action] = process.argv.slice(2);
-if (!envFile || !['enumerate', 'runbook'].includes(action ?? '')) {
-  console.error('usage: node tools/recoveryctl.mjs <recovery-env-file> enumerate|runbook');
+const [envFile, action, ...rest] = process.argv.slice(2);
+const ACTIONS = ['enumerate', 'runbook', 'verify-record', 'render-policy', 'check-sweep'];
+if (!envFile || !ACTIONS.includes(action ?? '')) {
+  console.error(`usage: node tools/recoveryctl.mjs <recovery-env-file> ${ACTIONS.join('|')}`);
   process.exit(2);
 }
 const env = Object.fromEntries(
@@ -48,6 +58,58 @@ const RUNBOOK = [
 if (action === 'runbook') {
   console.log(RUNBOOK.join('\n'));
   process.exit(0);
+}
+
+// --- rehearsal: the pinned record and a candidate sweep, from the built libraries ----------------
+if (action === 'verify-record' || action === 'render-policy' || action === 'check-sweep') {
+  const [recordPath, txArg] = rest;
+  if (!recordPath) {
+    console.error(`${action} needs a path to the cold-recovery record JSON`);
+    process.exit(2);
+  }
+  if (!env.TRADING_WALLET) {
+    console.error('TRADING_WALLET is required in the recovery env file');
+    process.exit(2);
+  }
+  const { ColdRecoveryRecord, renderTurnkeyPolicy, sweepDestinations, sweepSignerPolicy } = await import('../libs/contracts/dist/index.js');
+  const parsed = ColdRecoveryRecord.safeParse(JSON.parse(fs.readFileSync(recordPath, 'utf8')));
+  if (!parsed.success) {
+    console.error(JSON.stringify({ event: 'record_invalid', issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) }, null, 2));
+    process.exit(1);
+  }
+  const record = parsed.data;
+  const { checkSweepTransaction, decodeTransaction, verifyColdRecoveryRecord } = await import('../libs/execution/dist/index.js');
+  const wallet = env.TRADING_WALLET;
+  const policyVersion = `break-glass-sweep-${record.version}`;
+
+  if (action === 'verify-record') {
+    const v = verifyColdRecoveryRecord(record);
+    console.log(JSON.stringify({ event: 'record_verified', ok: v.ok, destinations: sweepDestinations(record), findings: v.ok ? [] : v.findings, offlineRecord: record.offlineRecordReference }, null, 2));
+    if (!v.ok) console.error('A pinned token account is not the canonical ATA of the pinned wallet. Correct the record before the drill, not during an incident.');
+    process.exit(v.ok ? 0 : 1);
+  }
+
+  if (action === 'render-policy') {
+    const policy = sweepSignerPolicy(record, { policyVersion, tradingWallet: wallet });
+    console.log(JSON.stringify({ event: 'sweep_policy', policy, provider: renderTurnkeyPolicy(policy) }, null, 2));
+    console.error('Pin these conditions on the break-glass principal at the provider. Nothing here enforces them (D53).');
+    process.exit(0);
+  }
+
+  if (!txArg) {
+    console.error('check-sweep needs the unsigned transaction as hex or base64');
+    process.exit(2);
+  }
+  const bytes = /^[0-9a-fA-F]+$/.test(txArg) && txArg.length % 2 === 0 ? Buffer.from(txArg, 'hex') : Buffer.from(txArg, 'base64');
+  let verdict;
+  try {
+    verdict = checkSweepTransaction(decodeTransaction(new Uint8Array(bytes)), record, { policyVersion, tradingWallet: wallet, cluster: record.cluster });
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'sweep_undecodable', error: err instanceof Error ? err.message : String(err) }, null, 2));
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ event: 'sweep_checked', ...verdict, destinations: sweepDestinations(record) }, null, 2));
+  process.exit(verdict.ok ? 0 : 1);
 }
 
 if (!env.SOLANA_RPC_URL || !env.TRADING_WALLET) {

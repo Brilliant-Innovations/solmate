@@ -89,3 +89,52 @@ export function sweepDestinations(record: ColdRecoveryRecord): string[] {
   const r = ColdRecoveryRecord.parse(record);
   return [r.coldRecoveryWallet, ...r.tokenAccounts.map((t) => t.tokenAccount)];
 }
+/**
+ * The other two classes D53 permits the break-glass principal: a risk-reducing swap of a held asset
+ * into an approved settlement mint, and a provider vault cancel/withdraw/recovery to regain custody.
+ *
+ * Deliberately a *separate* policy from the sweep. The sweep has one destination and no route
+ * programs; this one has route programs and cannot enumerate its mints. Merging them would give the
+ * union of both permissions to both actions, which is exactly the widening D55 warns against.
+ *
+ * **Its honest limit.** For a sweep, every value movement is a top-level transfer the provider can
+ * see, so the policy is close to complete. A swap's flows happen inside the router's CPIs, and D55
+ * says plainly that "policy-visible transfer lists do not necessarily expose all inner/CPI
+ * effects". In normal operation the executor's simulation and balance-delta validation are the
+ * layer that covers that gap — and during break-glass there is no executor. So this policy
+ * constrains what it can (who signs, which programs, where top-level value lands, no unresolvable
+ * destinations) and cannot promise more. That residual is why D53 time-boxes the principal, demands
+ * MFA/quorum to activate it, and logs and alerts on every signature: the compensating control is
+ * that a human is watching a short window, not that the policy is airtight.
+ */
+export function incidentSwapSignerPolicy(input: {
+  policyVersion: VersionId;
+  cluster: SolanaCluster;
+  tradingWallet: SolanaAddress;
+  /** Router and direct-pool venue programs the incident runbook permits. */
+  routePrograms: readonly SolanaAddress[];
+  basePrograms: readonly SolanaAddress[];
+  /** The wallet's own token accounts and the registered custody set: where proceeds may land. */
+  ownedTokenAccounts: readonly SolanaAddress[];
+  /** A vault program (Jupiter Trigger) when the incident includes regaining provider custody. */
+  vaultPrograms?: readonly SolanaAddress[];
+  /** Jupiter route transactions use lookup tables; a *destination* through one is still denied. */
+  allowLookupTables?: boolean;
+  maxInstructions?: number;
+}): SignerTransactionPolicy {
+  return SignerTransactionPolicy.parse({
+    version: input.policyVersion,
+    cluster: input.cluster,
+    tradingWallet: input.tradingWallet,
+    allowedPrograms: [...new Set([...input.basePrograms, ...input.routePrograms, ...(input.vaultPrograms ?? [])])],
+    // No bare SOL transfer: reducing risk means swapping and recovering custody, not paying anyone.
+    // A sweep to the cold wallet is the other policy's job.
+    allowedTransferRecipients: [],
+    // Whatever the wallet turns out to hold (see `anySplMint`), landing only in our own accounts.
+    allowedSplMints: [],
+    anySplMint: true,
+    allowedSplRecipients: [...new Set(input.ownedTokenAccounts)],
+    allowLookupTables: input.allowLookupTables ?? true,
+    maxInstructions: input.maxInstructions ?? 16,
+  });
+}

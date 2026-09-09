@@ -1,9 +1,10 @@
 import fc from 'fast-check';
-import { coldRecoveryDigest, sweepSignerPolicy, type ColdRecoveryRecord, type MintAddress, type SolanaAddress, type VersionId } from '@sol-agent-trader/contracts';
+import { coldRecoveryDigest, incidentSwapSignerPolicy, renderTurnkeyPolicy, sweepSignerPolicy, type ColdRecoveryRecord, type MintAddress, type SolanaAddress, type VersionId } from '@sol-agent-trader/contracts';
 import { base58Encode } from '@sol-agent-trader/solana-hard-state';
 import { associatedTokenAddress } from '../direct-pool/bytes.js';
 import { decodeTransaction, encodeTransaction, type DecodedMessage } from '../tx/codec.js';
 import { COMPUTE_BUDGET_PROGRAM, JUPITER_V6_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM } from '../validate/programs.js';
+import { evaluateSignerPolicy } from '../signer/policy.js';
 import { checkSweepTransaction, sweepDestinations, verifyColdRecoveryRecord } from './cold-recovery.js';
 
 /**
@@ -168,5 +169,106 @@ describe('INV-27: a sweep reaches the pinned destination and nothing else', () =
     expect(policy.allowLookupTables).toBe(false);
     // No router, no direct-pool venue: only transfers and the accounts they need.
     expect(policy.allowedPrograms).not.toContain(JUPITER_V6_PROGRAM);
+  });
+});
+describe('break-glass incident swap: the other two D53 classes (§15.7B)', () => {
+  const OWN_ATA = SRC_ATA;
+  const policy = incidentSwapSignerPolicy({
+    policyVersion: 'break-glass-incident-v1' as VersionId,
+    cluster: 'mainnet-beta',
+    tradingWallet: TRADING,
+    routePrograms: [JUPITER_V6_PROGRAM as SolanaAddress],
+    basePrograms: [SYSTEM_PROGRAM, TOKEN_PROGRAM, COMPUTE_BUDGET_PROGRAM] as SolanaAddress[],
+    ownedTokenAccounts: [OWN_ATA],
+  });
+  const ictx = { cluster: 'mainnet-beta' };
+
+  /** A route that sells an arbitrary held mint, proceeds landing in our own account. */
+  function incidentSwap(destination: string, mint: string, keysExtra: string[] = [], over: Partial<DecodedMessage> = {}) {
+    const keys = [TRADING, OWN_ATA, mint, destination, COMPUTE_BUDGET_PROGRAM, TOKEN_PROGRAM, SYSTEM_PROGRAM, ...keysExtra];
+    const message: DecodedMessage = {
+      version: 0,
+      header: { numRequiredSignatures: 1, numReadonlySigned: 0, numReadonlyUnsigned: 3 },
+      staticAccountKeys: keys,
+      recentBlockhash: addr(9),
+      instructions: [{ programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: transferChecked() }],
+      addressTableLookups: [],
+      ...over,
+    };
+    return decodeTransaction(encodeTransaction([null], message));
+  }
+
+  it('sells a mint no Release ever enumerated, because an incident cannot know what it holds', () => {
+    // Two arbitrary mints, neither in any allowlist: both fine, because the proceeds stay ours.
+    for (const mint of [addr(31), addr(32)]) {
+      const v = evaluateSignerPolicy(incidentSwap(OWN_ATA, mint), policy, ictx);
+      expect(v.ok, `mint ${mint}`).toBe(true);
+    }
+  });
+
+  it('still refuses a destination we do not own, whatever the mint', () => {
+    fc.assert(
+      fc.property(fc.uint8Array({ minLength: 32, maxLength: 32 }), fc.uint8Array({ minLength: 32, maxLength: 32 }), (dBytes, mBytes) => {
+        const destination = base58Encode(dBytes);
+        fc.pre(destination !== OWN_ATA);
+        const v = evaluateSignerPolicy(incidentSwap(destination, base58Encode(mBytes)), policy, ictx);
+        return !v.ok && v.reasons.includes('SPL_RECIPIENT_NOT_ALLOWED');
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('permits no bare SOL transfer at all: paying someone is not risk reduction', () => {
+    const sol = incidentSwap(OWN_ATA, addr(31), [], { instructions: [{ programIdIndex: 6, accountIndexes: [0, 3], data: systemTransfer() }] });
+    const v = evaluateSignerPolicy(sol, policy, ictx);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reasons).toContain('SOL_TRANSFER_NOT_PERMITTED');
+  });
+
+  it('still requires TransferChecked, so the mint reaches the incident log even though it is unconstrained', () => {
+    const plain = incidentSwap(OWN_ATA, addr(31), [], { instructions: [{ programIdIndex: 5, accountIndexes: [1, 3, 0], data: Uint8Array.from([3, 64, 66, 15, 0, 0, 0, 0, 0]) }] });
+    const v = evaluateSignerPolicy(plain, policy, ictx);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reasons).toContain('SPL_MINT_NOT_POLICY_VISIBLE');
+  });
+
+  it('still refuses an unresolvable destination and a program outside the runbook set', () => {
+    const viaTable = incidentSwap(OWN_ATA, addr(31), [], { instructions: [{ programIdIndex: 5, accountIndexes: [1, 2, 40, 0], data: transferChecked() }] });
+    const t = evaluateSignerPolicy(viaTable, policy, ictx);
+    expect(t.ok).toBe(false);
+    if (!t.ok) expect(t.reasons).toContain('TRANSFER_TARGET_VIA_LOOKUP_TABLE');
+    const foreign = incidentSwap(OWN_ATA, addr(31), [addr(33)], {
+      instructions: [
+        { programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: transferChecked() },
+        { programIdIndex: 7, accountIndexes: [0], data: Uint8Array.from([1]) },
+      ],
+    });
+    const f = evaluateSignerPolicy(foreign, policy, ictx);
+    expect(f.ok).toBe(false);
+    if (!f.ok) expect(f.reasons).toContain('PROGRAM_NOT_ALLOWED');
+  });
+
+  it('is not the sweep policy: neither grants the other its permissions', () => {
+    const sweep = sweepSignerPolicy(record, { policyVersion: POLICY_VERSION, tradingWallet: TRADING });
+    // The sweep cannot route; the incident policy can.
+    expect(sweep.allowedPrograms).not.toContain(JUPITER_V6_PROGRAM);
+    expect(policy.allowedPrograms).toContain(JUPITER_V6_PROGRAM);
+    // The sweep may send to the cold wallet; the incident policy may not send SOL anywhere.
+    expect(sweep.allowedTransferRecipients).toEqual([COLD]);
+    expect(policy.allowedTransferRecipients).toEqual([]);
+    // The sweep enumerates its mints; the incident policy cannot.
+    expect(sweep.anySplMint).toBe(false);
+    expect(policy.anySplMint).toBe(true);
+    // And the cold wallet is not a destination the incident policy accepts.
+    const toCold = evaluateSignerPolicy(incidentSwap(COLD_USDC_ATA, addr(31)), policy, ictx);
+    expect(toCold.ok).toBe(false);
+  });
+
+  it('renders provider conditions that constrain the destination without naming a mint', () => {
+    const allow = renderTurnkeyPolicy(policy).find((r) => r.effect === 'EFFECT_ALLOW')!;
+    expect(allow.condition).toContain(`t.owner == '${TRADING}'`);
+    expect(allow.condition).toContain(`t.to in ['${OWN_ATA}']`);
+    expect(allow.condition).not.toContain('token_mint in');
+    expect(allow.condition).toContain('solana.tx.transfers.count() == 0');
   });
 });

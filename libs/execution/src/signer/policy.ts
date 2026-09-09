@@ -125,7 +125,7 @@ export function evaluateSignerPolicy(tx: DecodedTransaction, policy: SignerTrans
       }
       if (disc !== SPL_TRANSFER && disc !== SPL_TRANSFER_CHECKED && disc !== SPL_TRANSFER_CHECKED_WITH_FEE) continue;
       splTransfers++;
-      if (policy.allowedSplMints.length === 0) {
+      if (!policy.anySplMint && policy.allowedSplMints.length === 0) {
         add('SPL_TRANSFER_NOT_PERMITTED', `token program instruction ${disc}`);
         continue;
       }
@@ -142,7 +142,9 @@ export function evaluateSignerPolicy(tx: DecodedTransaction, policy: SignerTrans
         add('TRANSFER_TARGET_VIA_LOOKUP_TABLE', `SPL transfer mint ${mint} destination ${to}`);
         continue;
       }
-      if (!allowedMints.has(mint)) add('SPL_MINT_NOT_ALLOWED', mint);
+      // Under `anySplMint` the mint is deliberately unconstrained; the destination check below is
+      // what keeps the value ours, and TransferChecked keeps the mint visible in the incident log.
+      if (!policy.anySplMint && !allowedMints.has(mint)) add('SPL_MINT_NOT_ALLOWED', mint);
       if (!allowedSplRecipients.has(to)) add('SPL_RECIPIENT_NOT_ALLOWED', to);
     }
   }
