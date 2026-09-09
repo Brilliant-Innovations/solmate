@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SignerTransactionPolicy } from '../policy/signer-policy.js';
 import { Amount, Bps, Ed25519PublicKeyHex, KeyId, MintAddress, SolanaAddress, SolanaCluster, Sha256Hex } from '../primitives.js';
 import { DeploymentProfile } from '../enums.js';
 
@@ -320,6 +321,24 @@ export const ExecutionServiceEnv = Common.extend({
   TURNKEY_API_PUBLIC_KEY: NonEmpty.optional(),
   TURNKEY_API_PRIVATE_KEY: NonEmpty.optional(),
   TURNKEY_WALLET_ADDRESS: SolanaAddress.optional(),
+  /** Provider API origin; pinned so the executor egress allowlist has one host to permit. */
+  TURNKEY_API_BASE_URL: Url.default('https://api.turnkey.com'),
+  /**
+   * The pinned signer-side policy (D55, ADR-0008). The provider enforces it; this is the copy the
+   * executor mirrors locally and whose digest Live Readiness attests, so a policy changed at the
+   * provider without a matching Release stops matching what we recorded.
+   */
+  SIGNER_POLICY_JSON: z
+    .string()
+    .transform((str, ctx) => {
+      try {
+        return SignerTransactionPolicy.parse(JSON.parse(str));
+      } catch (e) {
+        ctx.addIssue({ code: 'custom', message: `SIGNER_POLICY_JSON invalid: ${e instanceof Error ? e.message : String(e)}` });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   EXECUTOR_JOURNAL_PATH: NonEmpty,
   SENTRY_DSN_EXECUTION_SERVICE: Url.optional(),
   /** host:port for the worker-facing internal API (§15.8). Loopback or private network only. */
@@ -341,6 +360,17 @@ const ExecutionServiceEnvChecked = ExecutionServiceEnv.superRefine((v, ctx) => {
   }
   if (v.SIGNER_BACKEND === 'TURNKEY' && !(v.TURNKEY_ORGANIZATION_ID && v.TURNKEY_API_PUBLIC_KEY && v.TURNKEY_API_PRIVATE_KEY && v.TURNKEY_WALLET_ADDRESS)) {
     ctx.addIssue({ code: 'custom', message: 'TURNKEY signer requires organization id, API key pair and wallet address', path: ['SIGNER_BACKEND'] });
+  }
+  // D55/ADR-0008: the second policy layer is not optional for a live-capable Turnkey deployment.
+  // Without a pinned policy there is nothing to mirror, nothing to attest and nothing to digest.
+  if (v.SIGNER_BACKEND === 'TURNKEY' && !v.SIGNER_POLICY_JSON) {
+    ctx.addIssue({ code: 'custom', message: 'TURNKEY signer requires SIGNER_POLICY_JSON: the pinned signer-side transaction policy (D55, ADR-0008)', path: ['SIGNER_POLICY_JSON'] });
+  }
+  if (v.SIGNER_POLICY_JSON && v.TURNKEY_WALLET_ADDRESS && v.SIGNER_POLICY_JSON.tradingWallet !== v.TURNKEY_WALLET_ADDRESS) {
+    ctx.addIssue({ code: 'custom', message: 'SIGNER_POLICY_JSON pins a different trading wallet than TURNKEY_WALLET_ADDRESS', path: ['SIGNER_POLICY_JSON'] });
+  }
+  if (v.SIGNER_POLICY_JSON && v.SIGNER_POLICY_JSON.cluster !== v.EXECUTOR_GUARDRAILS_JSON.cluster) {
+    ctx.addIssue({ code: 'custom', message: 'SIGNER_POLICY_JSON is pinned to a different cluster than the executor guardrails', path: ['SIGNER_POLICY_JSON'] });
   }
 });
 

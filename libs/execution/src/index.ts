@@ -5,6 +5,8 @@ export * from './adapter/paper-adapter.js';
 export * from './adapter/parity.js';
 export * from './signer/software-dev.js';
 export * from './signer/policy.js';
+export * from './signer/turnkey-stamp.js';
+export * from './signer/turnkey.js';
 export * from './tx/codec.js';
 export * from './validate/programs.js';
 export * from './validate/structure.js';

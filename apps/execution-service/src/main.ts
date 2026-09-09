@@ -3,7 +3,7 @@ import { DEFAULT_CHAIN_HEALTH_POLICY, getContractSetDigest, importVerificationKe
 import { RpcTransactionSubmitter } from '@sol-agent-trader/execution';
 import { DEFAULT_EMERGENCY_ROUTE_POLICY, type DirectPoolHop } from '@sol-agent-trader/contracts';
 import { advanceAttemptFinality, createSql, decisionQuoteForCycle, executorModeFacts, latestEmergencyRouteForMint, loadApprovalGrant, loadTradeIntent, persistExecution, type Sql } from '@sol-agent-trader/db/server';
-import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, JupiterOrderHttpClient, JupiterSwapClient, RpcChainObserver, RpcCustodyReader, SimulationRpcClient, SoftwareDevSigner, type DetailedExecution } from '@sol-agent-trader/execution';
+import { BASE_PROGRAMS, JUPITER_V6_PROGRAM, JupiterOrderHttpClient, JupiterSwapClient, RpcChainObserver, RpcCustodyReader, SimulationRpcClient, SoftwareDevSigner, TurnkeySigner, type DetailedExecution } from '@sol-agent-trader/execution';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
@@ -70,13 +70,31 @@ async function main(): Promise<void> {
   if (!env.INTERNAL_API_SECRETS || env.INTERNAL_API_SECRETS.length === 0) fatal('internal_api_secrets_missing', { hint: 'set INTERNAL_API_SECRETS (hex, ≥32 bytes) shared with the worker' });
   if (guardrails.cluster !== env.SOLANA_CLUSTER) fatal('cluster_mismatch', { guardrails: guardrails.cluster, env: env.SOLANA_CLUSTER });
 
-  // Signer (D47). The Turnkey adapter lands after Probe A/C; until then only the development signer exists.
+  // Signer (D47, D55, ADR-0008). SOFTWARE_DEV holds a throwaway key and can never serve live
+  // capability on mainnet; TURNKEY holds a non-exportable identity behind the pinned policy layer,
+  // which the adapter also mirrors locally so a denied shape never reaches the provider.
   let signer: TradingWalletSigner;
   if (env.SIGNER_BACKEND === 'SOFTWARE_DEV') {
     if (!env.SOFTWARE_SIGNER_KEY_PKCS8) fatal('software_signer_key_missing');
     signer = new SoftwareDevSigner({ privateKeyPkcs8Hex: env.SOFTWARE_SIGNER_KEY_PKCS8, cluster: guardrails.cluster, liveCapabilityEnabled: guardrails.liveCapabilityEnabled, clock });
   } else {
-    fatal('signer_backend_unavailable', { backend: env.SIGNER_BACKEND, hint: 'TURNKEY adapter is shaped by Probe A/C (plan MP) and is not built yet' });
+    // The env schema already refuses TURNKEY without the organization, key pair, wallet and policy.
+    const base = env.TURNKEY_API_BASE_URL.replace(/\/+$/, '');
+    signer = new TurnkeySigner({
+      organizationId: env.TURNKEY_ORGANIZATION_ID!,
+      signWith: env.TURNKEY_WALLET_ADDRESS!,
+      apiPublicKeyHex: env.TURNKEY_API_PUBLIC_KEY!,
+      apiPrivateKeyHex: env.TURNKEY_API_PRIVATE_KEY!,
+      policy: env.SIGNER_POLICY_JSON!,
+      cluster: guardrails.cluster,
+      clock,
+      transport: async ({ path, body, stamp }) => {
+        const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', 'X-Stamp': stamp }, body });
+        return { status: res.status, body: await res.text() };
+      },
+    });
+    const digest = await (signer as TurnkeySigner).policyDigest();
+    logger.info('signer_policy_pinned', { backend: 'TURNKEY', policyVersion: env.SIGNER_POLICY_JSON!.version, policyDigest: digest, wallet: env.TURNKEY_WALLET_ADDRESS });
   }
   if (signer.publicKey !== guardrails.tradingWalletAddress) fatal('signer_wallet_mismatch', { signer: signer.publicKey, guardrails: guardrails.tradingWalletAddress });
 

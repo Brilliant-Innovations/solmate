@@ -546,10 +546,19 @@ invariants:
     applicable_capabilities:
       - LIVE_SIGNING
     owner_modules:
-      - apps/execution-service/src/signer
-    tests: []
-    evidence: []
-    status: unmapped
+      - libs/contracts/src/policy/signer-policy.ts
+      - libs/execution/src/signer
+    tests:
+      - libs/execution/src/signer/policy.spec.ts
+      - libs/execution/src/signer/turnkey.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+      - docs/decisions/ADR-0008-signer-policy-at-profile-2.md
+    # The enforcing layer is the provider, by D55's design; these tests cover the artifact that
+    # renders the pinned conditions and the adapter that refuses a denied shape before asking.
+    # Probe A case (a), the deny-export and policy-administration restrictions on both principals,
+    # needs the live provider account and is recorded in MP, not here.
+    status: mapped
 
   - id: INV-26
     statement: "Revoking the executor signer identity prevents further normal signatures without needing the executor or Postgres."
@@ -563,10 +572,16 @@ invariants:
     applicable_capabilities:
       - LIVE_SIGNING
     owner_modules:
-      - apps/execution-service/src/signer
-    tests: []
-    evidence: []
-    status: unmapped
+      - libs/execution/src/signer
+    tests:
+      - libs/execution/src/signer/turnkey.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+      - docs/runbooks/executor-compromise.md
+    # Revocation happens at the provider, out of band (D54). What is testable here is that a revoked
+    # identity produces UNAVAILABLE health and a failed signature rather than any fallback, with no
+    # database involved. The out-of-band revocation itself is exercised in the isolated environment.
+    status: mapped
 
   - id: INV-27
     statement: "SWEEP_TO_COLD_RECOVERY cannot target anything except the pinned cold-recovery wallet and its canonical token accounts."
