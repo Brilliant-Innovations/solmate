@@ -3,6 +3,13 @@
 begin;
 select plan(8);
 
+-- "Quiet" has to actually be quiet. A local worker run that was killed rather than stopped leaves
+-- sessions behind in STARTING/ACTIVE, and the watchdog rightly reads those as missing runtimes: it
+-- then persists a second RUNTIME_HEARTBEAT_MISSING pause, and the audit assertion below — which
+-- counts every ENTRY_PAUSE_PERSISTED, not only this fixture's — sees 2. That is the watchdog working,
+-- not failing, so the test isolates itself instead of loosening the assertion. Rolled back with the rest.
+update ops.runtime_sessions set activity_state = 'OFF' where activity_state <> 'OFF';
+
 -- quiet: nothing open, nothing overdue
 select is((select (ops.session_resume_watchdog()) ->> 'overdue')::int, 0, 'a quiet database has no overdue resume');
 select is((select count(*)::int from ops.watchdog_runs), 1, 'every tick leaves a telemetry row');

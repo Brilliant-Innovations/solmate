@@ -16,6 +16,12 @@ on conflict (name) do nothing;
 insert into ops.runtime_sessions (id, account_id, profile, activity_state, capital_authority, attended, actual_start_at, created_at)
 values ('d0000000-0000-4000-8000-00000000e001', 'c0000000-0000-4000-8000-00000000e001', 'P1A', 'ACTIVE', 'PAPER', true, now() - interval '1 hour', now() - interval '1 hour');
 
+-- The function deliberately takes the *newest* open session, so any session a local worker run left
+-- behind would be chosen ahead of this fixture and the last two cases would silently test that row
+-- instead. Close them for the duration; this is inside the transaction and the rollback restores them.
+update ops.runtime_sessions set activity_state = 'OFF'
+where id <> 'd0000000-0000-4000-8000-00000000e001' and activity_state <> 'OFF';
+
 -- --- anonymous ------------------------------------------------------------------------------------
 set local role anon;
 -- Stopped at the schema, before the function is even resolved: a stronger refusal than a
@@ -37,22 +43,28 @@ select is(
 );
 select is((ops.record_operator_presence() ->> 'stamped')::boolean, false, 'and nothing is stamped for them');
 
--- --- an operator on an aal1 session ---------------------------------------------------------------
-set local request.jwt.claims = '{"sub":"a0000000-0000-4000-8000-00000000e001","role":"authenticated","aal":"aal1"}';
-select is(
-  (ops.record_operator_presence() ->> 'reason'),
-  'STEP_UP_REQUIRED',
-  'an aal1 operator session cannot claim attendance (§5.7)'
-);
+-- The heartbeat survives the refusals above untouched.
 select is(
   (select last_presence_heartbeat_at from ops.runtime_sessions where id = 'd0000000-0000-4000-8000-00000000e001'),
   null,
   'the heartbeat is still unset after the refused calls'
 );
 
+-- --- an operator on an aal1 session ---------------------------------------------------------------
+-- Presence deliberately needs no step-up (20260909004300). `aal` is a property of the session, so a
+-- stolen aal2 token would carry aal2 anyway; requiring it stopped only the password-only operator,
+-- which made the control unusable without defending against the threat it appeared to. Step-up stays
+-- on arming and every risk-increasing control (§5.7, D41), which presence is not: it cannot arm,
+-- increase exposure or clear a pause.
+set local request.jwt.claims = '{"sub":"a0000000-0000-4000-8000-00000000e001","role":"authenticated","aal":"aal1"}';
+select is((ops.record_operator_presence() ->> 'stamped')::boolean, true, 'a password-only operator session still holds presence');
+
 -- --- an operator on an aal2 session ---------------------------------------------------------------
+set local role postgres;
+update ops.runtime_sessions set last_presence_heartbeat_at = null where id = 'd0000000-0000-4000-8000-00000000e001';
+set local role authenticated;
 set local request.jwt.claims = '{"sub":"a0000000-0000-4000-8000-00000000e001","role":"authenticated","aal":"aal2"}';
-select is((ops.record_operator_presence() ->> 'stamped')::boolean, true, 'a TOTP-verified operator holds presence');
+select is((ops.record_operator_presence() ->> 'stamped')::boolean, true, 'and so does a TOTP-verified one');
 select isnt(
   (select last_presence_heartbeat_at from ops.runtime_sessions where id = 'd0000000-0000-4000-8000-00000000e001'),
   null,

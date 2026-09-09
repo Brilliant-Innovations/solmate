@@ -14,7 +14,12 @@ import { createSupabaseBrowserClient } from '../lib/supabase/browser';
  * So three things must all hold before it stamps, and the panel says which one is missing:
  *   - the tab is visible (`document.visibilityState`);
  *   - there has been real interaction — pointer, key, scroll, focus — inside `IDLE_AFTER_MS`;
- *   - the session is a TOTP-verified operator session, which the database enforces anyway.
+ *   - the caller is an operator and the session is open and declared attended, which the database
+ *     enforces anyway.
+ *
+ * Presence deliberately does *not* require a step-up (see migration 20260909004300): it cannot arm,
+ * increase exposure or clear a pause, and `aal` is a property of the Supabase session rather than of
+ * the request, so requiring aal2 would not have stopped a stolen session from holding presence.
  *
  * Stop interacting and it lapses on its own. That is the intended behaviour, not a bug: the session
  * role drops ACTIVE → WATCH after the presence timeout and new entries pause.
@@ -28,7 +33,6 @@ type Outcome = { stamped: true; at: string } | { stamped: false; reason: string 
 
 const REASON_TEXT: Record<string, string> = {
   NOT_AN_OPERATOR: 'this account is not an operator',
-  STEP_UP_REQUIRED: 'needs a TOTP-verified (aal2) session',
   NO_OPEN_SESSION: 'no open runtime session to attend',
   SESSION_NOT_ATTENDED: 'this session is declared unattended',
   IDLE: 'no interaction for five minutes',
