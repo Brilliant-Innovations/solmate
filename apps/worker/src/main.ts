@@ -129,6 +129,7 @@ import {
   automationHistory,
   chargeSpendUsage,
   ensureSkillVersion,
+  ensureGuidelineVersion,
   ensureSpendBudget,
   installAutomationSet,
   listActiveSpendBudgets,
@@ -210,7 +211,7 @@ import { DEFAULT_READINESS_POLICY, DEFAULT_WALLET_RESERVE_POLICY, type Readiness
 import type { Sha256Hex, StrategyVersion, VersionId } from '@sol-agent-trader/contracts';
 import { executeExit } from './roles/position-monitor.js';
 import { createReasoningModel } from '@sol-agent-trader/agents';
-import { tradingSkillVersion } from '@sol-agent-trader/skills';
+import { GUIDELINES_V1, tradingSkillVersion } from '@sol-agent-trader/skills';
 import { createRepoContextSources } from './agents/sources.js';
 import { primeContractDigest, runAgentsCycle, type AgentsDeps } from './roles/agents.js';
 import { executeClearedExit, type PositionMonitorDeps } from './roles/position-monitor.js';
@@ -318,6 +319,18 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   const tier = BIRDEYE_TIERS[env.BIRDEYE_TIER];
   const holder = env.SERVICE_INSTANCE_ID ?? `worker-${process.pid}`;
   const sql = createSql({ url: env.SUPABASE_DB_URL, applicationName: 'worker' });
+  // §20.12: the Trading Skill and its guideline text are ledger facts even while the agents role is
+  // off (no model keys), so the Skill Console can render and diff them from the database.
+  if (env.GIT_SHA) {
+    try {
+      const skill = tradingSkillVersion(env.GIT_SHA, systemClock.now());
+      const skillOutcome = await ensureSkillVersion(sql, skill);
+      const guidelineOutcome = await ensureGuidelineVersion(sql, { versionId: GUIDELINES_V1.version, skillId: skill.skillId, rules: GUIDELINES_V1.rules });
+      logger.info('autonomy_versions_registered', { skill: skill.versionId, skillOutcome, guidelines: GUIDELINES_V1.version, guidelineOutcome });
+    } catch (err) {
+      logger.warn('autonomy_versions_not_registered', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
   let writes: Promise<void> = Promise.resolve();
   let birdeye: BirdeyeClient | null = null;
   if (!env.BIRDEYE_API_KEY) {

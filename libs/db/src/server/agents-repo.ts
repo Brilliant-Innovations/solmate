@@ -175,3 +175,12 @@ export async function chargeSpendUsage(sql: Sql, budgetId: Uuid, window: { start
 export async function pauseSpendWindow(sql: Sql, usageId: Uuid): Promise<void> {
   await sql`update ops.spend_usage set state = 'BUDGET_PAUSED', updated_at = now() where id = ${usageId}`;
 }
+
+/** §20.12: the guideline text behind a skill's guideline_version, registered once and never edited. */
+export async function ensureGuidelineVersion(sql: Sql, g: { versionId: VersionId; skillId: string; rules: readonly string[] }): Promise<'INSERTED' | 'EXISTS'> {
+  const rows = await sql<{ version_id: string }[]>`
+    insert into agents.guideline_versions (version_id, skill_id, rules)
+    values (${g.versionId}, ${g.skillId}, ${sql.json(asJson([...g.rules]))})
+    on conflict (version_id) do nothing returning version_id`;
+  return rows.length > 0 ? 'INSERTED' : 'EXISTS';
+}

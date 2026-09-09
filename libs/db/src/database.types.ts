@@ -315,6 +315,27 @@ export type Database = {
           },
         ]
       }
+      guideline_versions: {
+        Row: {
+          registered_at: string
+          rules: Json
+          skill_id: string
+          version_id: string
+        }
+        Insert: {
+          registered_at?: string
+          rules: Json
+          skill_id: string
+          version_id: string
+        }
+        Update: {
+          registered_at?: string
+          rules?: Json
+          skill_id?: string
+          version_id?: string
+        }
+        Relationships: []
+      }
       runs: {
         Row: {
           action_cycle_id: string | null
