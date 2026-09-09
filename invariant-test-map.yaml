@@ -595,10 +595,22 @@ invariants:
     applicable_capabilities:
       - LIVE_SIGNING
     owner_modules:
-      - apps/execution-service/src/emergency/sweep.ts
-    tests: []
-    evidence: []
-    status: unmapped
+      - libs/contracts/src/policy/cold-recovery.ts
+      - libs/execution/src/emergency/cold-recovery.ts
+    tests:
+      - libs/execution/src/emergency/cold-recovery.spec.ts
+    evidence:
+      - docs/CHANGELOG.md
+      - docs/runbooks/executor-compromise.md
+    # The owner was listed as apps/execution-service/src/emergency/sweep.ts. There will be no such
+    # module: D53 puts break-glass signing outside every application deployable, so the executor
+    # never builds or signs a sweep. What can be owned in-repo is the pinned record the destination
+    # comes from (D54 forbids a CLI argument, env var, database row or browser supplying it), the
+    # break-glass policy rendered from it for the provider, and the local mirror that makes the
+    # drill meaningful. The record's token accounts are proved to be the canonical ATAs of the
+    # pinned wallet, so a lookalike address cannot be pinned. Enforcement during an incident is the
+    # provider's break-glass policy; BREAK_GLASS_SWEEP_DRILL records the live exercise.
+    status: mapped
 
   - id: INV-28
     statement: "Crossing the live capital attestation ceiling blocks new exposure until re-attestation or risk reduction."

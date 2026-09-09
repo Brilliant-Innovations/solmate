@@ -24,3 +24,4 @@ export * from './emergency-route.js';
 export * from './funding.js';
 export * from './replay.js';
 export * from './signer-policy.js';
+export * from './cold-recovery.js';
