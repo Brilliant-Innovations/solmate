@@ -1,10 +1,10 @@
-import { TINY_LIVE_ROW_SET } from '@sol-agent-trader/contracts';
+import { AUTOMATED_DRILL_ROWS, TINY_LIVE_ROW_SET } from '@sol-agent-trader/contracts';
 import { StepUpRequest } from '../../../components/step-up-request';
 import { ago } from '../../../lib/paper';
 import { loadControlRequests, loadReadiness, loadReadinessVerdicts } from '../../../lib/ops';
 import { loadMyPasskeys } from '../../../lib/settings';
 import { getOperatorSession } from '../../../lib/supabase/server';
-import { requestReadinessEvidence } from '../ops-actions';
+import { requestExecuteDrill, requestReadinessEvidence } from '../ops-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,11 +14,11 @@ export const dynamic = 'force-dynamic';
  * class, every row as PASS / FAIL / STALE / NOT RUN with its evidence link, last verified time and
  * expiry. A FAIL blocks the relevant arming through the same verdict the approvals role reads; the
  * screen never computes readiness itself. Drill and probe evidence is recorded with a passkey
- * step-up; automated `Run drill` executors for the safe drills arrive with M11.
+ * step-up; the automatable drills (M11) run in the worker from `Run drill` and record their own verdict with a transcript.
  */
 export default async function Readiness() {
   const now = Date.now();
-  const [{ verdict, rows }, verdicts, requests, operator] = await Promise.all([loadReadiness(), loadReadinessVerdicts(), loadControlRequests(['RUN_READINESS_DRILL'], 15), getOperatorSession()]);
+  const [{ verdict, rows }, verdicts, requests, operator] = await Promise.all([loadReadiness(), loadReadinessVerdicts(), loadControlRequests(['RUN_READINESS_DRILL', 'EXECUTE_READINESS_DRILL'], 15), getOperatorSession()]);
   const passkeys = await loadMyPasskeys(operator?.userId ?? null);
   const canRequest = operator?.aal === 'aal2' && (operator.role === 'operator' || operator.role === 'admin');
   const rpId = process.env['NEXT_PUBLIC_WEBAUTHN_RP_ID'] ?? null;
@@ -32,7 +32,8 @@ export default async function Readiness() {
     if (rowVerdict === 'PASS' && expiresAt && Date.parse(expiresAt) < now) return 'STALE';
     return rowVerdict;
   };
-  const safeDrills = ['DB_DOWN_EMERGENCY_CLOSE', 'CRITICAL_ALERT_DELIVERY', 'SIGNER_OUTAGE_DRILL', 'PERSIST_BEFORE_SUBMIT_DRILL'];
+  const automated = new Set<string>(AUTOMATED_DRILL_ROWS);
+  const canRunDrill = operator?.role === 'admin';
   return (
     <>
       <h1 style={{ marginTop: 0 }}>Live Readiness</h1>
@@ -104,7 +105,7 @@ export default async function Readiness() {
       <section className="panel">
         <h2>Record drill / probe evidence (step-up)</h2>
         <p className="muted">
-          Drills run in the target environment and probes from the isolated environment; the result is recorded here against the current binding, and any change to commit, contract set, policy, wallet, cluster or Release invalidates it (ADR-0010). Automated <span className="mono">Run drill</span> executors for the safe drills ({safeDrills.join(', ')}) arrive with M11; until then the operator runs them and records the outcome.
+          Drills run in the target environment and probes from the isolated environment; the result is recorded here against the current binding, and any change to commit, contract set, policy, wallet, cluster or Release invalidates it (ADR-0010). <span className="mono">Run drill</span> executes the automatable drills ({[...automated].join(', ')}) in the worker: the alert drill raises, delivers, escalates and resolves a CRITICAL drill alert; the executor drills plan a DB-independent close from the shadow and audit the journal for SIGNED before SUBMITTED. The worker records PASS or FAIL with the transcript as evidence; SIGNER_OUTAGE_DRILL and the break-glass drill stay manual because they need the isolated environment.
         </p>
         <div style={{ display: 'grid', gap: '0.5rem' }}>
           {evidenceSpecs.filter((s) => s.kind !== 'CI_EVIDENCE').map((s) => (
@@ -112,6 +113,12 @@ export default async function Readiness() {
               <span className="mono" style={{ minWidth: '18rem' }}>{s.rowId} <span className="muted">({s.kind})</span></span>
               <StepUpRequest kind="RUN_READINESS_DRILL" payload={{ rowId: s.rowId, kind: s.kind, verdict: 'PASS', evidenceRef: null, detail: {}, source: 'readiness' }} label="Record PASS" passkeys={passkeys} rpId={rpId} disabled={!canRequest} title={s.description} />
               <StepUpRequest kind="RUN_READINESS_DRILL" payload={{ rowId: s.rowId, kind: s.kind, verdict: 'FAIL', evidenceRef: null, detail: {}, source: 'readiness' }} label="Record FAIL" passkeys={passkeys} rpId={rpId} disabled={!canRequest} danger title={s.description} />
+              {automated.has(s.rowId) ? (
+                <form action={requestExecuteDrill}>
+                  <input type="hidden" name="rowId" value={s.rowId} />
+                  <button className="btn" type="submit" disabled={!canRunDrill} title="Executes the drill in the worker and records its verdict (admin)">Run drill</button>
+                </form>
+              ) : null}
             </div>
           ))}
         </div>

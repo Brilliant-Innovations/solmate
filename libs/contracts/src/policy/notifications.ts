@@ -30,6 +30,8 @@ export const AlertClass = z.enum([
   'OPERATOR_PASSKEY_REGISTERED',
   'OPERATOR_PASSKEY_REVOKED',
   'SYSTEM_ALIVE',
+  /** M11 automated drill: a CRITICAL alert raised, delivered on every CRITICAL channel and escalated once, then resolved by the drill. */
+  'DRILL_CRITICAL_ALERT_DELIVERY',
 ]);
 export type AlertClass = z.infer<typeof AlertClass>;
 
@@ -90,4 +92,5 @@ export const SeverityOf: Record<AlertClass, z.infer<typeof AlertSeverity>> = {
   OPERATOR_PASSKEY_REGISTERED: 'CRITICAL',
   OPERATOR_PASSKEY_REVOKED: 'HIGH',
   SYSTEM_ALIVE: 'INFO',
+  DRILL_CRITICAL_ALERT_DELIVERY: 'CRITICAL',
 };

@@ -150,3 +150,10 @@ export async function requestRunReplay(form: FormData): Promise<void> {
     source: 'replay-lab',
   }, '/replay');
 }
+
+/** M11: ask the worker to execute an automatable readiness drill and record its verdict (EXECUTE_READINESS_DRILL, FAST; admin only at the worker). */
+export async function requestExecuteDrill(form: FormData): Promise<void> {
+  const rowId = String(form.get('rowId') ?? '').trim();
+  if (!['CRITICAL_ALERT_DELIVERY', 'DB_DOWN_EMERGENCY_CLOSE', 'PERSIST_BEFORE_SUBMIT_DRILL'].includes(rowId)) throw new Error('rowId is not an automated drill');
+  await request('EXECUTE_READINESS_DRILL', { rowId, source: 'readiness' }, '/readiness');
+}

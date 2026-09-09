@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { amountToBigInt, compareInstants, instantToMs, ReadinessRowId, ReadinessRowKind, ReadinessRowVerdict, TINY_LIVE_ROW_SET, type CapitalAttestation, type ChainHealthSnapshot, type Clock, type ControlRequestKind, type Instant, type ReadinessBinding, type ReadinessCapability, type ReadinessPolicy, type ReadinessRow, type ReadinessStrategyClass, type ReadinessVerdict, type Release, type ReleaseAttestation, type RiskStateProjection, type Uuid, type WalletReservePolicy } from '@sol-agent-trader/contracts';
+import { addMs, amountToBigInt, compareInstants, instantToMs, ReadinessRowId, ReadinessRowKind, ReadinessRowVerdict, TINY_LIVE_ROW_SET, type CapitalAttestation, type ChainHealthSnapshot, type Clock, type ControlRequestKind, type Instant, type ReadinessBinding, type ReadinessCapability, type ReadinessPolicy, type ReadinessRow, type ReadinessStrategyClass, type ReadinessVerdict, type Release, type ReleaseAttestation, type RiskStateProjection, type Uuid, type WalletReservePolicy } from '@sol-agent-trader/contracts';
 import type { PendingControlRequest } from '@sol-agent-trader/db/server';
 import type { Logger } from '@sol-agent-trader/observability';
 import { computeReadiness, presenceState } from '@sol-agent-trader/risk';
+import { AUTOMATED_DRILL_ROWS, DrillExecutionPayload, type AutomatedDrillRow } from '@sol-agent-trader/contracts';
+import type { DrillExecutor } from '../drills/drills.js';
 
 /**
  * Worker role `readiness` (blueprint §29, §20.20; ADR-0004 row set; ADR-0010 §5; execution plan
@@ -50,6 +52,8 @@ export interface ReadinessDeps {
   clock: Clock;
   logger: Logger;
   newId?: () => Uuid;
+  /** M11 automated drills, keyed by readiness row; a row without an executor is refused as NOT_AUTOMATED. */
+  drills?: Partial<Record<AutomatedDrillRow, DrillExecutor>>;
 }
 
 export interface ReadinessReport {
@@ -149,7 +153,7 @@ export function computeRows(f: ReadinessFacts, deps: Pick<ReadinessDeps, 'reserv
   return out;
 }
 
-const EVIDENCE_KINDS: ControlRequestKind[] = ['RUN_READINESS_DRILL'];
+const EVIDENCE_KINDS: ControlRequestKind[] = ['RUN_READINESS_DRILL', 'EXECUTE_READINESS_DRILL'];
 
 export async function runReadinessCycle(deps: ReadinessDeps): Promise<ReadinessReport> {
   const now = deps.clock.now();
@@ -163,6 +167,38 @@ export async function runReadinessCycle(deps: ReadinessDeps): Promise<ReadinessR
       await deps.repo.resolve(req.id, 'REJECTED', { reason, ...extra }, now);
       deps.logger.warn('readiness_evidence_refused', { requestId: req.id, reason, by: req.requestedBy, ...extra });
     };
+    if (req.kind === 'EXECUTE_READINESS_DRILL') {
+      // M11: the worker rehearses the protection itself and records the verdict with the transcript as evidence (admin-requested, no step-up: nothing widens).
+      const parsed = DrillExecutionPayload.safeParse(req.payload);
+      if (!parsed.success) {
+        await refuse('MALFORMED_PAYLOAD', { needs: ['rowId in ' + AUTOMATED_DRILL_ROWS.join('|')] });
+        continue;
+      }
+      const role = await deps.repo.operatorRole(req.requestedBy);
+      if (role !== 'admin') {
+        await refuse('ROLE_NOT_ADMIN', { role });
+        continue;
+      }
+      const executor = deps.drills?.[parsed.data.rowId];
+      if (!executor) {
+        await refuse('NOT_AUTOMATED', { rowId: parsed.data.rowId });
+        continue;
+      }
+      let outcome: Awaited<ReturnType<DrillExecutor>>;
+      try {
+        outcome = await executor();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        outcome = { verdict: 'FAIL', startedAt: now, finishedAt: deps.clock.now(), transcript: [`drill executor threw: ${message}`], detail: { error: message } };
+      }
+      const row: ReadinessRow = { id: newId(), rowId: parsed.data.rowId, kind: 'DRILL', verdict: outcome.verdict, strategyClass: deps.strategyClass, binding: deps.binding, detail: { ...outcome.detail, automated: true, transcript: outcome.transcript, startedAt: outcome.startedAt, finishedAt: outcome.finishedAt, requestId: req.id, requestedBy: req.requestedBy }, evidenceRef: `drill:${req.id}`, recordedBy: `worker:drill:${req.requestedBy}`, evaluatedAt: outcome.finishedAt, expiresAt: addMs(outcome.finishedAt, deps.policy.drillMaxAgeMs) };
+      await deps.repo.insertRow(row);
+      await deps.repo.resolve(req.id, 'ACCEPTED', { rowId: row.rowId, verdict: row.verdict, readinessRowId: row.id, automated: true, transcript: outcome.transcript }, now);
+      report.evidence.accepted++;
+      report.rowsAppended.push(row.rowId);
+      deps.logger.info('readiness_drill_executed', { requestId: req.id, rowId: row.rowId, verdict: row.verdict, by: req.requestedBy, transcript: outcome.transcript });
+      continue;
+    }
     const rowId = ReadinessRowId.safeParse(req.payload['rowId']);
     const kind = ReadinessRowKind.safeParse(req.payload['kind']);
     const verdict = ReadinessRowVerdict.safeParse(req.payload['verdict']);

@@ -172,3 +172,29 @@ describe('executor internal API and out-of-band endpoint', () => {
     }
   });
 });
+
+describe('M11 drill routes: dry-run close from the shadow and journal order audit, nothing submitted', () => {
+  it('db-down-close plans without submitting and persist-before-submit audits SIGNED before SUBMITTED', async () => {
+    const w = await createWorld(dir, { authorizer, emergencyOperator: operator });
+    const s = await servers(w);
+    try {
+      const client = new ExecutorClient({ baseUrl: s.internalUrl, secretHex: SECRET, clock: w.clock });
+      const before = w.chain.landed.length;
+      const dry = await client.drill('db-down-close');
+      expect(dry['ok']).toBe(true);
+      expect(dry['drill']).toBe('db-down-close');
+      expect(w.chain.landed).toHaveLength(before);
+      expect(w.pipeline.localPause.active).toBe(false);
+      const empty = await client.drill('persist-before-submit');
+      expect(empty).toMatchObject({ ok: true, attemptsAudited: 0, violations: 0 });
+      const { request, intent } = await w.request();
+      stored.set(intent.id, intent);
+      await client.execute(request, 'MONITORED_EXIT');
+      const audited = await client.drill('persist-before-submit');
+      expect(audited).toMatchObject({ ok: true, attemptsAudited: 1, violations: 0 });
+      expect(Number(audited['journalHead'])).toBeGreaterThan(0);
+    } finally {
+      await s.stop();
+    }
+  });
+});

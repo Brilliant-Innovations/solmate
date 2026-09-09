@@ -75,6 +75,11 @@ export class ExecutorClient {
     }
   }
 
+  /** M11 automated drills: a dry-run emergency plan from the shadow, or an audit of the journal's SIGNED-before-SUBMITTED order. Neither submits anything. */
+  drill(name: 'db-down-close' | 'persist-before-submit'): Promise<Record<string, unknown>> {
+    return this.call('POST', `/v1/drill/${name}`, {});
+  }
+
   /** The position monitor's DB-down risk reduction (§15.10A): a rejection comes back as the outcome, not an exception. */
   async emergencyMonitor(cmd: { commandId: Uuid; type: EmergencyCommand['type']; mint: MintAddress | null; maxAmount: Amount | null; reason: string; shadowSequence: number | null }): Promise<{ outcome: string; reasons?: string[]; detail?: string[] }> {
     try {

@@ -163,6 +163,18 @@ export const DEFAULT_WALLET_RESERVE_POLICY: WalletReservePolicy = {
 
 const spec = (rowId: ReadinessRowId, kind: ReadinessRowKind, description: string, opts: { required?: boolean; requiresCapability?: ReadinessCapability | null } = {}): ReadinessRowSpec => ({ rowId, kind, required: opts.required ?? true, requiresCapability: opts.requiresCapability ?? null, description });
 
+/**
+ * Drill rows the worker can execute itself and record (M11 "every P10 drill automated where possible"):
+ * CRITICAL_ALERT_DELIVERY raises, delivers, escalates and resolves a drill alert; the two executor drills run the
+ * DB-down close plan against the local shadow and chain custody without submitting, and audit the journal for
+ * SIGNED before SUBMITTED. SIGNER_OUTAGE_DRILL and the break-glass drill need the isolated environment and stay manual.
+ */
+export const AUTOMATED_DRILL_ROWS = ['CRITICAL_ALERT_DELIVERY', 'DB_DOWN_EMERGENCY_CLOSE', 'PERSIST_BEFORE_SUBMIT_DRILL'] as const;
+export type AutomatedDrillRow = (typeof AUTOMATED_DRILL_ROWS)[number];
+
+export const DrillExecutionPayload = z.object({ rowId: z.enum(AUTOMATED_DRILL_ROWS), source: z.string().max(64).optional() });
+export type DrillExecutionPayload = z.infer<typeof DrillExecutionPayload>;
+
 /** ADR-0004 row set for the deterministic `S0_SAFE` tiny-live variant, plus the §29 rows M7 made computable. */
 export const TINY_LIVE_ROW_SET: readonly ReadinessRowSpec[] = [
   spec('RISK_AUTHORIZER_ISOLATION_TAMPER', 'CI_EVIDENCE', 'risk-authorizer isolation and DB-tamper tests (envelope and projection) green'),

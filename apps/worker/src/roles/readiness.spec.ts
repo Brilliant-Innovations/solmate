@@ -149,3 +149,39 @@ describe('worker readiness role: rows, evidence requests and the verdict', () =>
     expect(rf.failed).toContain('DB_DOWN_EMERGENCY_CLOSE');
   });
 });
+
+describe('automated drills (M11): EXECUTE_READINESS_DRILL runs the executor and records its verdict', () => {
+  const drillRequest = (rowId: string, id = IDS.message as Uuid): PendingControlRequest => ({ id, requestedBy: IDS.operator as Uuid, kind: 'EXECUTE_READINESS_DRILL', payload: { rowId, source: 'readiness' }, createdAt: T0 });
+
+  it('records a PASS row with the transcript as evidence when the drill passes, and a FAIL row when it fails or throws', async () => {
+    const h = fake({ requests: [drillRequest('CRITICAL_ALERT_DELIVERY'), drillRequest('DB_DOWN_EMERGENCY_CLOSE', IDS.account as Uuid), drillRequest('PERSIST_BEFORE_SUBMIT_DRILL', IDS.release as Uuid)] });
+    h.deps.drills = {
+      CRITICAL_ALERT_DELIVERY: async () => ({ verdict: 'PASS', startedAt: T0, finishedAt: addMs(T0, 1_000), transcript: ['raised', 'delivered IN_APP, TELEGRAM', 'resolved'], detail: { rounds: 2 } }),
+      DB_DOWN_EMERGENCY_CLOSE: async () => ({ verdict: 'FAIL', startedAt: T0, finishedAt: addMs(T0, 500), transcript: ['FAIL: no execution-service configured'], detail: { reason: 'EXECUTOR_NOT_CONFIGURED' } }),
+      PERSIST_BEFORE_SUBMIT_DRILL: async () => { throw new Error('boom'); },
+    };
+    await runReadinessCycle(h.deps);
+    const drills = h.inserted.filter((r) => r.kind === 'DRILL');
+    expect(drills.map((r) => [r.rowId, r.verdict, r.detail['automated'], r.evidenceRef])).toEqual([
+      ['CRITICAL_ALERT_DELIVERY', 'PASS', true, `drill:${IDS.message}`],
+      ['DB_DOWN_EMERGENCY_CLOSE', 'FAIL', true, `drill:${IDS.account}`],
+      ['PERSIST_BEFORE_SUBMIT_DRILL', 'FAIL', true, `drill:${IDS.release}`],
+    ]);
+    expect(drills[0]!.detail['transcript']).toEqual(['raised', 'delivered IN_APP, TELEGRAM', 'resolved']);
+    expect(drills[0]!.recordedBy).toBe(`worker:drill:${IDS.operator}`);
+    expect(drills[2]!.detail['transcript']).toEqual(['drill executor threw: boom']);
+    expect(h.resolutions.map((r) => [r.state, r.resolution['verdict'], r.resolution['automated']])).toEqual([['ACCEPTED', 'PASS', true], ['ACCEPTED', 'FAIL', true], ['ACCEPTED', 'FAIL', true]]);
+  });
+
+  it('refuses a non-admin, an unknown or manual row, and a row without an executor', async () => {
+    const op = fake({ requests: [drillRequest('CRITICAL_ALERT_DELIVERY')], role: 'operator' });
+    op.deps.drills = { CRITICAL_ALERT_DELIVERY: async () => ({ verdict: 'PASS', startedAt: T0, finishedAt: T0, transcript: [], detail: {} }) };
+    expect((await runReadinessCycle(op.deps)).evidence.refused).toEqual({ ROLE_NOT_ADMIN: 1 });
+    const manual = fake({ requests: [drillRequest('SIGNER_OUTAGE_DRILL')] });
+    expect((await runReadinessCycle(manual.deps)).evidence.refused).toEqual({ MALFORMED_PAYLOAD: 1 });
+    const none = fake({ requests: [drillRequest('DB_DOWN_EMERGENCY_CLOSE')] });
+    none.deps.drills = {};
+    expect((await runReadinessCycle(none.deps)).evidence.refused).toEqual({ NOT_AUTOMATED: 1 });
+    expect(none.inserted.filter((r) => r.kind === 'DRILL')).toHaveLength(0);
+  });
+});

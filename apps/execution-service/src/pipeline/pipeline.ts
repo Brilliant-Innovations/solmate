@@ -308,6 +308,26 @@ export class ExecutorPipeline {
    * database: custody from chain, bounds from the deployment policy, everything journaled. Any
    * close action applies the local pause so entries cannot resume before operator review.
    */
+  /** The emergency-close policy the guardrails fix (D22, §15.10): shared by the real path and the M11 dry-run drill. */
+  private emergencyPolicy(): EmergencyClosePolicy {
+    const g = this.deps.guardrails;
+    return { ...this.deps.emergency, settlementMints: this.deps.emergency.settlementMints ?? g.allowedSettlementMints, hardMaxProtectiveSlippageBps: g.hardMaxProtectiveSlippageBps, maxTxBaseUnits: g.maxEmergencyCloseTxBaseUnits === null ? null : BigInt(g.maxEmergencyCloseTxBaseUnits) };
+  }
+
+  /**
+   * M11 automated drill (DB_DOWN_EMERGENCY_CLOSE): plan EMERGENCY_CLOSE_ALL from chain custody and the
+   * local shadow exactly as the real path would, without journaling a command, submitting anything or
+   * touching the database. Reports what would be closed and what would be skipped.
+   */
+  async emergencyDryRun(): Promise<{ ok: true; actions: number; skipped: number; plannedMints: string[]; skippedMints: { mint: string; reason: string }[]; custodySlot: number; shadowSequence: number | null; unresolvedAttempts: number; localPause: { active: boolean; reason: string | null } } | { ok: false; reasons: string[]; custodySlot: number; shadowSequence: number | null }> {
+    const now = this.deps.clock.now();
+    const custody = await this.deps.custody.holdings(this.deps.guardrails.tradingWalletAddress);
+    const plan = planEmergencyClose({ type: 'EMERGENCY_CLOSE_ALL', mint: null, maxAmount: null }, custody.holdings, this.emergencyPolicy(), now);
+    const shadowSequence = this.lastShadowSequence();
+    if (!plan.ok) return { ok: false, reasons: [...plan.reasons], custodySlot: Number(custody.slot), shadowSequence };
+    return { ok: true, actions: plan.actions.length, skipped: plan.skipped.length, plannedMints: plan.actions.map((a) => a.mint), skippedMints: plan.skipped.map((x) => ({ mint: x.mint, reason: x.reason })), custodySlot: Number(custody.slot), shadowSequence, unresolvedAttempts: this.deps.journal.unresolvedAttempts().length, localPause: this.localPause };
+  }
+
   async emergency(input: EmergencyInput): Promise<EmergencyOutcome> {
     const now = this.deps.clock.now();
     let cmd: { commandId: Uuid; type: EmergencyCommand['type']; mint: MintAddress | null; maxAmount: Amount | null; issuer: EmergencyIssuer; reason: string; nonce: string; shadowSequence: number | null };
@@ -336,7 +356,7 @@ export class ExecutorPipeline {
 
     const g = this.deps.guardrails;
     const custody = await this.deps.custody.holdings(g.tradingWalletAddress);
-    const policy: EmergencyClosePolicy = { ...this.deps.emergency, settlementMints: this.deps.emergency.settlementMints ?? g.allowedSettlementMints, hardMaxProtectiveSlippageBps: g.hardMaxProtectiveSlippageBps, maxTxBaseUnits: g.maxEmergencyCloseTxBaseUnits === null ? null : BigInt(g.maxEmergencyCloseTxBaseUnits) };
+    const policy = this.emergencyPolicy();
     const plan = planEmergencyClose({ type: cmd.type, mint: cmd.mint, maxAmount: cmd.maxAmount }, custody.holdings, policy, now);
     if (!plan.ok) {
       await this.deps.journal.append('EMERGENCY_COMMAND_REJECTED', cmd.commandId, { reasons: plan.reasons, custodySlot: custody.slot });

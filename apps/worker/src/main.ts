@@ -204,6 +204,7 @@ import { runFundingCycle, type FundingDeps } from './roles/funding.js';
 import { runReplayExecutionCycle, runReplayRequestsCycle, type ReplayRoleDeps } from './roles/replay.js';
 import { loadReplayDataset } from './replay/dataset.js';
 import { guardedContextSources } from './agents/guarded-sources.js';
+import { alertDeliveryDrill, dbDownCloseDrill, persistBeforeSubmitDrill } from './drills/drills.js';
 import { liveGuardContext } from '@sol-agent-trader/replay';
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle, type AuditCheckpointDeps } from './roles/audit-checkpoint.js';
@@ -1633,6 +1634,7 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
     return;
   }
   const { sql } = shared;
+  const drillExecutor = env.EXECUTION_SERVICE_URL && env.INTERNAL_API_SECRET ? new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 15_000 }) : null;
   const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
   // Profile 0/1 worker: the account is the paper account (ensurePaperAccount refuses anything else), so the LIVE-only rows fail by construction until Profile 2.
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
@@ -1700,11 +1702,38 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
     reconciliationMaxAgeMs: 5 * env.RECONCILIATION_INTERVAL_MS,
     clock: systemClock,
     logger,
+    // M11 automated drills (§29, P10): executed here on an admin's EXECUTE_READINESS_DRILL, recorded with the transcript.
+    drills: {
+      CRITICAL_ALERT_DELIVERY: alertDeliveryDrill({
+        senders: notificationSenders(env),
+        policy: DEFAULT_NOTIFICATION_POLICY,
+        clock: systemClock,
+        newId: () => randomUUID() as Uuid,
+        repo: {
+          raise: (n) => raiseNotification(sql, n),
+          recordDelivery: (d) => recordDelivery(sql, d),
+          escalate: (id, level) => escalateNotification(sql, id, level),
+          resolve: (alertClass, at) => resolveNotifications(sql, alertClass, at),
+        },
+      }),
+      DB_DOWN_EMERGENCY_CLOSE: dbDownCloseDrill(drillExecutor, systemClock),
+      PERSIST_BEFORE_SUBMIT_DRILL: persistBeforeSubmitDrill(drillExecutor, systemClock),
+    },
   };
   logger.info('readiness_starting', { intervalMs, accountId: account.id, profile: env.DEPLOYMENT_PROFILE, strategy: tiny.versionId, releaseId: registered.id, releaseOutcome: registered.outcome, policyVersion: DEFAULT_READINESS_POLICY.version, holder: shared.holder });
   await loopUnderLease('readiness', intervalMs, logger, shared, async () => {
     await runReadinessCycle(deps);
   });
+}
+
+function notificationSenders(env: WorkerEnv): NotificationSender[] {
+  return [
+    inAppSender,
+    env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID ? telegramSender({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }) : unconfiguredSender('TELEGRAM'),
+    unconfiguredSender('EMAIL'),
+    unconfiguredSender('PUSH'),
+    unconfiguredSender('SMS'),
+  ];
 }
 
 async function notificationsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
@@ -1717,13 +1746,7 @@ async function notificationsLoop(env: WorkerEnv, logger: Logger, shared: Shared)
   const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
   const executor = env.EXECUTION_SERVICE_URL && env.INTERNAL_API_SECRET ? new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 8_000 }) : null;
-  const senders: NotificationSender[] = [
-    inAppSender,
-    env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID ? telegramSender({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }) : unconfiguredSender('TELEGRAM'),
-    unconfiguredSender('EMAIL'),
-    unconfiguredSender('PUSH'),
-    unconfiguredSender('SMS'),
-  ];
+  const senders: NotificationSender[] = notificationSenders(env);
   const deps: NotificationsDeps = {
     repo: {
       facts: async () => {

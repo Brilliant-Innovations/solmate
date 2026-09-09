@@ -1108,6 +1108,7 @@ export type Database = {
         | "RETIRE_RELEASE"
         | "FUND_TRADING_WALLET"
         | "RUN_REPLAY"
+        | "EXECUTE_READINESS_DRILL"
       control_request_state: "PENDING" | "ACCEPTED" | "REJECTED" | "EXPIRED"
       custody_kind:
         | "TRADING_WALLET"
@@ -5658,6 +5659,7 @@ export const Constants = {
         "RETIRE_RELEASE",
         "FUND_TRADING_WALLET",
         "RUN_REPLAY",
+        "EXECUTE_READINESS_DRILL",
       ],
       control_request_state: ["PENDING", "ACCEPTED", "REJECTED", "EXPIRED"],
       custody_kind: [

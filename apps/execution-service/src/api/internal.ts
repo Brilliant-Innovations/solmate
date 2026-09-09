@@ -35,7 +35,7 @@ const ClearPauseBody = z.object({ reviewedBy: z.string().min(1).max(200) });
 const JournalBody = z.object({ after: z.number().int().min(-1), limit: z.number().int().min(1).max(1000).default(200) });
 const MonitorBody = z.object({ commandId: Uuid, type: EmergencyCommandType, mint: MintAddress.nullable(), maxAmount: Amount.nullable(), reason: z.string().min(1).max(1024), shadowSequence: z.number().int().nonnegative().nullable() });
 
-export const INTERNAL_ROUTES = ['GET /v1/health', 'POST /v1/execute', 'POST /v1/recover', 'POST /v1/pause/clear', 'POST /v1/shadow', 'POST /v1/emergency/monitor'] as const;
+export const INTERNAL_ROUTES = ['GET /v1/health', 'POST /v1/execute', 'POST /v1/recover', 'POST /v1/pause/clear', 'POST /v1/shadow', 'POST /v1/emergency/monitor', 'POST /v1/drill/db-down-close', 'POST /v1/drill/persist-before-submit'] as const;
 
 export function internalApiHandler(deps: InternalApiDeps): Handler {
   const nonces = new NonceWindow(2 * (deps.maxSkewMs ?? 60_000));
@@ -144,6 +144,30 @@ export function internalApiHandler(deps: InternalApiDeps): Handler {
         const outcome = await deps.pipeline.emergency({ monitor });
         deps.logger.warn('internal_api_monitor_emergency', { commandId: monitor.commandId, type: monitor.type, mint: monitor.mint, shadowSequence: monitor.shadowSequence, outcome: outcome.outcome, reasons: outcome.outcome === 'REJECTED' ? outcome.reasons : [] });
         return json(res, outcome.outcome === 'REJECTED' ? 403 : 200, outcome);
+      }
+      case 'POST /v1/drill/db-down-close': {
+        // M11 automated drill: plan EMERGENCY_CLOSE_ALL from the local shadow and chain custody, touching neither the database nor the signer.
+        const plan = await deps.pipeline.emergencyDryRun();
+        deps.logger.info('internal_api_drill', { drill: 'db-down-close', ok: plan.ok, actions: plan.ok ? plan.actions : null, reasons: plan.ok ? null : plan.reasons });
+        return json(res, 200, { drill: 'db-down-close', ...plan, at: deps.clock.now() });
+      }
+      case 'POST /v1/drill/persist-before-submit': {
+        // M11 automated drill: every attempt that reached SUBMITTED has an earlier SIGNED record for its correlation id (D12, §6.18).
+        const entries = deps.pipeline.journal.all();
+        const signed = new Map<string, number>();
+        const violations: { correlationId: string; submittedAt: number }[] = [];
+        let attemptsAudited = 0;
+        for (const e of entries) {
+          if (e.kind === 'ATTEMPT_SIGNED' && !signed.has(e.correlationId)) signed.set(e.correlationId, e.sequence);
+          if (e.kind === 'ATTEMPT_SUBMITTED') {
+            attemptsAudited++;
+            const s = signed.get(e.correlationId);
+            if (s === undefined || s > e.sequence) violations.push({ correlationId: e.correlationId, submittedAt: e.sequence });
+          }
+        }
+        const unresolved = deps.pipeline.journal.unresolvedAttempts().length;
+        deps.logger.info('internal_api_drill', { drill: 'persist-before-submit', attemptsAudited, violations: violations.length, unresolved });
+        return json(res, 200, { drill: 'persist-before-submit', ok: violations.length === 0, attemptsAudited, violations: violations.length, violating: violations.slice(0, 20), unresolvedAttempts: unresolved, journalHead: entries.length ? entries[entries.length - 1]!.sequence : null, at: deps.clock.now() });
       }
       default:
         return json(res, 404, { error: 'NO_SUCH_ROUTE', routes: INTERNAL_ROUTES });
