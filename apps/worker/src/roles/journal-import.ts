@@ -38,6 +38,8 @@ export interface JournalImportReport {
   reviewGateSet: boolean;
   head: number | null;
   lastImported: number;
+  /** The executor's journal head is behind our cursor: it is not the journal the cursor refers to. */
+  journalReset: boolean;
 }
 
 /** Records worth the ledger: emergency commands, executor pauses, shadow syncs, and every attempt line of an emergency intent. */
@@ -55,11 +57,43 @@ export async function runJournalImportCycle(deps: JournalImportDeps): Promise<Jo
   const now = deps.clock.now();
   const newId = deps.newId ?? (() => randomUUID() as Uuid);
   const lastImported = await deps.repo.lastImportedSequence();
-  const report: JournalImportReport = { fetched: 0, imported: 0, skipped: 0, emergencyCloses: 0, reviewGateSet: false, head: null, lastImported };
+  const report: JournalImportReport = { fetched: 0, imported: 0, skipped: 0, emergencyCloses: 0, reviewGateSet: false, head: null, lastImported, journalReset: false };
   if (!deps.executor) return report;
   const page = await deps.executor.journal(lastImported, deps.config.batchSize);
   report.fetched = page.entries.length;
   report.head = page.head;
+
+  /**
+   * DEFECT-2 (2026-09-09): the cursor and the journal it indexes live in different places.
+   *
+   * `lastImported` comes from our own audit ledger in Postgres; the journal it points into lives on
+   * the executor's disk. An executor whose journal was reset — a new volume, a wiped
+   * `EXECUTOR_JOURNAL_PATH`, a replaced host — restarts its sequences below the cursor. Asking for
+   * everything after sequence 500 of a journal that now ends at 3 returns an empty page, and this
+   * used to be indistinguishable from "nothing new": the role reported a healthy `fetched: 0` cycle
+   * indefinitely while the outage records it exists to import were never read.
+   *
+   * A head behind the cursor is proof of that, and it is the executor's own report of its state
+   * rather than an inference from ours. It is not recoverable here — the records those sequences
+   * referred to are gone — so this raises and stops rather than advancing the cursor over a gap.
+   */
+  if (page.head !== null && page.head < lastImported) {
+    report.journalReset = true;
+    deps.logger.error('executor_journal_reset', { head: page.head, lastImported, effect: 'journal import stopped; outage records at or below the cursor cannot be imported' });
+    if (!(await deps.repo.openAlertExists('EXECUTOR_JOURNAL_RESET'))) {
+      await deps.repo.raise({
+        id: newId(),
+        severity: 'CRITICAL',
+        alertClass: 'EXECUTOR_JOURNAL_RESET',
+        summary: `The executor's journal head is ${page.head}, behind the import cursor at ${lastImported}: this is not the journal the cursor refers to. Emergency, pause and shadow records the audit ledger has not imported are unrecoverable, and import is stopped until an operator reconciles it (§15.10, §20.25).`.slice(0, 512),
+        affected: { assetId: null, strategyVersionId: null, positionId: null, system: 'journal-import', head: page.head, lastImported },
+        automatedResponse: null,
+        raisedAt: now,
+      });
+    }
+    return report;
+  }
+
   if (page.entries.length === 0) return report;
   const known = new Set(await deps.repo.emergencyCorrelationIds());
   const { importable, emergency } = selectImportable(page.entries, known);

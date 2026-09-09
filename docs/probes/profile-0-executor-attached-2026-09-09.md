@@ -195,3 +195,59 @@ file is lost — none of which a test fixture does, because fixtures start empty
 That is why this is the third finding in the family after the 2026-09-09 review's two CRITICALs, and
 why the useful defence is not another rule but the thing that found it: running the deployables as
 real processes with state that outlives them.
+
+## WP0 follow-up 2: DEFECT-2 and DEFECT-3 fixed, and the class closed
+
+Both were reported open above. Both are now fixed, in the same session, so the audit does not have to
+be re-derived later.
+
+**DEFECT-2** — `journal-import` compares `page.head` against the import cursor. A head below the
+cursor is the executor's own report that its journal is not the one the cursor refers to, so the role
+raises `EXECUTOR_JOURNAL_RESET` (CRITICAL, once) and stops rather than advancing over a gap. The
+records those sequences pointed at are gone; this is not recoverable in code, and pretending otherwise
+by resetting the cursor would silently drop them from the audit ledger.
+
+**DEFECT-3** — the authorizer's chain-standing cache is keyed on `chainStandingCacheKey(ledgerHead,
+replicaCheckpoint)` and expires after 30 s. The replica is read on every call, which is the point
+rather than the cost: it is the cheap half of the verification and the half that makes a vanished or
+replaced file visible. The expensive half — the full `verifyAuditChain` walk — is still skipped while
+both stores are demonstrably unchanged. `chainStanding` itself was not restructured.
+
+Two honest notes on that one. The replica file is now read once per authorization request rather than
+once per cache miss, which is a real change to the authorizer's hot path. And 30 s is a chosen number
+with nothing behind it but judgement; it bounds how long a silent divergence can persist, and review
+#1 may reasonably want it different or configurable. Both are flagged in the review brief rather than
+buried here.
+
+### The asymmetric wipe: answered
+
+The question was whether a persistent `REGRESSION` raises an alert or is only a log line, and whether
+the hole is therefore the same shape one level up. **It was only a log line** — `shadow-sync` had no
+alerting capability at all, unlike `journal-import` and `audit-checkpoint` which both do.
+
+Tracing it through was worse than the question assumed. After an asymmetric wipe — our journal lost,
+the executor's intact at sequence K — we restart at 1 and every push is refused. But the executor
+also holds a shadow from *before* the wipe, and `ExecutorPipeline.emergency` refuses a monitor command
+whose `shadowSequence` is below what it holds (`SHADOW_STALE`, `pipeline.ts:349-352`). So the worker's
+DB-down protection path is disabled in both directions at once: the executor would plan against a
+stale book, and it rejects every emergency close the worker sends it. The only signal was one error
+line per cycle from the role least equipped to escalate.
+
+`shadow-sync` now takes an optional `alerts` dependency and raises `SHADOW_SEQUENCE_REGRESSION`
+(CRITICAL) once — deduplicated through `openAlertExists`, because repeating the push changes neither
+side and a per-cycle alert would be its own kind of noise. It deliberately does **not** pause new
+entries. That is a trading-behaviour policy call, `journal-import` makes the opposite choice for its
+comparable case, and a defect fix is the wrong place to settle it. It is recorded as an open question
+in `docs/reviews/review-1-brief.md`.
+
+### Is the class closed?
+
+For the sites the audit covered, yes — with the boundary stated plainly rather than implied. It
+covered every worker role and the authorizer's one cache. It did **not** cover the internals of
+`pipeline.ts` or `AuthorizerService`, which are review #1's and review #2's ground and are better
+served by a reader who did not write them.
+
+Every one of the three fixes was proved against its own pre-fix code rather than asserted: reverting
+`shadow-sync.ts` alone fails the DEFECT-1 cases, reverting `journal-import.ts` alone fails the reset
+case, and disabling only the alert branch fails the asymmetric-wipe case. A regression test that
+cannot fail is decoration.

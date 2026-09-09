@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { latestEmergencySnapshot } from '@sol-agent-trader/db/server';
 import { ClearedTransitionSummary, DEFAULT_RISK_POLICY, getContractSetDigest, importSigningKeyPair, importVerificationKey, parseRiskAuthorizerEnv, systemClock, type Amount, type Bps, type Instant, type MintAddress, type Uuid, type VerificationKey } from '@sol-agent-trader/contracts';
-import { auditEventAt, auditHead, FileCheckpointReplicator, verifyAgainstExternalCheckpoint, createSql, listOpenAuthorizations, loadAccount, loadActionCycle, loadCandidateAsset, loadCustodyAccounts, loadLatestAttestation, loadLatestProjection, loadProposal, loadReleaseForStrategy, recordAuthorization, recordDenial, sessionEntryGate, type Sql } from '@sol-agent-trader/db/server';
+import { auditEventAt, auditHead, chainStandingCacheKey, FileCheckpointReplicator, verifyAgainstExternalCheckpoint, createSql, listOpenAuthorizations, loadAccount, loadActionCycle, loadCandidateAsset, loadCustodyAccounts, loadLatestAttestation, loadLatestProjection, loadProposal, loadReleaseForStrategy, recordAuthorization, recordDenial, sessionEntryGate, type Sql } from '@sol-agent-trader/db/server';
 import { redact, type Logger } from '@sol-agent-trader/observability';
 import { initTelemetry } from '@sol-agent-trader/observability/server';
 import { SolanaRpcClient } from '@sol-agent-trader/solana-hard-state';
@@ -60,19 +60,42 @@ async function main(): Promise<void> {
   const sql: Sql = createSql({ url: env.SUPABASE_DB_URL, applicationName: SERVICE, max: 4 });
   const actorRef = env.SERVICE_INSTANCE_ID ?? `${SERVICE}-${process.pid}`;
 
-  // ADR-0009 P2: the ledger is verified against the external checkpoint replica; the verdict is cached per ledger head so a
-  // busy authorizer does not re-walk the chain for every request. No replica configured means no live clearance can verify.
+  // ADR-0009 P2: the ledger is verified against the external checkpoint replica; the verdict is cached on the state of
+  // *both* stores, with a TTL, so a busy authorizer does not re-walk the chain for every request while a quiet ledger
+  // still cannot hide a changed replica. No replica configured means no live clearance can verify.
   const replicator = env.AUDIT_CHECKPOINT_PATH ? new FileCheckpointReplicator(env.AUDIT_CHECKPOINT_PATH) : null;
   if (!replicator) logger.warn('audit_checkpoint_replica_missing', { effect: 'every entry authorization is denied AUDIT_CHAIN_NO_EXTERNAL_CHECKPOINT; set AUDIT_CHECKPOINT_PATH' });
-  let verifiedHead: { hash: string; result: { ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string } } | null = null;
+  /**
+   * DEFECT-3 (2026-09-09): the cache key has to name both stores, and it has to expire.
+   *
+   * The verdict is about two things — the ledger in Postgres and the replica file the worker writes —
+   * and it used to be keyed on the ledger head hash alone. Rewriting `audit.events` moves that hash
+   * and still misses the cache, so the threat ADR-0009 P2 is chiefly aimed at was caught. What was
+   * not: while the ledger head sat still, the replica could be truncated, deleted, replaced or left
+   * to rot by a worker that had stopped writing it, and a long-lived authorizer would keep returning
+   * the cached `ok: true` without ever reading the file again. The cache had no expiry, so "quiet
+   * ledger" meant "never re-check the thing this control exists to check".
+   *
+   * So the key now carries the replica's own identity as well, read from the replica each time, and
+   * the entry expires regardless. Reading `replicator.latest()` per call is the point rather than an
+   * overhead: it is the cheap half of the verification, and it is what makes the file's disappearance
+   * or replacement visible. The chain walk it guards — `verifyAuditChain` over the whole ledger — is
+   * the expensive half, and that is still skipped while both stores are demonstrably unchanged.
+   */
+  const CHAIN_STANDING_TTL_MS = 30_000;
+  let verifiedHead: { key: string; at: number; result: { ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string } } | null = null;
   const chainStanding = async (): Promise<{ ok: true; checkpointSequence: number } | { ok: false; reason: string; detail?: string }> => {
     if (!replicator) return { ok: false, reason: 'NO_EXTERNAL_CHECKPOINT', detail: 'AUDIT_CHECKPOINT_PATH not set' };
     const head = await auditHead(sql);
     if (!head) return { ok: false, reason: 'LEDGER_EMPTY' };
-    if (verifiedHead && verifiedHead.hash === head.hash) return verifiedHead.result;
+    // The replica's own state, not our memory of it. A missing file keys differently from a present
+    // one, so its loss invalidates the cache instead of being invisible behind an unchanged ledger.
+    const external = await replicator.latest();
+    const key = chainStandingCacheKey(head.hash, external);
+    if (verifiedHead && verifiedHead.key === key && clock.nowMs() - verifiedHead.at < CHAIN_STANDING_TTL_MS) return verifiedHead.result;
     const v = await verifyAgainstExternalCheckpoint(sql, replicator);
     const result = v.ok ? { ok: true as const, checkpointSequence: v.checkpoint.sequence } : { ok: false as const, reason: v.reason, detail: v.detail };
-    verifiedHead = { hash: head.hash, result };
+    verifiedHead = { key, at: clock.nowMs(), result };
     return result;
   };
 

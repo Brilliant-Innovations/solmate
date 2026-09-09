@@ -24,10 +24,21 @@ export interface ShadowExecutor {
   emergencyMonitor(cmd: { commandId: Uuid; type: 'EMERGENCY_CLOSE_ASSET'; mint: MintAddress; maxAmount: Amount; reason: string; shadowSequence: number }): Promise<{ outcome: string; reasons?: string[] }>;
 }
 
+/**
+ * Raising a notification, so a persistent shadow regression is something an operator is told about
+ * rather than something technically visible in a log nobody reads (WP0 follow-up, 2026-09-09).
+ * Optional: a paper profile with no executor has nothing to regress.
+ */
+export interface ShadowSyncAlerts {
+  openAlertExists(alertClass: string): Promise<boolean>;
+  raise(n: { id: Uuid; severity: 'CRITICAL' | 'HIGH'; alertClass: string; summary: string; affected: Record<string, unknown>; automatedResponse: string | null; raisedAt: Instant }): Promise<void>;
+}
+
 export interface ShadowSyncDeps {
   repo: ShadowSyncRepo;
   journal: ShadowJournal;
   executor: ShadowExecutor | null;
+  alerts?: ShadowSyncAlerts | null;
   /** Price per token in settlement terms from a live exit quote; null when no route. Works without the database. */
   price: (mint: MintAddress, quantity: Amount, decimals: number, now: Instant) => Promise<number | null>;
   settlementMints: readonly MintAddress[];
@@ -40,6 +51,9 @@ export interface ShadowSyncDeps {
 export interface ShadowSyncState {
   consecutiveDbFailures: number;
 }
+
+/** Raised once while the executor's shadow is ahead of ours; see the regression branch below. */
+export const SHADOW_REGRESSION_ALERT = 'SHADOW_SEQUENCE_REGRESSION';
 
 export interface ShadowSyncReport {
   mode: 'SYNCED' | 'UNCHANGED' | 'DB_DOWN' | 'DB_ERROR';
@@ -104,7 +118,33 @@ export async function runShadowSyncCycle(deps: ShadowSyncDeps, state: ShadowSync
       pushed = !r.ok ? 'REGRESSION' : r.state === 'IN_SYNC' ? 'IN_SYNC' : 'OK';
       // A regression is the executor refusing a stale or replayed shadow, which is a real problem.
       // The executor already holding this sequence is the ordinary quiet-book answer, not an error.
-      if (!r.ok) deps.logger.error('shadow_push_rejected', { sequence: shadow.sequence, reason: r.reason, lastSynced: r.lastSynced });
+      if (!r.ok) {
+        deps.logger.error('shadow_push_rejected', { sequence: shadow.sequence, reason: r.reason, lastSynced: r.lastSynced });
+        /**
+         * The asymmetric wipe: our journal is lost, the executor's is not. We restart at sequence 1,
+         * every push is a genuine regression, and the executor keeps a shadow from before the wipe.
+         * DB-down protection is then not merely degraded but disabled in both directions — the stale
+         * book would be planned against, and `emergencyMonitor` refuses our commands as SHADOW_STALE
+         * because our sequence is below what it holds. It never self-corrects, because nothing about
+         * repeating the push changes either side.
+         *
+         * Refusing loudly was already right. Refusing loudly into a log line that nobody watches is
+         * the same shape as the defect this audit was chartered to find, one level up, so it raises.
+         * It deliberately does *not* pause new entries: that is a trading-behaviour policy call for
+         * the operator, and it is flagged as an open question rather than decided here.
+         */
+        if (deps.alerts && !(await deps.alerts.openAlertExists(SHADOW_REGRESSION_ALERT))) {
+          await deps.alerts.raise({
+            id: newId(),
+            severity: 'CRITICAL',
+            alertClass: SHADOW_REGRESSION_ALERT,
+            summary: `The executor refused our position shadow at sequence ${shadow.sequence}: it holds ${r.lastSynced ?? 'a newer one'}. Our shadow journal is behind the executor's, which does not self-correct, and DB-down protection is disabled in both directions until an operator reconciles them (§15.10A, D22).`.slice(0, 512),
+            affected: { assetId: null, strategyVersionId: null, positionId: null, system: 'shadow-sync', sequence: shadow.sequence, lastSynced: r.lastSynced ?? null },
+            automatedResponse: null,
+            raisedAt: now,
+          });
+        }
+      }
     } catch (err) {
       pushed = 'FAILED';
       deps.logger.warn('shadow_push_failed', { sequence: shadow.sequence, error: err instanceof Error ? err.message : String(err) });

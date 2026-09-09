@@ -142,6 +142,19 @@ export type CheckpointVerification =
  * must match the ledger row at that sequence and the chain up to the head must verify. A rewritten
  * ledger fails here even if the attacker also rewrote audit.checkpoints (§20.25).
  */
+/**
+ * Cache identity for a chain-standing verdict (ADR-0009 P2; DEFECT-3, 2026-09-09).
+ *
+ * A verdict is a statement about **two** stores — the ledger in Postgres and the external replica —
+ * so caching it under the ledger head alone lets the replica change, vanish or rot unnoticed for as
+ * long as the ledger is quiet. Both go in the key, and an absent replica keys differently from a
+ * present one so its loss invalidates rather than hides. Callers must still bound the entry by time:
+ * an identical key means neither store has moved, not that the verdict is fresh forever.
+ */
+export function chainStandingCacheKey(ledgerHeadHash: string, external: AuditCheckpoint | null): string {
+  return `${ledgerHeadHash}|${external ? `${external.sequence}:${external.hash}` : 'none'}`;
+}
+
 export async function verifyAgainstExternalCheckpoint(sql: Sql, replicator: CheckpointReplicator): Promise<CheckpointVerification> {
   const external = await replicator.latest();
   if (!external) return { ok: false, reason: 'NO_EXTERNAL_CHECKPOINT', detail: replicator.label };

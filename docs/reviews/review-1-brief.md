@@ -17,6 +17,9 @@ The reviewer should not assume the M3 status document describes what is there no
 | When | Change | Why it matters to this review |
 | --- | --- | --- |
 | 2026-09-09 (WP0) | `ExecutorPipeline.syncShadow` — `shadow.sequence <= last` split into `< last` (`SHADOW_REGRESSION`) and `=== last` (`{ok: true, state: 'IN_SYNC'}`). The return type gained `state: 'APPENDED' \| 'IN_SYNC'`. | It relaxes a refusal in the DB-down protection path (D22, §15.10A). The safety argument is that the worker derives sequences from an append-only journal, so an equal sequence implies an equal book, and a wiped worker journal restarts at 1 and is still refused as strictly lower. **That argument deserves adversarial attention** — it is the one place where a check that used to refuse now accepts. Rationale and reproduction: `docs/probes/profile-0-executor-attached-2026-09-09.md` (DEFECT-1). |
+| 2026-09-09 (WP0 follow-up) | `apps/risk-authorizer/src/main.ts` — `chainStanding()`'s cache key now names both stores (`chainStandingCacheKey(ledgerHead, replicaCheckpoint)`, exported from `libs/db/src/server/audit.ts`) and the entry expires after `CHAIN_STANDING_TTL_MS = 30_000`. `chainStanding` itself was **not** restructured. | **This is inside one of the two deployables the gate scrutinises**, and it changes an integrity control (ADR-0009 P2). Two things to weigh: the replica is now read on every call, where before it was read only on a cache miss — a per-request file read in the authorizer's hot path, deliberately accepted because it is the cheap half of the verification and the half that makes a vanished replica visible. And 30 s is a chosen number with no derivation behind it: it bounds how long a *silent* divergence can persist, and a reviewer may well argue it should be shorter, longer, or configurable. Identity cases: `libs/db/src/server/audit-cache-key.spec.ts`. |
+| 2026-09-09 (WP0 follow-up) | `apps/worker/src/roles/journal-import.ts` — a `page.head` below the import cursor now raises `EXECUTOR_JOURNAL_RESET` and stops importing (DEFECT-2). | `apps/worker`, so outside review #1's two deployables, but it changes what the executor's journal API is trusted to mean, and the reviewer is looking at the other end of that contract. It also newly relies on the executor reporting `head` honestly. |
+| 2026-09-09 (WP0 follow-up) | `apps/worker/src/roles/shadow-sync.ts` — a refused push now raises `SHADOW_SEQUENCE_REGRESSION` once, via a new optional `alerts` dependency. | Same: worker-side, but it is the observability half of the `syncShadow` contract above. It deliberately does **not** pause new entries — see the open question below. |
 
 Nothing else in `pipeline.ts` changed. In particular it was **not** split into smaller modules,
 despite being the largest module in the highest-trust deployable (710 lines, 47KB, a single
@@ -29,18 +32,24 @@ in the findings.
 Reported and left open on purpose, so they do not consume review budget as "new" findings. Confirming
 or disputing the severities is fair game; rediscovering them is waste.
 
-- **DEFECT-2** — `apps/worker/src/roles/journal-import.ts:60-63`. `page.head` is never compared with
-  the import cursor, so an executor whose journal was reset returns an empty page forever and the
-  role reports healthy. Audit-completeness (§15.10, §20.25).
-- **DEFECT-3** — `apps/risk-authorizer/src/main.ts:72`. `chainStanding()` caches the verification
-  verdict on the Postgres ledger head hash, but verifies the *external checkpoint replica file* — two
-  different stores, no TTL. A quiet ledger means replica loss or tampering goes unnoticed (ADR-0009
-  P2). This one is inside the isolated authorizer and is the most safety-relevant of the three.
+~~DEFECT-2 and DEFECT-3 are open.~~ **Both were fixed on 2026-09-09, later the same day** — see the
+table above for what changed and what to weigh. What remains open is one deliberate omission:
 
-Both are instances of one class described at the end of that probe document: *a cheap local value
-stands in for an expensive remote one, and the substitution is sound only while the two cannot
-diverge.* DEFECT-1 was the first, and the 2026-09-09 review's two CRITICALs were the same family. A
-reviewer looking for more of these is looking in a productive direction.
+- **Open question for the gate: should a persistent shadow regression pause new entries?** The
+  asymmetric wipe — our shadow journal lost, the executor's intact — disables DB-down protection in
+  both directions: the executor would plan against a book from before the wipe, and it refuses our
+  monitor commands as `SHADOW_STALE` because our sequence is below what it holds. It never
+  self-corrects. It now raises a CRITICAL, which is observability. Whether the system should also
+  stop opening new exposure while its DB-down protection is known-broken is a trading-behaviour
+  policy question, and it was left to the operator rather than decided in a defect fix. `journal-import`
+  sets a sticky entry pause for its comparable case, which is an argument that this should too.
+
+All three defects are instances of one class described at the end of that probe document: *a cheap
+local value stands in for an expensive remote one, and the substitution is sound only while the two
+cannot diverge.* The 2026-09-09 review's two CRITICALs were the same family, making five. A reviewer
+looking for more of these is looking in a productive direction — and the audit that found DEFECT-2
+and DEFECT-3 covered worker roles and the authorizer's cache, **not** `pipeline.ts`'s internals,
+which is this review's ground.
 
 ## What the boundary has and has not executed
 

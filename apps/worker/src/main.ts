@@ -1848,6 +1848,13 @@ async function shadowSyncLoop(env: WorkerEnv, logger: Logger, shared: Shared): P
     repo: { positions: () => shadowPositions(sql, account.id) },
     journal: new FileShadowJournal(env.SHADOW_JOURNAL_PATH),
     executor,
+    // Only meaningful where there is an executor to disagree with us.
+    alerts: executor
+      ? {
+          openAlertExists: async (alertClass) => (await listOpenNotifications(sql)).some((n) => n.alertClass === alertClass),
+          raise: (n) => raiseNotification(sql, { ...n, deadManDeadline: null }),
+        }
+      : null,
     price: async (mint, quantity, decimals, now) => {
       const q = await monitor.exitQuote(mint, monitor.account.settlementMint, quantity, monitor.policy.maxSlippageBps, now);
       return q ? impliedPrice(q.expectedOutputAmount, monitor.account.settlementDecimals, quantity, decimals) : null;

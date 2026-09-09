@@ -2,7 +2,7 @@ import { addMs, fixedClock, fixtures, type Amount, type Instant, type MintAddres
 import type { ShadowSourcePosition } from '@sol-agent-trader/execution';
 import { createLogger } from '@sol-agent-trader/observability';
 import { MemoryShadowJournal } from '../shadow/journal.js';
-import { runShadowSyncCycle, type ShadowExecutor, type ShadowSyncDeps, type ShadowSyncState } from './shadow-sync.js';
+import { runShadowSyncCycle, SHADOW_REGRESSION_ALERT, type ShadowExecutor, type ShadowSyncDeps, type ShadowSyncState } from './shadow-sync.js';
 
 const T0 = fixtures.T0 as Instant;
 const USDC = fixtures.MINTS.USDC as MintAddress;
@@ -115,6 +115,38 @@ describe('worker shadow-sync role (§15.10A, D22)', () => {
     const caught = await runShadowSyncCycle(behind.deps, state);
     expect(caught).toMatchObject({ mode: 'UNCHANGED', sequence: 2, pushed: 'OK' });
     expect(behind.executor?.synced.map((s) => s.sequence)).toEqual([2]);
+  });
+
+  /**
+   * The asymmetric wipe, raised while auditing DEFECT-1's class: our journal is lost, the executor's
+   * is not. We restart at sequence 1, every push is a genuine regression, and it never self-corrects.
+   * DB-down protection is disabled in both directions — the executor would plan against a book from
+   * before the wipe, and it refuses our monitor commands as SHADOW_STALE because our sequence is
+   * below what it holds. Refusing was already correct; refusing only into a log line was not.
+   */
+  it('a shadow the executor is ahead of raises once, because a regression never self-corrects', async () => {
+    const state: ShadowSyncState = { consecutiveDbFailures: 0 };
+    const raised: { alertClass: string; summary: string }[] = [];
+    const f = fake();
+    f.deps.alerts = {
+      async openAlertExists(cls) { return raised.some((a) => a.alertClass === cls); },
+      async raise(a) { raised.push({ alertClass: a.alertClass, summary: a.summary }); },
+    };
+    (f.executor as FakeExecutor).last = 7; // an executor journal that outlived ours
+
+    const r = await runShadowSyncCycle(f.deps, state);
+    expect(r.pushed).toBe('REGRESSION');
+    expect(raised.map((a) => a.alertClass)).toEqual([SHADOW_REGRESSION_ALERT]);
+    expect(raised[0]?.summary).toContain('7');
+
+    // Repeating the push changes neither side, so it must not repeat the alert either.
+    await runShadowSyncCycle(f.deps, state);
+    expect(raised).toHaveLength(1);
+
+    // With no alert sink wired (a paper profile with no executor to disagree with) it still refuses.
+    const quiet = fake();
+    (quiet.executor as FakeExecutor).last = 7;
+    expect((await runShadowSyncCycle(quiet.deps, state)).pushed).toBe('REGRESSION');
   });
 
   it('a first database failure only warns; from the threshold on, the last shadow and fresh prices drive emergency closes for hit stops only, at the shadow sequence', async () => {

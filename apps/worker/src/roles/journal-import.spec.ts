@@ -87,4 +87,34 @@ describe('executor journal import into the audit ledger (§15.10, §20.25)', () 
     const none = fake([entry('PAUSE_APPLIED', 'ops', {})], { executor: null });
     expect(await runJournalImportCycle(none.deps)).toMatchObject({ fetched: 0, imported: 0 });
   });
+
+  /**
+   * DEFECT-2 (2026-09-09). The cursor lives in our audit ledger; the journal it indexes lives on the
+   * executor's disk. Before the fix an executor whose journal had been reset returned an empty page
+   * and this was indistinguishable from "nothing new" — a healthy-looking zero-fetch cycle, forever.
+   */
+  it('an executor whose journal head is behind our cursor is a reset, not an empty page: import stops and raises rather than reporting healthy', async () => {
+    seq = 0;
+    // Import a real page first so the cursor advances past what a reset executor would ever return.
+    const original = [entry('PAUSE_APPLIED', 'ops', { reason: 'a' }), entry('SHADOW_SYNCED', 'shadow:2', { sequence: 2 }), entry('PAUSE_CLEARED', 'ops', {})];
+    const f = fake(original);
+    const first = await runJournalImportCycle(f.deps);
+    expect(first).toMatchObject({ imported: 3, journalReset: false });
+    expect(await f.deps.repo.lastImportedSequence()).toBe(3);
+
+    // Same worker, same ledger cursor — but the executor now reports a journal that ends at 1.
+    seq = 0;
+    const reset = fake([entry('PAUSE_APPLIED', 'ops', { reason: 'after the wipe' })]);
+    reset.deps.repo.lastImportedSequence = async () => 3;
+    const r = await runJournalImportCycle(reset.deps);
+    expect(r).toMatchObject({ journalReset: true, head: 1, lastImported: 3, imported: 0 });
+    expect(reset.alerts.map((a) => a.alertClass)).toEqual(['EXECUTOR_JOURNAL_RESET']);
+    // and it does not quietly drag the cursor over the gap
+    expect(reset.imported).toEqual([]);
+
+    // The alert is raised once, not every cycle.
+    const again = await runJournalImportCycle(reset.deps);
+    expect(again.journalReset).toBe(true);
+    expect(reset.alerts).toHaveLength(1);
+  });
 });
