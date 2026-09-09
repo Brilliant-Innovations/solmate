@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  fundingClaimVerdict,
   toInstant,
   type Amount,
   type ChainTransactionFacts,
@@ -41,7 +42,8 @@ export interface ReconciliationRepo {
   listOwnedAddresses(): Promise<{ address: SolanaAddress }[]>;
   registerOwnedAddress(a: { address: SolanaAddress; purpose: 'TRADING_WALLET' | 'ASSOCIATED_TOKEN_ACCOUNT' | 'JUPITER_TRIGGER_VAULT' | 'OTHER'; cluster: TradingAccountRow['cluster']; accountId: Uuid | null; registeredAt: Instant; retiredAt: Instant | null }): Promise<void>;
   /** §20.18: a SUBMITTED manual funding event that claimed this signature; its transfer is EXPECTED (reason FUNDING) and confirmed from the observed deltas. */
-  fundingEventBySignature?(signature: TxSignature): Promise<{ id: Uuid; destinationTradingWallet: SolanaAddress; destinationAta: SolanaAddress | null; fundingMint: MintAddress; sourceWallet: SolanaAddress } | null>;
+  /** The reviewed amount travels with the claim: reconciliation compares it against the chain (review 2026-09-09, M-2). */
+  fundingEventBySignature?(signature: TxSignature): Promise<{ id: Uuid; destinationTradingWallet: SolanaAddress; destinationAta: SolanaAddress | null; fundingMint: MintAddress; sourceWallet: SolanaAddress; requestedAmount: Amount } | null>;
   confirmFundingEvent?(id: Uuid, deltas: { source: string; destination: string }, at: Instant): Promise<boolean>;
 }
 
@@ -164,10 +166,21 @@ export async function runReconciliationCycle(deps: ReconciliationDeps): Promise<
             for (const m of o.facts.movements) {
               const from = (m.kind === 'TOKEN' ? (m.fromTokenAccount ?? m.fromOwner) : m.fromOwner) ?? ('' as SolanaAddress);
               const to = (m.kind === 'TOKEN' ? (m.toTokenAccount ?? m.toOwner) : m.toOwner) ?? ('' as SolanaAddress);
-              // A reviewed, operator-signed funding transfer into the trading wallet or its ATA is expected custody inflow (§20.18); confirmed here, from chain deltas only.
-              if (funding && (m.fromOwner === funding.sourceWallet) && ((m.kind === 'SOL' && to === funding.destinationTradingWallet) || (m.kind === 'TOKEN' && m.mint === funding.fundingMint && (to === funding.destinationAta || m.toOwner === funding.destinationTradingWallet)))) {
+              // A reviewed, operator-signed funding transfer into the trading wallet or its ATA is
+              // expected custody inflow (§20.18), confirmed here from chain deltas only — and only
+              // when the amount the chain moved is the amount the operator reviewed and the source
+              // is not one of our own addresses (review 2026-09-09, M-2, M-3).
+              const claim = funding ? fundingClaimVerdict(funding, { kind: m.kind, fromOwner: m.fromOwner ?? null, toOwner: m.toOwner ?? null, toTokenAccount: m.kind === 'TOKEN' ? (m.toTokenAccount ?? null) : null, mint: m.mint ?? null, amount: m.amount }, owned) : null;
+              if (claim?.kind === 'EXPECTED') {
                 movements.push({ ...m, classification: 'EXPECTED', reason: 'FUNDING', lifecycleId: null });
-                if (deps.repo.confirmFundingEvent) await deps.repo.confirmFundingEvent(funding.id, { source: `-${m.amount}`, destination: m.amount }, toInstant(deps.clock.nowMs()));
+                if (deps.repo.confirmFundingEvent) await deps.repo.confirmFundingEvent(funding!.id, { source: `-${m.amount}`, destination: m.amount }, toInstant(deps.clock.nowMs()));
+                continue;
+              }
+              if (claim?.kind === 'REFUSED') {
+                // The claim named this movement and got it wrong. It stays unexplained, the funding
+                // event stays SUBMITTED, and the reconciliation is not clean.
+                deps.logger.warn('funding_claim_refused', { fundingEventId: funding!.id, signature: o.facts.signature, reason: claim.reason, movedAmount: m.amount });
+                movements.push({ ...m, classification: 'UNKNOWN', reason: claim.reason, lifecycleId: null });
                 continue;
               }
               const verdict = classifyMovement(registry, { from, to, mint: m.mint as MintAddress | null, amount: m.amount, lifecycleId: lifecycle?.lifecycleId ?? null, movementType: lifecycle?.movementType ?? null }, new Set(lifecycle ? [lifecycle.lifecycleId] : []));

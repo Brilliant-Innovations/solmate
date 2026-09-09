@@ -319,13 +319,18 @@ export class ExecutorPipeline {
    * local shadow exactly as the real path would, without journaling a command, submitting anything or
    * touching the database. Reports what would be closed and what would be skipped.
    */
-  async emergencyDryRun(): Promise<{ ok: true; actions: number; skipped: number; plannedMints: string[]; skippedMints: { mint: string; reason: string }[]; custodySlot: number; shadowSequence: number | null; unresolvedAttempts: number; localPause: { active: boolean; reason: string | null } } | { ok: false; reasons: string[]; custodySlot: number; shadowSequence: number | null }> {
+  async emergencyDryRun(): Promise<{ ok: true; actions: number; skipped: number; holdings: number; closeableHoldings: number; plannedMints: string[]; skippedMints: { mint: string; reason: string }[]; custodySlot: number; shadowSequence: number | null; unresolvedAttempts: number; localPause: { active: boolean; reason: string | null } } | { ok: false; reasons: string[]; custodySlot: number; shadowSequence: number | null; holdings: number }> {
     const now = this.deps.clock.now();
     const custody = await this.deps.custody.holdings(this.deps.guardrails.tradingWalletAddress);
     const plan = planEmergencyClose({ type: 'EMERGENCY_CLOSE_ALL', mint: null, maxAmount: null }, custody.holdings, this.emergencyPolicy(), now);
     const shadowSequence = this.lastShadowSequence();
-    if (!plan.ok) return { ok: false, reasons: [...plan.reasons], custodySlot: Number(custody.slot), shadowSequence };
-    return { ok: true, actions: plan.actions.length, skipped: plan.skipped.length, plannedMints: plan.actions.map((a) => a.mint), skippedMints: plan.skipped.map((x) => ({ mint: x.mint, reason: x.reason })), custodySlot: Number(custody.slot), shadowSequence, unresolvedAttempts: this.deps.journal.unresolvedAttempts().length, localPause: this.localPause };
+    // How much of what the wallet actually holds the plan covers. A plan with zero actions is a
+    // valid plan on an empty wallet and says nothing at all on a funded one, so the caller needs the
+    // denominator to decide whether the rehearsal demonstrated anything (review 2026-09-09, M-6).
+    const settlement = new Set<string>(this.emergencyPolicy().settlementMints ?? []);
+    const closeable = custody.holdings.filter((h) => !settlement.has(h.mint) && h.amount > 0n).length;
+    if (!plan.ok) return { ok: false, reasons: [...plan.reasons], custodySlot: Number(custody.slot), shadowSequence, holdings: closeable };
+    return { ok: true, actions: plan.actions.length, skipped: plan.skipped.length, holdings: custody.holdings.length, closeableHoldings: closeable, plannedMints: plan.actions.map((a) => a.mint), skippedMints: plan.skipped.map((x) => ({ mint: x.mint, reason: x.reason })), custodySlot: Number(custody.slot), shadowSequence, unresolvedAttempts: this.deps.journal.unresolvedAttempts().length, localPause: this.localPause };
   }
 
   async emergency(input: EmergencyInput): Promise<EmergencyOutcome> {

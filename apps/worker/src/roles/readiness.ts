@@ -168,7 +168,10 @@ export async function runReadinessCycle(deps: ReadinessDeps): Promise<ReadinessR
       deps.logger.warn('readiness_evidence_refused', { requestId: req.id, reason, by: req.requestedBy, ...extra });
     };
     if (req.kind === 'EXECUTE_READINESS_DRILL') {
-      // M11: the worker rehearses the protection itself and records the verdict with the transcript as evidence (admin-requested, no step-up: nothing widens).
+      // M11: the worker rehearses the protection itself and records the verdict with the transcript
+      // as evidence. Admin-requested, no step-up: the verdict is computed here from a rehearsal, not
+      // asserted by the operator, the row expires, and the payload can name nothing outside
+      // AUTOMATED_DRILL_ROWS. The asymmetry with the manual path is argued in ADR-0013.
       const parsed = DrillExecutionPayload.safeParse(req.payload);
       if (!parsed.success) {
         await refuse('MALFORMED_PAYLOAD', { needs: ['rowId in ' + AUTOMATED_DRILL_ROWS.join('|')] });

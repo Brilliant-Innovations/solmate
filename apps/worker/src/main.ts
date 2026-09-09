@@ -1366,7 +1366,7 @@ function reconciliationDeps(env: WorkerEnv, logger: Logger, shared: Shared, rpc:
       recordReconciliation: (report: Parameters<typeof recordReconciliation>[1]) => recordReconciliation(sql, report),
       fundingEventBySignature: async (signature: Parameters<typeof fundingEventBySignature>[1]) => {
         const e = await fundingEventBySignature(sql, signature);
-        return e ? { id: e.id, destinationTradingWallet: e.destinationTradingWallet, destinationAta: e.destinationAta, fundingMint: e.fundingMint, sourceWallet: e.sourceWallet } : null;
+        return e ? { id: e.id, destinationTradingWallet: e.destinationTradingWallet, destinationAta: e.destinationAta, fundingMint: e.fundingMint, sourceWallet: e.sourceWallet, requestedAmount: e.requestedAmount } : null;
       },
       confirmFundingEvent: (id: Uuid, deltas: { source: string; destination: string }, at: Instant) => confirmFundingEvent(sql, id, { source: deltas.source as never, destination: deltas.destination as never }, at),
       listOwnedAddresses: () => listOwnedAddresses(sql),

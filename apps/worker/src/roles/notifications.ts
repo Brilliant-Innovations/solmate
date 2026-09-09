@@ -55,7 +55,11 @@ export interface NotificationsReport {
 }
 
 /** Classes this role owns end to end: raised from facts and resolved when the fact clears. Others are delivered and escalated only. */
-const OWNED = new Set(['CUSTODY_RECONCILIATION_MISMATCH', 'RECONCILIATION_UNAVAILABLE', 'CHAIN_ENTRIES_BLOCKED', 'RESERVE_BELOW_THRESHOLD', 'OPERATOR_ABSENT_WITH_EXPOSURE', 'PROVIDER_FEED_BLOCKING', 'EXECUTOR_UNHEALTHY_WITH_OPEN_POSITIONS', 'SIGNER_UNAVAILABLE_WITH_EXPOSURE']);
+// Classes this role raises and resolves from live conditions. `DRILL_CRITICAL_ALERT_DELIVERY` is
+// here because the alert drill raises a CRITICAL that only the drill resolves: an abort between the
+// two used to strand it open until a later successful drill cleared it (review 2026-09-09, L-3).
+// Owning it means the next cycle resolves it, since no live condition ever desires it.
+const OWNED = new Set(['CUSTODY_RECONCILIATION_MISMATCH', 'RECONCILIATION_UNAVAILABLE', 'CHAIN_ENTRIES_BLOCKED', 'RESERVE_BELOW_THRESHOLD', 'OPERATOR_ABSENT_WITH_EXPOSURE', 'PROVIDER_FEED_BLOCKING', 'EXECUTOR_UNHEALTHY_WITH_OPEN_POSITIONS', 'SIGNER_UNAVAILABLE_WITH_EXPOSURE', 'DRILL_CRITICAL_ALERT_DELIVERY']);
 
 export async function runNotificationsCycle(deps: NotificationsDeps): Promise<NotificationsReport> {
   const now = deps.clock.now();

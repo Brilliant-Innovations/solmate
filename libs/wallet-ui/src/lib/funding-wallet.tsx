@@ -21,7 +21,7 @@ import { useConnect, useConnectedWallet, useDisconnect, useIsWalletReady, useWal
 import { getTransferSolInstruction } from '@solana-program/system';
 import { fetchMaybeToken, findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstructionAsync, getTransferCheckedInstruction, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { formatBaseUnits as format, shortAddress as short, toBaseUnits } from './amounts';
-import { fundingCeilingVerdict, NATIVE_SOL_MINT, validateFundingInstructions, validateFundingTransfer, type FundingRequestPayload, type FundingTransfer, type PreparedInstruction, type SolanaCluster } from '@sol-agent-trader/contracts';
+import { fundingCeilingVerdict, NATIVE_SOL_MINT, toInstructionDataHex, validateFundingInstructions, validateFundingTransfer, type FundingRequestPayload, type FundingTransfer, type PreparedInstruction, type SolanaCluster } from '@sol-agent-trader/contracts';
 
 /**
  * Connected Funding Wallet (blueprint §20.18, §3.7, D56; §32 funding substitution). A Wallet
@@ -153,7 +153,9 @@ export function FundingWallet(p: FundingWalletProps) {
         instructions.push(getTransferCheckedInstruction({ source: sourceAta, mint, destination: destAta, authority: signer, amount: amount!, decimals: p.settlementDecimals }));
       }
       // The typed guard on the exact instruction list the wallet will be asked to sign (§32).
-      const prepared: PreparedInstruction[] = instructions.map((ix) => ({ programAddress: ix.programAddress as string, accountAddresses: (ix.accounts ?? []).map((a) => a.address as string) }));
+      // The data travels with the instruction: without it the guard can check which accounts a
+      // transfer names but not how much it moves (review 2026-09-09, M-1).
+      const prepared: PreparedInstruction[] = instructions.map((ix) => ({ programAddress: ix.programAddress as string, accountAddresses: (ix.accounts ?? []).map((a) => a.address as string), data: toInstructionDataHex((ix as { data?: Uint8Array }).data) }));
       const verdict = validateFundingInstructions(prepared, transfer);
       if (!verdict.ok) {
         setStage({ step: 'failed', reason: `refused before the wallet prompt: ${verdict.reasons.join(', ')}` });

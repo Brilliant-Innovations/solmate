@@ -200,3 +200,54 @@ Recorded because negative results are evidence too:
 4. **H-1, H-8, M-8..M-15** — replay fidelity. These change published research numbers, so they want a single considered pass plus a correction to `docs/probes/m10-evidence-2026-09-09.md`.
 5. **M-5** — write the ADR the step-up asymmetry needs, or make `EXECUTE_READINESS_DRILL` require step-up.
 6. **M-20** — correct the §33 row.
+
+---
+
+## Fix status (2026-09-09, same session)
+
+Every finding was worked in five commits (`74f5538..HEAD`). "Fixed" means the defect is gone and a
+test or a lint would catch its return; "Recorded" means the residual is documented in an ADR and
+carried to the M12 promotion review rather than closed.
+
+| # | Status | Where |
+| --- | --- | --- |
+| C-1 | Fixed | cloud-init listener generator; `tools/check-cloud-init.mjs` runs `sh -n`/`bash -n` on the rendered script in CI |
+| C-2 | Fixed | `profile-4/main.tf` outbound rules to the risk-authorizer and executor internal API ports |
+| H-1 | Fixed | `GuardContext.observationDiscipline` + `disciplineFor`; `ReplayResults.dataset` measures the series; M10 evidence corrected |
+| H-2 | Fixed | `history.ts` reads `trading.accounts.mode`; an unread account is `UNKNOWN`, never PAPER |
+| H-3 | Fixed | every sub-query error captured into `problems` and rendered; `.in()` chunked at 120 ids |
+| H-4 | Fixed | `symbol`/`result` pushed to SQL; the rest run over a paginated scan; `truncated` is false only when a short page proved exhaustion |
+| H-5 | Fixed | model cost keyed by `strategy × book` from the cycle's intent account; book-less cycles allocated once and shown separately |
+| H-6 | Fixed | closure keyed by full spec, unresolvable snapshots fail closed, unparseable lockfile refuses a pass; fixtures in CI |
+| H-7 | Fixed | root importer visited; root `dependencies` reduced to `zod` |
+| H-8 | Fixed | `UNQUOTABLE` close at zero proceeds after 15 minutes without a route |
+| H-9 | Fixed | `RequiresMountsFor=` with the path; systemd escapes the unit name |
+| H-10 | Fixed | `public_listen` map, separate from the private `listen` map |
+| M-1 | Fixed | `PreparedInstruction.data` required; amount decoded and bound; priority fee ceiling — ADR-0012 |
+| M-2 | Fixed | `fundingClaimVerdict` compares the claim to the chain delta; `fundingEventBySignature` ordered and limited |
+| M-3 | Partly fixed, residual **Recorded** | owned-source refusal and amount binding; the post-hoc claim residual is ADR-0012 |
+| M-4 | Fixed | `csvCell` neutralises `= + - @`, tab and CR |
+| M-5 | **Recorded** | ADR-0013 argues the asymmetry and names what would re-open it |
+| M-6 | Fixed | needs a synced shadow and coverage of every closeable holding; `NOT_APPLICABLE` on an empty wallet |
+| M-7 | Fixed | SIGNED index built in its own pass, every sequence kept, retries counted, unresolved attempts fail the drill |
+| M-8 | Fixed | `structurallyUnreachable` includes `EDGE_LOST_TO_LATENCY` when the difference is inside one bar |
+| M-9 | Fixed | same mechanism for `CHASE_EXCEEDED` / `QUOTE_STALE`; the Replay Lab renders `n/a` |
+| M-10 | Fixed | universe by candle coverage, truncation recorded in `ReplayResults.dataset` |
+| M-11 | Fixed | re-run-stable candidate key in the digest and in the ordering |
+| M-12 | Fixed | `RISK_BLOCKED_*` buckets, excluded from the expectancy denominator |
+| M-13 | Fixed | `WINDOW_END` closes through the paper adapter; `WINDOW_END_UNFILLED` when it does not land |
+| M-14 | Fixed | `feesLamports` per trade, charged into `netPnl` at the window SOL price, reported separately without one |
+| M-15 | Fixed | `failedExecutions` counted per stream and per sample |
+| M-16 | Fixed | three fixtures and the risk-authorizer policy in the CI negative test |
+| M-17 | Fixed | `ignore_changes = [user_data]` removed; README documents the replacement and its drain order |
+| M-18 | Fixed | `https_egress_cidrs` / `dns_egress_cidrs` variables; the mutable-tag gap is stated in the README |
+| M-19 | Fixed | `closed_at` period, `monthsBetween`, month proration, entry-priced entry fees, lot-scoped exit reasons, nullable SOL-fee totals |
+| M-20 | Fixed | §33 row 20 now reads **Not done** and agrees with rows 8, 15 and 28 |
+| L-1 | Fixed | README states the container is not a network boundary and what Profile 3 shares |
+| L-2 | Fixed | every runbook invocation carries `--env` |
+| L-3 | Fixed | `try/finally` around the drill's resolve; the notifications role owns `DRILL_CRITICAL_ALERT_DELIVERY` |
+| L-4 | Fixed | `variant` on `replay_attribution` and `replay_economic_pnl` (migration 004100) |
+| L-5 | Fixed | the `prevent_destroy` block is gone; the comment describes what actually happens |
+| L-6 | Fixed | `.gitignore` deduped; `*.tfvars.json` and `*.auto.tfvars*` ignored |
+
+**Still open, and not closeable here:** a reproduction-verification workflow (M-11's second half — `checkReproduced` has no caller outside specs, and `resultsDigest` is stored but never compared), and the pre-registered funding claim of ADR-0012. Both are carried to review gate #4 / the M12 promotion review.

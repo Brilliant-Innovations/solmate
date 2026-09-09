@@ -56,7 +56,9 @@ export async function insertFundingEvent(sql: Sql, e: WalletFundingEvent): Promi
 
 /** The SUBMITTED funding event that claimed this signature, if any. */
 export async function fundingEventBySignature(sql: Sql, signature: TxSignature): Promise<WalletFundingEvent | null> {
-  const [r] = await sql<Row[]>`select * from ops.wallet_funding_events where tx_signature = ${signature} and state = 'SUBMITTED'`;
+  // `tx_signature` is not unique (a failed claim and a later good one can share one), so the
+  // newest SUBMITTED claim is the one reconciliation is asked about (review 2026-09-09, M-2).
+  const [r] = await sql<Row[]>`select * from ops.wallet_funding_events where tx_signature = ${signature} and state = 'SUBMITTED' order by created_at desc limit 1`;
   return r ? toEvent(r) : null;
 }
 

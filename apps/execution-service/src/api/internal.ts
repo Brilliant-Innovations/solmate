@@ -152,22 +152,43 @@ export function internalApiHandler(deps: InternalApiDeps): Handler {
         return json(res, 200, { drill: 'db-down-close', ...plan, at: deps.clock.now() });
       }
       case 'POST /v1/drill/persist-before-submit': {
-        // M11 automated drill: every attempt that reached SUBMITTED has an earlier SIGNED record for its correlation id (D12, §6.18).
+        // M11 automated drill (D12, §6.18): every attempt that reached SUBMITTED has an *earlier*
+        // SIGNED record for its correlation id, and retries are counted rather than collapsed.
+        //
+        // The first version indexed SIGNED sequences while walking the journal forward, so the
+        // ordering test `signedSequence > submittedSequence` could never be true, and it kept only
+        // the first SIGNED per correlation id while a retry reuses that id — so a second submit was
+        // "proved" by the first signature (review 2026-09-09, M-7). The index is now built in its
+        // own pass and keeps every SIGNED sequence, and the k-th submit needs k signatures before it.
         const entries = deps.pipeline.journal.all();
-        const signed = new Map<string, number>();
-        const violations: { correlationId: string; submittedAt: number }[] = [];
+        const signedByCorrelation = new Map<string, number[]>();
+        for (const e of entries) {
+          if (e.kind !== 'ATTEMPT_SIGNED') continue;
+          const list = signedByCorrelation.get(e.correlationId) ?? [];
+          list.push(e.sequence);
+          signedByCorrelation.set(e.correlationId, list);
+        }
+        const submitCount = new Map<string, number>();
+        const violations: { correlationId: string; submittedAt: number; reason: 'NO_SIGNED_RECORD' | 'SIGNED_AFTER_SUBMIT' | 'FEWER_SIGNATURES_THAN_SUBMITS' }[] = [];
         let attemptsAudited = 0;
         for (const e of entries) {
-          if (e.kind === 'ATTEMPT_SIGNED' && !signed.has(e.correlationId)) signed.set(e.correlationId, e.sequence);
-          if (e.kind === 'ATTEMPT_SUBMITTED') {
-            attemptsAudited++;
-            const s = signed.get(e.correlationId);
-            if (s === undefined || s > e.sequence) violations.push({ correlationId: e.correlationId, submittedAt: e.sequence });
-          }
+          if (e.kind !== 'ATTEMPT_SUBMITTED') continue;
+          attemptsAudited++;
+          const nth = (submitCount.get(e.correlationId) ?? 0) + 1;
+          submitCount.set(e.correlationId, nth);
+          const signs = signedByCorrelation.get(e.correlationId) ?? [];
+          const before = signs.filter((s) => s < e.sequence).length;
+          if (signs.length === 0) violations.push({ correlationId: e.correlationId, submittedAt: e.sequence, reason: 'NO_SIGNED_RECORD' });
+          else if (before === 0) violations.push({ correlationId: e.correlationId, submittedAt: e.sequence, reason: 'SIGNED_AFTER_SUBMIT' });
+          else if (before < nth) violations.push({ correlationId: e.correlationId, submittedAt: e.sequence, reason: 'FEWER_SIGNATURES_THAN_SUBMITS' });
         }
-        const unresolved = deps.pipeline.journal.unresolvedAttempts().length;
-        deps.logger.info('internal_api_drill', { drill: 'persist-before-submit', attemptsAudited, violations: violations.length, unresolved });
-        return json(res, 200, { drill: 'persist-before-submit', ok: violations.length === 0, attemptsAudited, violations: violations.length, violating: violations.slice(0, 20), unresolvedAttempts: unresolved, journalHead: entries.length ? entries[entries.length - 1]!.sequence : null, at: deps.clock.now() });
+        // An attempt whose last journal entry is SIGNED or SUBMITTED is unresolved: legitimate for a
+        // moment, a persistence defect if it outlives the recovery window. The verdict uses it now
+        // instead of computing it and dropping it on the floor.
+        const unresolvedList = deps.pipeline.journal.unresolvedAttempts();
+        const ok = violations.length === 0 && unresolvedList.length === 0;
+        deps.logger.info('internal_api_drill', { drill: 'persist-before-submit', attemptsAudited, violations: violations.length, unresolved: unresolvedList.length });
+        return json(res, 200, { drill: 'persist-before-submit', ok, attemptsAudited, violations: violations.length, violating: violations.slice(0, 20), unresolvedAttempts: unresolvedList.length, unresolved: unresolvedList.slice(0, 20), journalHead: entries.length ? entries[entries.length - 1]!.sequence : null, at: deps.clock.now() });
       }
       default:
         return json(res, 404, { error: 'NO_SUCH_ROUTE', routes: INTERNAL_ROUTES });

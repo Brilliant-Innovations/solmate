@@ -20,7 +20,7 @@ Blueprint D35 (replenishment is manual; monitoring is automatic), D56 (post-arm 
 5. **Sign in your wallet, then let the ledger catch up.** The wallet's own prompt is the signing authority (FAST control, D41). The browser files a `FUND_TRADING_WALLET` report with the transaction signature; the worker's `funding` role re-validates the report against `trading.accounts` and records a `SUBMITTED` funding event. Nothing authoritative changes yet.
 6. **Confirmation comes from the chain only.** The `reconciliation` role classifies the movement from your reported source wallet into the trading wallet or its ATA as `EXPECTED / FUNDING` and marks the event confirmed with the observed deltas. A wallet-reported success that never lands stays `SUBMITTED` and is visible as such; an unreported deposit from an unknown source is an unexplained movement and pauses entries.
 7. **Re-attest if the ceiling was crossed.** Admin: `/releases/[id]` arming review → `ARM_RELEASE` with the new capital ceiling (step-up). Until then the runtime refuses new entries; open positions stay managed.
-8. **Verify and record.** `/wallet` shows the funding event confirmed and reserves above policy; the `WALLET_RESERVES` row turns green on the next readiness cycle. Record the drill when rehearsing: `node tools/record-readiness-evidence.mjs --row WALLET_RESERVES --kind DRILL --verdict PASS --evidence <tx signature>`.
+8. **Verify and record.** `/wallet` shows the funding event confirmed and reserves above policy; the `WALLET_RESERVES` row turns green on the next readiness cycle. Record the drill when rehearsing: `node tools/record-readiness-evidence.mjs --env <worker env> --row WALLET_RESERVES --kind DRILL --verdict PASS --evidence <tx signature>`.
 
 ## What never happens here
 
