@@ -21,3 +21,4 @@ export * from './readiness.js';
 export * from './notifications.js';
 export * from './watchdog.js';
 export * from './emergency-route.js';
+export * from './funding.js';

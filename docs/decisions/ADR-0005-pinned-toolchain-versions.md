@@ -25,6 +25,8 @@ Execution Plan v4 §6 requires verifying current docs and pinning exact versions
 | eslint-plugin-react-hooks | 7.1.1 | ^7.1.1 | matches what `eslint-config-next` 16.3.4 pins; Nx's generator default of 5.0.0 is replaced |
 | `@solana/kit` / `@solana/react` | 8.2.0 | ^8.2.0 | |
 | `@solana/kit-plugin-wallet` | 0.19.0 | ^0.19.0 | pre-1.0; watch for breaking minors |
+| `@solana-program/system` / `@solana-program/token` | 0.14.1 / 0.16.1 (2026-09-09) | ^0.14.1 / ^0.16.1 | wallet-ui only: SOL transfer, transferChecked, idempotent ATA for the manual funding flow (§20.18) |
+| `@wallet-standard/react` | 1.0.3 (2026-09-09) | ^1.0.3 | wallet-ui only; UiWallet types behind kit-plugin-wallet |
 | `@base-ui/react` | 1.8.0 | ^1.8.0 | blueprint package name confirmed; `@base-ui-components/react` is the old rc name |
 | `@tanstack/react-query` | 5.102.8 | ^5.102 | |
 | `@tanstack/react-table` | 9.2.4 | ^9.2 | |

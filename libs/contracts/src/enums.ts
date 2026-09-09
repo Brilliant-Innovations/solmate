@@ -293,6 +293,7 @@ export const ControlRequestKind = z.enum([
   'UNWATCH_ASSET',
   'REQUEST_RESEARCH_REFRESH',
   'RETIRE_RELEASE',
+  'FUND_TRADING_WALLET',
 ]);
 export type ControlRequestKind = z.infer<typeof ControlRequestKind>;
 

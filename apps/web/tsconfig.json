@@ -67,6 +67,9 @@
   ],
   "references": [
     {
+      "path": "../../libs/wallet-ui"
+    },
+    {
       "path": "../../libs/db"
     },
     {

@@ -17,5 +17,9 @@
       "trust:web-only",
       "scope:wallet-ui"
     ]
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "@sol-agent-trader/contracts": "workspace:*"
   }
 }

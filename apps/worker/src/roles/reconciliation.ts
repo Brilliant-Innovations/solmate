@@ -40,6 +40,9 @@ export interface ReconciliationRepo {
   recordReconciliation(report: CustodyReconciliation): Promise<void>;
   listOwnedAddresses(): Promise<{ address: SolanaAddress }[]>;
   registerOwnedAddress(a: { address: SolanaAddress; purpose: 'TRADING_WALLET' | 'ASSOCIATED_TOKEN_ACCOUNT' | 'JUPITER_TRIGGER_VAULT' | 'OTHER'; cluster: TradingAccountRow['cluster']; accountId: Uuid | null; registeredAt: Instant; retiredAt: Instant | null }): Promise<void>;
+  /** §20.18: a SUBMITTED manual funding event that claimed this signature; its transfer is EXPECTED (reason FUNDING) and confirmed from the observed deltas. */
+  fundingEventBySignature?(signature: TxSignature): Promise<{ id: Uuid; destinationTradingWallet: SolanaAddress; destinationAta: SolanaAddress | null; fundingMint: MintAddress; sourceWallet: SolanaAddress } | null>;
+  confirmFundingEvent?(id: Uuid, deltas: { source: string; destination: string }, at: Instant): Promise<boolean>;
 }
 
 export interface ReconciliationDeps {
@@ -157,9 +160,16 @@ export async function runReconciliationCycle(deps: ReconciliationDeps): Promise<
             }
             transactions.push(o.facts);
             const lifecycle = await deps.repo.lifecycleForSignature(o.facts.signature);
+            const funding = deps.repo.fundingEventBySignature ? await deps.repo.fundingEventBySignature(o.facts.signature) : null;
             for (const m of o.facts.movements) {
               const from = (m.kind === 'TOKEN' ? (m.fromTokenAccount ?? m.fromOwner) : m.fromOwner) ?? ('' as SolanaAddress);
               const to = (m.kind === 'TOKEN' ? (m.toTokenAccount ?? m.toOwner) : m.toOwner) ?? ('' as SolanaAddress);
+              // A reviewed, operator-signed funding transfer into the trading wallet or its ATA is expected custody inflow (§20.18); confirmed here, from chain deltas only.
+              if (funding && (m.fromOwner === funding.sourceWallet) && ((m.kind === 'SOL' && to === funding.destinationTradingWallet) || (m.kind === 'TOKEN' && m.mint === funding.fundingMint && (to === funding.destinationAta || m.toOwner === funding.destinationTradingWallet)))) {
+                movements.push({ ...m, classification: 'EXPECTED', reason: 'FUNDING', lifecycleId: null });
+                if (deps.repo.confirmFundingEvent) await deps.repo.confirmFundingEvent(funding.id, { source: `-${m.amount}`, destination: m.amount }, toInstant(deps.clock.nowMs()));
+                continue;
+              }
               const verdict = classifyMovement(registry, { from, to, mint: m.mint as MintAddress | null, amount: m.amount, lifecycleId: lifecycle?.lifecycleId ?? null, movementType: lifecycle?.movementType ?? null }, new Set(lifecycle ? [lifecycle.lifecycleId] : []));
               movements.push({ ...m, classification: verdict.kind, reason: verdict.kind === 'UNKNOWN' ? verdict.reason : null, lifecycleId: verdict.kind === 'EXPECTED' ? verdict.lifecycleId : null });
             }

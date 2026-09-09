@@ -1,1 +1,1 @@
-export * from './lib/wallet-ui';
+export { FundingWallet, type FundingWalletProps } from './lib/funding-wallet';

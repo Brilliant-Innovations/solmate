@@ -1,5 +1,7 @@
 import { ago, tokens } from '../../../lib/paper';
+import { FundingConnector } from '../../../components/funding-connector';
 import { lamportsToSol, loadWalletView, reserveStatus, short } from '../../../lib/wallet';
+import { getOperatorSession } from '../../../lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,8 +13,10 @@ export const dynamic = 'force-dynamic';
  * anything: replenishment is manual and reconciliation is the authority (§31).
  */
 export default async function Wallet() {
-  const v = await loadWalletView();
+  const [v, operator] = await Promise.all([loadWalletView(), getOperatorSession()]);
   const now = Date.now();
+  const canFile = operator?.aal === 'aal2' && (operator.role === 'operator' || operator.role === 'admin');
+  const rpcUrl = process.env['NEXT_PUBLIC_SOLANA_RPC_URL'] ?? (v.account?.cluster === 'devnet' ? 'https://api.devnet.solana.com' : v.account?.cluster === 'testnet' ? 'https://api.testnet.solana.com' : v.account?.cluster === 'localnet' ? 'http://127.0.0.1:8899' : 'https://api.mainnet-beta.solana.com');
   const cell = { padding: '0.25rem 0.8rem 0.25rem 0', whiteSpace: 'nowrap' as const };
   const th = (labels: string[]) => (
     <thead>
@@ -42,8 +46,24 @@ export default async function Wallet() {
   return (
     <>
       <h1 style={{ marginTop: 0 }}>Wallet / Custody</h1>
+      <section className="panel" style={{ borderColor: 'var(--authority-observe)' }}>
+        <h2>Connected Funding Wallet</h2>
+        <FundingConnector
+          cluster={account.cluster as never}
+          tradingWallet={account.trading_wallet}
+          settlementMint={account.settlement_mint}
+          settlementSymbol="USDC"
+          settlementDecimals={6}
+          rpcUrl={rpcUrl}
+          ceilingUsd={v.attestation?.ceiling_usd ?? null}
+          recognizedUsd={r ? (() => { const line = r.balances.find((b) => b.mint === account.settlement_mint); return line?.observed ? Number(line.observed) / 1e6 : null; })() : null}
+          currentSolLamports={r?.balances.find((b) => b.mint === null)?.observed ?? null}
+          currentSettlementBaseUnits={r?.balances.find((b) => b.mint === account.settlement_mint)?.observed ?? null}
+          canFile={canFile}
+        />
+      </section>
       <section className="panel">
-        <h2>Trading wallet</h2>
+        <h2>Trading wallet <span className="chip" data-tone="failed" style={{ marginLeft: '0.4rem' }}><span className="v">AUTONOMOUS TRADING WALLET — KEY NON-EXPORTABLE / SIGNING POLICY ISOLATED</span></span></h2>
         <p className="mono" style={{ margin: '0.2rem 0' }}>
           <span className="chip" data-tone={isPaper ? 'paper' : 'live-approval'}><span className="v">{isPaper ? 'PAPER ACCOUNT' : 'LIVE ACCOUNT'}</span></span> {v.account.name} · {v.account.cluster}
         </p>

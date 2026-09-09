@@ -47,6 +47,8 @@ export const STEP_UP_POLICY: Readonly<Record<ControlRequestKind, StepUpRequireme
   REQUEST_RESEARCH_REFRESH: 'FAST',
   // §20.29: retiring a Release is a live-configuration change (admin, step-up), never a casual toggle.
   RETIRE_RELEASE: 'REQUIRED',
+  // §20.18: the operator's external wallet prompt is the signing authority; recording it widens nothing.
+  FUND_TRADING_WALLET: 'FAST',
 };
 
 /** Zod mirror of the table so the digest changes when a classification changes (D50). */

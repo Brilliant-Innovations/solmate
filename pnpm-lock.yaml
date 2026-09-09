@@ -204,6 +204,9 @@ importers:
       '@sol-agent-trader/db':
         specifier: workspace:*
         version: link:../../libs/db
+      '@sol-agent-trader/wallet-ui':
+        specifier: workspace:*
+        version: link:../../libs/wallet-ui
       '@supabase/ssr':
         specifier: ^0.12.6
         version: 0.12.6(@supabase/supabase-js@2.115.0(@opentelemetry/api@1.9.1))
@@ -437,7 +440,14 @@ importers:
         specifier: ^2.3.0
         version: 2.8.1
 
-  libs/wallet-ui: {}
+  libs/wallet-ui:
+    dependencies:
+      '@sol-agent-trader/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      react:
+        specifier: ^19.2.0
+        version: 19.2.8
 
 packages:
 
