@@ -49,6 +49,9 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
   const symbol = (assetId: string) => d.assets.get(assetId)?.symbol ?? assetId.slice(0, 8);
   const decimals = (assetId: string) => d.assets.get(assetId)?.decimals ?? 6;
   const time = (isoStr: string) => isoStr.slice(0, 19).replace('T', ' ');
+  // What the run measured about its own dataset; null for runs recorded before the measurement existed.
+  const ds = d.leaderboard[0] ?? null;
+  const latePct = ds && ds.dataset_candles ? Math.round(((ds.dataset_candles_late_observed ?? 0) / ds.dataset_candles) * 100) : null;
   return (
     <>
       <p className="notice" role="note" style={{ fontWeight: 600 }}>SIMULATED TIME — replay run <span className="mono">{run.id}</span>. Every timestamp below is the replay clock, not the wall clock; nothing here is live trading.</p>
@@ -72,17 +75,35 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
       </section>
 
       <section className="panel">
+        <h2>What this dataset could support (§18.1)</h2>
+        {ds === null ? (
+          <p className="muted">This run predates the measurement. Its fidelity level is a label on the request, not something the run checked against the series it read.</p>
+        ) : (
+          <>
+            <table className="mono" style={{ borderCollapse: 'collapse' }}><tbody>
+              <tr><td style={cell} className="muted">observation discipline</td><td style={{ ...cell, whiteSpace: 'normal' }}><span className="chip" data-tone={ds.observation_discipline === 'OBSERVED_TIME' ? 'ok' : 'unknown'}>{ds.observation_discipline}</span> {ds.observation_discipline === 'OBSERVED_TIME' ? 'a row was readable only once the system had observed it' : 'rows were readable from their source time; this is a reconstruction, not a recording'}</td></tr>
+              <tr><td style={cell} className="muted">candles observed later than their source time</td><td style={{ ...cell, whiteSpace: 'normal' }}>{ds.dataset_candles_late_observed ?? 0} of {ds.dataset_candles ?? 0}{latePct === null ? '' : ` (${latePct}%)`}{ds.dataset_max_observation_lag_ms === null ? '' : ` · worst lag ${durationOf(ds.dataset_max_observation_lag_ms)}`}</td></tr>
+              <tr><td style={cell} className="muted">universe</td><td style={{ ...cell, whiteSpace: 'normal' }}>{ds.universe_selected ?? 0} of {ds.universe_available ?? 0} asset(s) with candles in the window{ds.universe_truncated ? <span className="chip" data-tone="failed" style={{ marginLeft: '0.4rem' }}>TRUNCATED</span> : null}</td></tr>
+              <tr><td style={cell} className="muted">SOL-denominated fees</td><td style={{ ...cell, whiteSpace: 'normal' }}>{ds.net_includes_sol_fees ? 'charged into net P&L at the window SOL price' : 'reported separately: no SOL price was available for the window, so net P&L excludes them'}</td></tr>
+            </tbody></table>
+            {ds.universe_truncated ? <p className="notice" role="note" style={{ margin: '0.6rem 0 0' }}>The universe was cut to the assets with the most candle coverage in the window. Assets outside it never became candidates, so the survivorship properties of this run are unknown for them.</p> : null}
+            {ds.observation_discipline === 'SOURCE_TIME' && (ds.dataset_candles_late_observed ?? 0) > 0 ? <p className="notice" role="note" style={{ margin: '0.6rem 0 0' }}>Level A: the strategies read candles the live worker did not hold at that moment. No future price reached them — bucket close plus availability lag still applied — but warm-up timing, candidate detection and eligibility differ from what live actually looked like.</p> : null}
+          </>
+        )}
+      </section>
+
+      <section className="panel">
         <h2>Strategies side by side (§19.1)</h2>
         {d.leaderboard.length === 0 ? <p className="muted">No results yet.</p> : (
           <div style={{ overflowX: 'auto' }}>
             <table className="mono" style={{ borderCollapse: 'collapse' }}>
-              <thead><tr><th style={th}>strategy</th><th style={th}>variant</th><th style={th}>sample</th><th style={th}>trades</th><th style={th}>net P&amp;L</th><th style={th}>gross</th><th style={th}>fees</th><th style={th}>slippage</th><th style={th}>shortfall bps</th><th style={th}>win rate</th><th style={th}>expectancy</th><th style={th}>profit factor</th><th style={th}>max DD</th><th style={th}>time in market</th><th style={th}>turnover</th><th style={th}>Sharpe</th><th style={th}>Sortino</th><th style={th}>tail loss</th><th style={th}>failed exec</th><th style={th}>decision→fill</th></tr></thead>
+              <thead><tr><th style={th}>strategy</th><th style={th}>variant</th><th style={th}>sample</th><th style={th}>trades</th><th style={th}>net P&amp;L</th><th style={th}>gross</th><th style={th}>fees</th><th style={th}>SOL fees</th><th style={th}>slippage</th><th style={th}>shortfall bps</th><th style={th}>win rate</th><th style={th}>expectancy</th><th style={th}>profit factor</th><th style={th}>max DD</th><th style={th}>time in market</th><th style={th}>turnover</th><th style={th}>Sharpe</th><th style={th}>Sortino</th><th style={th}>tail loss</th><th style={th}>failed exec</th><th style={th}>decision→fill</th></tr></thead>
               <tbody>
                 {d.leaderboard.map((r) => (
                   <tr key={`${r.strategy_version_id}|${r.variant}|${r.sample}`} style={{ opacity: r.sample === 'ALL' ? 1 : 0.8 }}>
                     <td style={cell}>{r.strategy_version_id}{r.strategy_version_id === run.baseline_strategy_version_id ? <span className="muted"> · baseline</span> : null}</td>
                     <td style={cell}>{r.variant}</td><td style={cell}>{r.sample}</td><td style={cell}>{r.trades}</td>
-                    <td style={cell}>{num(r.net_pnl)}</td><td style={cell}>{num(r.gross_pnl)}</td><td style={cell}>{num(r.fees)}</td><td style={cell}>{num(r.slippage_cost)}</td><td style={cell}>{num(r.execution_shortfall_bps, 0)}</td>
+                    <td style={cell}>{num(r.net_pnl)}</td><td style={cell}>{num(r.gross_pnl)}</td><td style={cell}>{num(r.fees)}</td><td style={cell}>{((r.fees_lamports ?? 0) / 1e9).toFixed(5)} SOL{r.net_includes_sol_fees ? ` (${num(r.fees_lamports_as_settlement)}, in net)` : ' (not in net)'}</td><td style={cell}>{num(r.slippage_cost)}</td><td style={cell}>{num(r.execution_shortfall_bps, 0)}</td>
                     <td style={cell}>{pctOf(r.win_rate)}</td><td style={cell}>{num(r.expectancy)}</td><td style={cell}>{num(r.profit_factor)}</td><td style={cell}>{num(r.max_drawdown)} ({pctOf(r.max_drawdown_fraction)})</td><td style={cell}>{pctOf(r.time_in_market_fraction)}</td><td style={cell}>{num(r.turnover, 0)}</td>
                     <td style={cell}>{num(r.sharpe)}</td><td style={cell}>{num(r.sortino)}</td><td style={cell}>{num(r.tail_loss)}</td><td style={cell}>{pctOf(r.failed_execution_rate)}</td><td style={cell}>{durationOf(r.average_decision_to_fill_ms)}</td>
                   </tr>
@@ -91,7 +112,7 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
             </table>
           </div>
         )}
-        <p className="muted" style={{ margin: '0.4rem 0 0' }}>S0_RAW and S0_SAFE are separate rows by design (§12.1). Sharpe and Sortino are blank below the minimum sample; a blank profit factor means no losing trade yet, not an infinite edge.</p>
+        <p className="muted" style={{ margin: '0.4rem 0 0' }}>S0_RAW and S0_SAFE are separate rows by design (§12.1). Sharpe and Sortino are blank below the minimum sample; a blank profit factor means no losing trade yet, not an infinite edge. Network and priority fees are paid in SOL and enter net P&amp;L only when the window carried a SOL price; the column says which.</p>
       </section>
 
       <section className="panel">
@@ -99,12 +120,12 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
         {d.incremental.length === 0 ? <p className="muted">Only the baseline ran.</p> : (
           <div style={{ overflowX: 'auto' }}>
             <table className="mono" style={{ borderCollapse: 'collapse' }}>
-              <thead><tr><th style={th}>strategy vs baseline</th><th style={th}>candidates</th><th style={th}>both traded</th><th style={th}>losers filtered (baseline net)</th><th style={th}>winners rejected (baseline net)</th><th style={th}>admitted, baseline passed (net)</th><th style={th}>both passed</th><th style={th}>baseline net</th><th style={th}>strategy net</th><th style={th}>model cost</th><th style={th}>incremental net expectancy / candidate</th></tr></thead>
+              <thead><tr><th style={th}>strategy vs baseline</th><th style={th}>candidates</th><th style={th}>both traded</th><th style={th}>losers filtered (baseline net)</th><th style={th}>winners rejected (baseline net)</th><th style={th}>admitted, baseline passed (net)</th><th style={th}>both passed</th><th style={th}>risk-blocked (excluded)</th><th style={th}>baseline net</th><th style={th}>strategy net</th><th style={th}>model cost</th><th style={th}>incremental net expectancy / candidate</th></tr></thead>
               <tbody>
                 {d.incremental.map((r) => (
                   <tr key={r.strategy_version_id}>
                     <td style={cell}>{r.strategy_version_id} vs {r.baseline_strategy_version_id}</td><td style={cell}>{r.candidates}</td><td style={cell}>{r.both_traded}</td>
-                    <td style={cell}>{r.filtered_losers} ({num(r.filtered_losers_baseline_net)})</td><td style={cell}>{r.rejected_winners} ({num(r.rejected_winners_baseline_net)})</td><td style={cell}>{r.admitted_not_baseline} ({num(r.admitted_not_baseline_net)})</td><td style={cell}>{r.both_passed}</td>
+                    <td style={cell}>{r.filtered_losers} ({num(r.filtered_losers_baseline_net)})</td><td style={cell}>{r.rejected_winners} ({num(r.rejected_winners_baseline_net)})</td><td style={cell}>{r.admitted_not_baseline} ({num(r.admitted_not_baseline_net)})</td><td style={cell}>{r.both_passed}</td><td style={cell}>{r.risk_blocked ?? 0}{(r.risk_blocked ?? 0) > 0 ? <span className="muted"> ({r.risk_blocked_ai ?? 0} AI / {r.risk_blocked_baseline ?? 0} baseline / {r.risk_blocked_both ?? 0} both)</span> : null}</td>
                     <td style={cell}>{num(r.baseline_net_total)}</td><td style={cell}>{num(r.strategy_net_total)}</td><td style={cell}>{num(r.model_cost)}</td><td style={cell}>{num(r.incremental_net_expectancy, 3)}</td>
                   </tr>
                 ))}
@@ -133,9 +154,9 @@ export default async function ReplayRun({ params }: { params: Promise<{ id: stri
           <h2>Latency cost · Q15, Q17</h2>
           <table className="mono" style={{ borderCollapse: 'collapse' }}>
             <thead><tr><th style={th}>strategy</th><th style={th}>decisions</th><th style={th}>expired</th><th style={th}>chase</th><th style={th}>stale quote</th><th style={th}>baseline made on them</th><th style={th}>avg latency</th><th style={th}>edge lost to latency</th></tr></thead>
-            <tbody>{d.latency.map((r) => <tr key={r.strategy_version_id}><td style={cell}>{r.strategy_version_id}</td><td style={cell}>{r.decisions}</td><td style={cell}>{r.expired_by_latency}</td><td style={cell}>{r.chase_rejected}</td><td style={cell}>{r.stale_quote_rejected}</td><td style={cell}>{num(r.missed_baseline_net)}</td><td style={cell}>{durationOf(r.average_decision_latency_ms)}</td><td style={cell}>{num(r.edge_lost_to_latency)}</td></tr>)}</tbody>
+            <tbody>{d.latency.map((r) => <tr key={r.strategy_version_id}><td style={cell}>{r.strategy_version_id}</td><td style={cell}>{r.decisions}</td><td style={cell}>{r.expired_by_latency}</td><td style={cell}>{(r.structurally_unreachable ?? []).includes('CHASE_EXCEEDED') ? 'n/a' : r.chase_rejected}</td><td style={cell}>{(r.structurally_unreachable ?? []).includes('QUOTE_STALE') ? 'n/a' : r.stale_quote_rejected}</td><td style={cell}>{num(r.missed_baseline_net)}</td><td style={cell}>{durationOf(r.average_decision_latency_ms)}</td><td style={cell}>{(r.structurally_unreachable ?? []).includes('EDGE_LOST_TO_LATENCY') ? 'n/a' : num(r.edge_lost_to_latency)}</td></tr>)}</tbody>
           </table>
-          <p className="muted" style={{ margin: '0.4rem 0 0' }}>Edge lost to latency = FULL net minus LATENCY_MATCHED net for the same strategy; blank when the run has no latency-matched stream for it.</p>
+          <p className="muted" style={{ margin: '0.4rem 0 0' }}>Edge lost to latency = FULL net minus LATENCY_MATCHED net for the same strategy; blank when the run has no latency-matched stream for it. <strong>n/a</strong> means this run&apos;s data resolution cannot produce the counter at all — a modelled quote resolves to the candle bucket containing the request, so a latency difference smaller than one bucket measures the grid rather than latency, and repricing rejections are unreachable by construction. A zero there would be an artefact, not a measurement.</p>
         </section>
 
         <section className="panel">

@@ -1,5 +1,5 @@
 import type { ActionCycle, ActionCycleTerminalState, AdversarialReview, AssetEligibility, Candidate, Candle, Clock, EligibilityPolicy, FeatureEngineSpec, FeatureSnapshot, Instant, IntelligenceEvent, MarketRegimePolicy, MintAddress, MomentumTriggerPolicy, PaperFillPolicy, QuoteProbe, ReplayCostModel, ReplayDecision, ReplayRun, ReplayVariant, RiskPolicy, S0SafetyGatePolicy, StrategyVersion, Uuid, VersionId } from '@sol-agent-trader/contracts';
-import type { ClosedTrade, GuardContext } from '@sol-agent-trader/replay';
+import type { ClosedTrade, GuardContext, ObservationDiscipline } from '@sol-agent-trader/replay';
 import type { ActiveMembership } from '@sol-agent-trader/risk';
 import type { Logger } from '@sol-agent-trader/observability';
 
@@ -45,6 +45,22 @@ export interface ReplayDataset {
   recorded: RecordedDecision[];
   /** SOL 1h return series for relative strength, keyed by minute; empty = no reference. */
   solReturn1h: Map<string, number>;
+  /**
+   * How the universe was chosen and whether it was cut (review 2026-09-09, M-10). A run that
+   * silently dropped assets is a run whose survivorship properties are unknown, so the selection
+   * rule and the truncation travel with the results.
+   */
+  universe?: { requested: number | null; selected: number; available: number; truncated: boolean; selectionRule: string };
+  /** Settlement units per SOL inside the window, for charging network and priority fees; null when unknown. */
+  solPriceSettlement?: number | null;
+}
+
+/** What the run can say about its own fidelity, rather than what its label claims (§18.1). */
+export interface DatasetFidelityReport {
+  observationDiscipline: ObservationDiscipline;
+  candles: { total: number; withObservedAt: number; lateObserved: number; medianLagMs: number | null; maxLagMs: number | null };
+  universe: { requested: number | null; selected: number; available: number; truncated: boolean; selectionRule: string };
+  solPriceSettlement: number | null;
 }
 
 /** What a strategy sees when asked to decide: the candidate, its snapshot and the clock; reads go through `guard`. */
@@ -135,6 +151,9 @@ export interface ReplayOutput {
   perStrategy: ReplayStrategyResult[];
   candidates: number;
   ticks: number;
+  dataset: DatasetFidelityReport;
+  /** The latency the LATENCY_MATCHED variant decided at, so the latency report can say whether the difference is measurable. */
+  latencyMatchedMs: number | null;
 }
 
 export interface ReplayClockDeps {

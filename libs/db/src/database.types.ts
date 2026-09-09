@@ -3484,6 +3484,7 @@ export type Database = {
           execution_shortfall_bps: number | null
           exit_reason: string
           fees: number
+          fees_lamports: number
           id: string
           opened_at: string
           proceeds: number
@@ -3504,6 +3505,7 @@ export type Database = {
           execution_shortfall_bps?: number | null
           exit_reason: string
           fees: number
+          fees_lamports?: number
           id: string
           opened_at: string
           proceeds: number
@@ -3524,6 +3526,7 @@ export type Database = {
           execution_shortfall_bps?: number | null
           exit_reason?: string
           fees?: number
+          fees_lamports?: number
           id?: string
           opened_at?: string
           proceeds?: number
@@ -3722,6 +3725,7 @@ export type Database = {
           sample_supported: boolean | null
           strategy_version_id: string | null
           trades: number | null
+          variant: string | null
           win_rate: number | null
         }
         Relationships: []
@@ -3778,6 +3782,7 @@ export type Database = {
           strategy_economic_usd: number | null
           strategy_version_id: string | null
           trading_net_usd: number | null
+          variant: string | null
           window_days: number | null
         }
         Relationships: []
@@ -3788,6 +3793,7 @@ export type Database = {
           average_hold_ms: number | null
           exit_reason: string | null
           expectancy: number | null
+          fees_lamports: number | null
           net_pnl: number | null
           run_id: string | null
           sample: string | null
@@ -3870,6 +3876,10 @@ export type Database = {
           model_cost: number | null
           rejected_winners: number | null
           rejected_winners_baseline_net: number | null
+          risk_blocked: number | null
+          risk_blocked_ai: number | null
+          risk_blocked_baseline: number | null
+          risk_blocked_both: number | null
           run_id: string | null
           run_name: string | null
           strategy_net_total: number | null
@@ -3892,6 +3902,7 @@ export type Database = {
           run_name: string | null
           stale_quote_rejected: number | null
           strategy_version_id: string | null
+          structurally_unreachable: Json | null
         }
         Relationships: []
       }
@@ -3900,16 +3911,23 @@ export type Database = {
           average_decision_to_fill_ms: number | null
           baseline_strategy_version_id: string | null
           completed_at: string | null
+          dataset_candles: number | null
+          dataset_candles_late_observed: number | null
+          dataset_max_observation_lag_ms: number | null
           execution_shortfall_bps: number | null
           expectancy: number | null
           failed_execution_rate: number | null
           fees: number | null
+          fees_lamports: number | null
+          fees_lamports_as_settlement: number | null
           fidelity: string | null
           gross_pnl: number | null
           in_sample_until: string | null
           max_drawdown: number | null
           max_drawdown_fraction: number | null
+          net_includes_sol_fees: boolean | null
           net_pnl: number | null
+          observation_discipline: string | null
           profit_factor: number | null
           run_id: string | null
           run_name: string | null
@@ -3922,6 +3940,9 @@ export type Database = {
           time_in_market_fraction: number | null
           trades: number | null
           turnover: number | null
+          universe_available: number | null
+          universe_selected: number | null
+          universe_truncated: boolean | null
           variant: string | null
           win_rate: number | null
           window_from: string | null

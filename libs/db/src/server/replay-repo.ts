@@ -111,6 +111,8 @@ export interface ReplayTradeRow {
   cost: number;
   proceeds: number;
   fees: number;
+  /** SOL-denominated network and priority fees, in lamports (review 2026-09-09, M-14). */
+  feesLamports: number;
   slippageCost: number;
   executionShortfallBps: number | null;
   executionPath: string;
@@ -135,6 +137,7 @@ export async function insertReplayTrades(sql: Sql, rows: readonly ReplayTradeRow
       cost: t.cost,
       proceeds: t.proceeds,
       fees: t.fees,
+      fees_lamports: Math.round(t.feesLamports),
       slippage_cost: t.slippageCost,
       execution_shortfall_bps: t.executionShortfallBps,
       execution_path: t.executionPath,
@@ -168,15 +171,46 @@ export interface ReplayAssetRow {
   tokenProgram: 'TOKEN' | 'TOKEN_2022' | 'UNKNOWN';
 }
 
-/** Assets with at least one 1m candle in the window, or the requested subset of them. */
-export async function listReplayAssets(sql: Sql, from: Instant, to: Instant, assetIds: readonly Uuid[] | null, limit = 200): Promise<ReplayAssetRow[]> {
-  const rows = await sql<{ id: Uuid; mint_address: string; symbol: string; decimals: number; token_program: string | null }[]>`
-    select a.id, a.mint_address, a.symbol, a.decimals, a.token_program
+export interface ReplayUniverse {
+  assets: ReplayAssetRow[];
+  /** Assets with candles in the window before the cap was applied. */
+  available: number;
+  requested: number | null;
+  truncated: boolean;
+  selectionRule: string;
+}
+
+/**
+ * Assets with at least one 1m candle in the window, or the requested subset of them.
+ *
+ * Ordering matters: `order by a.symbol limit 200` cut the universe alphabetically, so a run over a
+ * ledger with more than 200 covered assets silently kept the A–M half and the survivorship
+ * properties of the result were unknown (review 2026-09-09, M-10). Selection is by candle coverage
+ * inside the window instead — the assets the run can actually reason about — and both the cap and
+ * the number available are reported so a truncated universe is visible in the results rather than
+ * implied by a row count.
+ */
+export async function listReplayUniverse(sql: Sql, from: Instant, to: Instant, assetIds: readonly Uuid[] | null, limit = 200): Promise<ReplayUniverse> {
+  const rows = await sql<{ id: Uuid; mint_address: string; symbol: string; decimals: number; token_program: string | null; buckets: string }[]>`
+    select a.id, a.mint_address, a.symbol, a.decimals, a.token_program, count(c.bucket_time) as buckets
     from core.assets a
-    where exists (select 1 from market.candles c where c.asset_id = a.id and c.resolution = '1m' and c.bucket_time >= ${from} and c.bucket_time < ${to})
-      and (${assetIds === null} or a.id = any(${(assetIds ?? []) as unknown as string[]}::uuid[]))
-    order by a.symbol limit ${limit}`;
-  return rows.map((r) => ({ id: r.id, mint: r.mint_address, symbol: r.symbol, decimals: r.decimals, tokenProgram: r.token_program === 'TOKEN_2022' ? 'TOKEN_2022' : r.token_program === 'TOKEN' ? 'TOKEN' : 'UNKNOWN' }));
+    join market.candles c on c.asset_id = a.id and c.resolution = '1m' and c.bucket_time >= ${from} and c.bucket_time < ${to}
+    where (${assetIds === null} or a.id = any(${(assetIds ?? []) as unknown as string[]}::uuid[]))
+    group by a.id, a.mint_address, a.symbol, a.decimals, a.token_program
+    order by count(c.bucket_time) desc, a.id asc`;
+  const assets = rows.slice(0, limit).map((r) => ({ id: r.id, mint: r.mint_address, symbol: r.symbol, decimals: r.decimals, tokenProgram: (r.token_program === 'TOKEN_2022' ? 'TOKEN_2022' : r.token_program === 'TOKEN' ? 'TOKEN' : 'UNKNOWN') as ReplayAssetRow['tokenProgram'] }));
+  return {
+    assets,
+    available: rows.length,
+    requested: assetIds === null ? null : assetIds.length,
+    truncated: rows.length > limit,
+    selectionRule: `1m candle coverage in the window, descending, capped at ${limit}`,
+  };
+}
+
+/** Back-compatible shape for callers that only need the rows. */
+export async function listReplayAssets(sql: Sql, from: Instant, to: Instant, assetIds: readonly Uuid[] | null, limit = 200): Promise<ReplayAssetRow[]> {
+  return (await listReplayUniverse(sql, from, to, assetIds, limit)).assets;
 }
 
 export async function listEligibilityBetween(sql: Sql, assetId: Uuid, from: Instant, to: Instant): Promise<AssetEligibility[]> {
@@ -307,6 +341,16 @@ export async function listFeatureValuesByMint(sql: Sql, mint: string, feature: s
     from signals.feature_snapshots s join core.assets a on a.id = s.asset_id
     where a.mint_address = ${mint} and s.as_of >= ${from} and s.as_of <= ${to} order by s.as_of asc`;
   return rows.filter((r) => r.value !== null).map((r) => ({ asOf: iso(r.as_of), value: r.value as number }));
+}
+
+/** Closes of one mint's candles inside a window, for converting SOL-denominated fees to settlement (§18.4). */
+export async function listCandlesByMint(sql: Sql, mint: string, resolution: string, from: Instant, to: Instant): Promise<{ bucketTime: Instant; close: number }[]> {
+  const rows = await sql<{ bucket_time: string; close: number | null }[]>`
+    select c.bucket_time, c.close
+    from market.candles c join core.assets a on a.id = c.asset_id
+    where a.mint_address = ${mint} and c.resolution = ${resolution} and c.bucket_time >= ${from} and c.bucket_time < ${to}
+    order by c.bucket_time asc`;
+  return rows.filter((r) => r.close !== null).map((r) => ({ bucketTime: iso(r.bucket_time), close: r.close as number }));
 }
 
 /** Direct model cost per strategy version inside a window (D37 layer 2): every agents.runs row joined to its cycle's strategy. */

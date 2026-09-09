@@ -33,6 +33,13 @@ export interface ClosedTrade {
   cost: number;
   proceeds: number;
   fees: number;
+  /**
+   * SOL-denominated network and priority fees for this trade, in lamports. They are real costs the
+   * settlement-denominated `fees` field cannot hold, and leaving them out of the reported numbers
+   * made `netPnl` identical to `grossPnl` under the default fill policy, whose router and
+   * transfer basis points are legitimately zero (review 2026-09-09, M-14).
+   */
+  feesLamports?: number;
   /** Slippage/price impact paid versus the decision quote, in settlement units (≥ 0). */
   slippageCost: number;
   /** Realized shortfall versus the contemporaneous executable expectation in bps; negative = improved (D48). */
@@ -47,6 +54,12 @@ export interface CoreMetrics {
   trades: number;
   grossPnl: number;
   fees: number;
+  /** Total SOL-denominated fees across these trades, in lamports. */
+  feesLamports: number;
+  /** Those lamports converted at the supplied SOL price; null when no price was available. */
+  feesLamportsAsSettlement: number | null;
+  /** False when `netPnl` could not include the SOL fees because no SOL price was supplied. */
+  netIncludesSolFees: boolean;
   slippageCost: number;
   netPnl: number;
   /** Mean realized shortfall in bps across trades that carry one. */
@@ -76,6 +89,8 @@ export interface MetricsInput {
   failedExecutions: number;
   startingEquity: number;
   window: { from: Instant; to: Instant };
+  /** Settlement units per SOL, for charging network and priority fees; null = not available. */
+  solPriceSettlement?: number | null;
   /** Minimum sample before Sharpe/Sortino are reported (§19.1 "where sample supports it"). */
   minSampleForRatios?: number;
 }
@@ -88,17 +103,21 @@ const stddev = (xs: number[]) => {
   return Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1));
 };
 
-export function netOf(t: ClosedTrade): number {
-  return t.proceeds - t.cost - t.fees;
+export function netOf(t: ClosedTrade, solPriceSettlement: number | null = null): number {
+  const sol = solPriceSettlement !== null && t.feesLamports ? (t.feesLamports / 1e9) * solPriceSettlement : 0;
+  return t.proceeds - t.cost - t.fees - sol;
 }
 
 export function coreMetrics(input: MetricsInput): CoreMetrics {
   const trades = [...input.trades].sort((a, b) => ms(a.closedAt) - ms(b.closedAt));
-  const nets = trades.map(netOf);
+  const solPrice = input.solPriceSettlement ?? null;
+  const nets = trades.map((t) => netOf(t, solPrice));
   const grossPnl = trades.reduce((a, t) => a + (t.proceeds - t.cost), 0);
   const fees = trades.reduce((a, t) => a + t.fees, 0);
+  const feesLamports = trades.reduce((a, t) => a + (t.feesLamports ?? 0), 0);
+  const feesLamportsAsSettlement = solPrice === null ? null : (feesLamports / 1e9) * solPrice;
   const slippageCost = trades.reduce((a, t) => a + t.slippageCost, 0);
-  const netPnl = grossPnl - fees;
+  const netPnl = grossPnl - fees - (feesLamportsAsSettlement ?? 0);
   const winners = nets.filter((n) => n > 0);
   const losers = nets.filter((n) => n <= 0);
   const grossWins = winners.reduce((a, b) => a + b, 0);
@@ -123,7 +142,7 @@ export function coreMetrics(input: MetricsInput): CoreMetrics {
   const turnover = trades.reduce((a, t) => a + t.cost + t.proceeds, 0);
 
   const minSample = input.minSampleForRatios ?? 20;
-  const returns = trades.map((t) => (t.cost > 0 ? netOf(t) / t.cost : 0));
+  const returns = trades.map((t) => (t.cost > 0 ? netOf(t, solPrice) / t.cost : 0));
   const rMean = mean(returns);
   const rStd = stddev(returns);
   const downside = returns.filter((r) => r < 0);
@@ -149,6 +168,9 @@ export function coreMetrics(input: MetricsInput): CoreMetrics {
     trades: trades.length,
     grossPnl,
     fees,
+    feesLamports,
+    feesLamportsAsSettlement,
+    netIncludesSolFees: solPrice !== null,
     slippageCost,
     netPnl,
     executionShortfallBps: mean(shortfalls.map((t) => t.executionShortfallBps as number)),

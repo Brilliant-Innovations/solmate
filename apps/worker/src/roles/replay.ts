@@ -185,7 +185,7 @@ export async function runReplayExecutionCycle(deps: ReplayRoleDeps): Promise<Rep
     const strategies = strategiesFor(run, deps.versions.strategies, deps.policies);
     const out = await (deps.execute ?? runReplay)({ run, dataset, strategies, policies: deps.policies, account: deps.account, logger: deps.logger });
     const directCosts = deps.directCosts ? await deps.directCosts(run) : {};
-    const results = buildResults(out, run, deps.account, deps.platformMonthlyUsd, directCosts);
+    const results = buildResults(out, run, deps.account, deps.platformMonthlyUsd, directCosts, { dataResolutionMs: 60_000, submissionDelayMs: deps.policies.costModel.fill.submissionDelayMs });
     const [dDigest, rDigest] = await Promise.all([decisionsDigest(out.decisions), resultsDigest(results)]);
     const decisions = await deps.repo.insertDecisions(out.decisions);
     const trades = await deps.repo.insertTrades(out.trades.map((t) => ({
@@ -201,6 +201,7 @@ export async function runReplayExecutionCycle(deps: ReplayRoleDeps): Promise<Rep
       cost: t.cost,
       proceeds: t.proceeds,
       fees: t.fees,
+      feesLamports: t.feesLamports ?? 0,
       slippageCost: t.slippageCost,
       executionShortfallBps: t.executionShortfallBps,
       executionPath: t.executionPath,
@@ -224,40 +225,53 @@ export async function runReplayExecutionCycle(deps: ReplayRoleDeps): Promise<Rep
 const DIMENSIONS: AttributionDimension[] = ['candidateFamily', 'regime', 'session', 'liquidityBand', 'relativeVolumeBand', 'confidenceBin', 'adversaryVerdict', 'hourOfDayUtc', 'dayOfWeekUtc', 'durationBand', 'executionPath'];
 
 /** §19.1–19.4 over the engine output; every row carries its strategy version and variant. */
-export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayAccount, platformMonthlyUsd: number, directCosts: Record<string, { modelUsd: number; runs: number }> = {}): ReplayResults {
+export function buildResults(out: ReplayOutput, run: ReplayRun, account: ReplayAccount, platformMonthlyUsd: number, directCosts: Record<string, { modelUsd: number; runs: number }> = {}, costModel?: { dataResolutionMs: number; submissionDelayMs: number }): ReplayResults {
   const scale = 10 ** account.settlementDecimals;
   const startingEquity = Number(account.startingCapital) / scale;
   const window = { from: run.window.from, to: run.window.to };
+  const solPriceSettlement = out.dataset.solPriceSettlement;
   const streams = out.perStrategy.map((p) => ({ strategyVersionId: p.strategyVersionId, variant: p.variant }));
-  const failedBy = (id: VersionId, variant: string) => out.decisions.filter((d) => d.strategyVersionId === id && d.variant === variant && d.rejection !== null && !d.rejection.startsWith('RISK:')).length;
+  /**
+   * Attempts that never became a fill, for the stream and sample being reported. The hold-out and
+   * in-sample rows used to pass a hard-coded zero, so `failed_execution_rate` read "0%" on every
+   * split of every run regardless of what happened (review 2026-09-09, M-15). `RISK:` refusals are
+   * excluded because they are policy decisions, not execution failures.
+   */
+  const failedBy = (id: VersionId, variant: string, sample: 'IN_SAMPLE' | 'HOLD_OUT' | 'ALL') =>
+    out.decisions.filter((d) => d.strategyVersionId === id && d.variant === variant && (sample === 'ALL' || d.sample === sample) && d.rejection !== null && !d.rejection.startsWith('RISK:')).length;
+  const metricsFor = (trades: ReplayOutput['trades'], failedExecutions: number) => coreMetrics({ trades, failedExecutions, startingEquity, window, solPriceSettlement });
   const comparison: ReplayResults['comparison'] = [];
   for (const s of streams) {
     const mine = out.trades.filter((t) => t.strategyVersionId === s.strategyVersionId && t.variant === s.variant);
-    comparison.push({ strategyVersionId: s.strategyVersionId, variant: s.variant, sample: 'ALL', metrics: coreMetrics({ trades: mine, failedExecutions: failedBy(s.strategyVersionId, s.variant), startingEquity, window }) as unknown as Record<string, unknown> });
+    comparison.push({ strategyVersionId: s.strategyVersionId, variant: s.variant, sample: 'ALL', metrics: metricsFor(mine, failedBy(s.strategyVersionId, s.variant, 'ALL')) as unknown as Record<string, unknown> });
     if (run.window.inSampleUntil !== null) {
-      for (const sample of ['IN_SAMPLE', 'HOLD_OUT'] as const) comparison.push({ strategyVersionId: s.strategyVersionId, variant: s.variant, sample, metrics: coreMetrics({ trades: mine.filter((t) => t.sample === sample), failedExecutions: 0, startingEquity, window }) as unknown as Record<string, unknown> });
+      for (const sample of ['IN_SAMPLE', 'HOLD_OUT'] as const) comparison.push({ strategyVersionId: s.strategyVersionId, variant: s.variant, sample, metrics: metricsFor(mine.filter((t) => t.sample === sample), failedBy(s.strategyVersionId, s.variant, sample)) as unknown as Record<string, unknown> });
     }
   }
   const others = run.strategyVersionIds.filter((id) => id !== run.baselineStrategyVersionId);
   const incremental = others.map((id) => incrementalValue(out.decisions, run.baselineStrategyVersionId, id, directCosts[id]?.modelUsd ?? 0, scale) as unknown as Record<string, unknown>);
   const disagreement = others.map((id) => disagreementAttribution(out.decisions, id, run.baselineStrategyVersionId, scale) as unknown as Record<string, unknown>);
-  const latency = run.strategyVersionIds.map((id) => latencyCost(out.decisions, id, run.baselineStrategyVersionId, scale) as unknown as Record<string, unknown>);
+  const latencyOpts = costModel ? { dataResolutionMs: costModel.dataResolutionMs, submissionDelayMs: costModel.submissionDelayMs, latencyMatchedMs: out.latencyMatchedMs } : undefined;
+  const latency = run.strategyVersionIds.map((id) => latencyCost(out.decisions, id, run.baselineStrategyVersionId, scale, latencyOpts) as unknown as Record<string, unknown>);
   const calib = run.strategyVersionIds.map((id) => calibration(out.decisions, id, run.calibrationTarget.kind, confidenceBin, CONFIDENCE_BINS.map((b) => b.label), scale) as unknown as Record<string, unknown>);
   const attribution: ReplayResults['attribution'] = {};
   for (const dim of DIMENSIONS) {
-    attribution[dim] = run.strategyVersionIds.flatMap((id) => attributeBy({ trades: out.trades.filter((t) => t.strategyVersionId === id && t.variant === 'FULL'), failedExecutions: 0, startingEquity, window }, dim, confidenceBin).map((g) => ({ strategyVersionId: id, ...g }) as unknown as Record<string, unknown>));
+    attribution[dim] = run.strategyVersionIds.flatMap((id) => {
+      const mine = out.trades.filter((t) => t.strategyVersionId === id && t.variant === 'FULL');
+      return attributeBy({ trades: mine, failedExecutions: failedBy(id, 'FULL', 'ALL'), startingEquity, window, solPriceSettlement }, dim, confidenceBin).map((g) => ({ strategyVersionId: id, ...g }) as unknown as Record<string, unknown>);
+    });
   }
   const economic = economicPnl({
     window,
     strategies: run.strategyVersionIds.map((id) => {
       const mine = out.trades.filter((t) => t.strategyVersionId === id && t.variant === 'FULL');
-      const m = coreMetrics({ trades: mine, failedExecutions: 0, startingEquity, window });
+      const m = metricsFor(mine, failedBy(id, 'FULL', 'ALL'));
       return { strategyVersionId: id, tradingNetUsd: m.netPnl, turnoverUsd: m.turnover, direct: { modelUsd: directCosts[id]?.modelUsd ?? 0, dataUsd: 0, rpcUsd: 0 } };
     }),
     platformMonthlyUsd,
     allocation: 'BY_TURNOVER',
   }) as unknown as Record<string, unknown>;
-  return { comparison, incremental, disagreement, latency, calibration: calib, attribution, economic, perStrategy: out.perStrategy as unknown as Record<string, unknown>[], candidates: out.candidates, ticks: out.ticks };
+  return { comparison, incremental, disagreement, latency, calibration: calib, attribution, economic, perStrategy: out.perStrategy as unknown as Record<string, unknown>[], candidates: out.candidates, ticks: out.ticks, dataset: out.dataset };
 }
 
 export { addMs as _addMs };

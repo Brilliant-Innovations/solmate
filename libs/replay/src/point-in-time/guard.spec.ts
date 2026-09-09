@@ -4,7 +4,7 @@ import { SimulatedClock } from '../clock/simulated.js';
 import { DatasetCutoffError, guardSources, guardedCandles, guardedRows, LookAheadError } from './guard.js';
 
 const T0 = fixtures.T0 as Instant;
-const ctx = (now: Instant, cutoffMs = 3_600_000) => ({ clock: new SimulatedClock(now), datasetCutoff: addMs(T0, cutoffMs) });
+const ctx = (now: Instant, cutoffMs = 3_600_000) => ({ clock: new SimulatedClock(now), datasetCutoff: addMs(T0, cutoffMs), observationDiscipline: 'SOURCE_TIME' as const });
 
 describe('look-ahead enforcement (§18.3, P9 acceptance, INV-13)', () => {
   it('a read that reaches for evidence after the replay clock fails instead of returning a filtered result', () => {
@@ -20,14 +20,14 @@ describe('look-ahead enforcement (§18.3, P9 acceptance, INV-13)', () => {
       fc.property(fc.array(fc.integer({ min: -600_000, max: 600_000 }), { minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 600_000 }), (offsets, untilOffset) => {
         const until = addMs(T0, untilOffset);
         const rows = offsets.map((o) => ({ firstSeenAt: addMs(T0, o) }));
-        const out = guardedRows('events', rows, until, { clock: new SimulatedClock(until), datasetCutoff: addMs(T0, 3_600_000) });
+        const out = guardedRows('events', rows, until, { clock: new SimulatedClock(until), datasetCutoff: addMs(T0, 3_600_000), observationDiscipline: 'SOURCE_TIME' as const });
         return out.every((r) => r.firstSeenAt <= until) && out.length === rows.filter((r) => r.firstSeenAt <= until).length;
       }),
     );
   });
 
   it('drops observations made after the dataset cutoff and refuses reads past it', () => {
-    const c = { clock: new SimulatedClock(addMs(T0, 7_200_000)), datasetCutoff: addMs(T0, 3_600_000) };
+    const c = { clock: new SimulatedClock(addMs(T0, 7_200_000)), datasetCutoff: addMs(T0, 3_600_000), observationDiscipline: 'SOURCE_TIME' as const };
     const rows = [
       { firstSeenAt: T0, observedAt: addMs(T0, 1_000) },
       { firstSeenAt: addMs(T0, 1_000), observedAt: addMs(T0, 3_600_001) },

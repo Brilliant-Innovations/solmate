@@ -56,6 +56,18 @@ export interface LeaderboardRow {
   tail_loss: number | null;
   failed_execution_rate: number | null;
   average_decision_to_fill_ms: number | null;
+  /** SOL-denominated network and priority fees, in lamports, and their settlement value when a SOL price was available (M-14). */
+  fees_lamports: number | null;
+  fees_lamports_as_settlement: number | null;
+  net_includes_sol_fees: boolean | null;
+  /** What the dataset could support, measured (H-1, M-10); null on runs recorded before the measurement existed. */
+  observation_discipline: string | null;
+  dataset_candles: number | null;
+  dataset_candles_late_observed: number | null;
+  dataset_max_observation_lag_ms: number | null;
+  universe_selected: number | null;
+  universe_available: number | null;
+  universe_truncated: boolean | null;
 }
 
 export interface IncrementalRow {
@@ -70,6 +82,11 @@ export interface IncrementalRow {
   admitted_not_baseline: number;
   admitted_not_baseline_net: number | null;
   both_passed: number;
+  /** Candidates the deterministic risk core refused, excluded from every AI-filtering bucket (M-12). */
+  risk_blocked: number | null;
+  risk_blocked_ai: number | null;
+  risk_blocked_baseline: number | null;
+  risk_blocked_both: number | null;
   baseline_net_total: number | null;
   strategy_net_total: number | null;
   model_cost: number | null;
@@ -101,6 +118,8 @@ export interface LatencyRow {
   missed_baseline_net: number | null;
   average_decision_latency_ms: number | null;
   edge_lost_to_latency: number | null;
+  /** Counters this run's data resolution cannot produce; a zero in them is an artefact, not a measurement (M-8, M-9). */
+  structurally_unreachable: string[] | null;
 }
 
 export interface CalibrationRow {

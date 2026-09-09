@@ -299,8 +299,10 @@ invariants:
     tests:
       - libs/replay/src/point-in-time/visibility.spec.ts
       - libs/replay/src/point-in-time/guard.spec.ts
+      - libs/replay/src/fidelity.spec.ts
       - libs/replay/src/clock/simulated.spec.ts
       - apps/worker/src/replay/engine.spec.ts
+      - apps/worker/src/replay/engine-fidelity.spec.ts
       - apps/worker/src/agents/guarded-sources.spec.ts
       - libs/db/src/server/intelligence-repo.integration.spec.ts
     evidence:

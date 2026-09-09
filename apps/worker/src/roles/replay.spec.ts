@@ -102,6 +102,8 @@ describe('worker replay role (§18.5, P9)', () => {
       perStrategy: [{ strategyVersionId: RAW.versionId, variant: 'FULL', decisions: 1, fills: 1, rejections: {}, closedTrades: 1, finalEquity: '10004900000', realizedPnlBaseUnits: '5000000' }],
       candidates: 1,
       ticks: 10,
+      dataset: { observationDiscipline: 'OBSERVED_TIME', candles: { total: 10, withObservedAt: 10, lateObserved: 0, medianLagMs: null, maxLagMs: null }, universe: { requested: null, selected: 1, available: 1, truncated: false, selectionRule: 'test' }, solPriceSettlement: 200 },
+      latencyMatchedMs: null,
     };
     h.setQueued({ run: { ...run, status: 'RUNNING' }, assetIds: null, controlRequestId: null, results: null });
     const x = await runReplayExecutionCycle({ ...h.deps, execute: async () => out });

@@ -1,6 +1,6 @@
 import { addMs, amountToBigInt, bigIntToAmount, compareAmounts, instantToMs, mulDiv, subAmounts, type Amount, type AssetEligibility, type Candidate, type Candle, type ExecutionRequest, type FeatureSnapshot, type Instant, type ReplayDecision, type ReplayVariant, type RiskPolicy, type SolanaAddress, type TradeIntent, type Uuid } from '@sol-agent-trader/contracts';
 import { impliedPrice, PaperExecutionAdapter, type DetailedExecution } from '@sol-agent-trader/execution';
-import { assertReadable, guardedRows, sampleOf, seededRandom, SimulatedClock, ticks, type GuardContext } from '@sol-agent-trader/replay';
+import { assertReadable, disciplineFor, guardedRows, observationLagReport, sampleOf, seededRandom, SimulatedClock, ticks, type GuardContext } from '@sol-agent-trader/replay';
 import { entryAllowed, evaluateEntry, evaluateExitPolicy } from '@sol-agent-trader/risk';
 import { classifyRegime, computeFeatures, detectMomentumCandidate, marketSessionsAt, relativeStrength, type UniverseAsset } from '@sol-agent-trader/signals';
 import { closePosition, equityOf, markPosition, newBook, openPosition, portfolioStateOf, rollDay, type ReplayBook, type ReplayPosition } from './book.js';
@@ -41,6 +41,8 @@ interface PositionLedger {
   snapshot: FeatureSnapshot;
   proceeds: bigint;
   feesSettlement: bigint;
+  /** SOL-denominated network and priority fees charged to this position, in lamports (§18.4, M-14). */
+  feesLamports: bigint;
   slippageSettlement: bigint;
   entryShortfallBps: number | null;
   decisionToFillMs: number | null;
@@ -48,6 +50,13 @@ interface PositionLedger {
   exitReason: string;
   quantityClosed: bigint;
   quantityOpened: bigint;
+  /**
+   * Cost basis at entry, kept verbatim. Reconstructing it from the remaining basis and quantity
+   * drifts once a partial reduction floors its share (review 2026-09-09, E1).
+   */
+  costBasisOpened: bigint;
+  /** First moment the position could not be quoted, cleared as soon as a quote returns (H-8). */
+  unquotableSince: Instant | null;
 }
 
 interface PendingEntry {
@@ -64,10 +73,23 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
   const cost = policies.costModel;
   const tickMs = deps.tickMs ?? MINUTE;
   const clock = new SimulatedClock(run.window.from);
-  const guard: GuardContext = { clock, datasetCutoff: run.window.datasetCutoff };
+  // §18.1: a Level B run may read a row only from the moment it was actually observed; a Level A
+  // run reconstructs from source time and says so. Comparing observation time against the dataset
+  // cutoff alone could never bind, which is what made the Level B label empty (review 2026-09-09, H-1).
+  const observationDiscipline = disciplineFor(run.fidelity);
+  const guard: GuardContext = { clock, datasetCutoff: run.window.datasetCutoff, observationDiscipline };
   // The paper adapter takes the executable quote submissionDelayMs after the decision by design (§17.1); the quote
-  // source's horizon is the clock plus that modelled delay. Strategies never read through this context.
-  const quoteGuard: GuardContext = { clock: { now: () => addMs(clock.now(), cost.fill.submissionDelayMs), nowMs: () => clock.nowMs() + cost.fill.submissionDelayMs }, datasetCutoff: run.window.datasetCutoff };
+  // source's horizon is the clock plus that modelled delay, clamped to the dataset cutoff. The clamp
+  // matters at the window boundary: a window-end exit is decided at `window.to`, and without it the
+  // modelled submission delay would push the quote past the cutoff and abort the run rather than
+  // charge the exit (review 2026-09-09, M-13). Strategies never read through this context.
+  // The exit decided at `window.to` quotes one submission delay later, so the quote path's cutoff is
+  // the run cutoff extended by exactly that modelled delay. In production the role sets the cutoff to
+  // request time, far beyond the window end, so this changes nothing; it only keeps a window-end exit
+  // from aborting the run instead of being charged. The dataset itself is still filtered at the true
+  // cutoff, so no later observation becomes readable.
+  const quoteCutoff = addMs(run.window.datasetCutoff, instantToMs(run.window.datasetCutoff) < instantToMs(run.window.to) + cost.fill.submissionDelayMs ? cost.fill.submissionDelayMs : 0);
+  const quoteGuard: GuardContext = { clock: { now: () => addMs(clock.now(), cost.fill.submissionDelayMs), nowMs: () => clock.nowMs() + cost.fill.submissionDelayMs }, datasetCutoff: quoteCutoff, observationDiscipline };
   let counter = 0;
   const newId = () => idFrom(`${run.id}:${run.seed}`, counter++);
   const quotes = new ReplayQuoteSource(dataset, quoteGuard, {
@@ -95,18 +117,51 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
   }
 
   // --- dataset views ---------------------------------------------------------------------------------
+  const lookback = Math.max(...Object.values(policies.featureSpec.lookbackBuckets)) + 2;
   const cutoffMs = instantToMs(run.window.datasetCutoff);
   const candlesByAsset = new Map<Uuid, Candle[]>();
   for (const a of dataset.assets) candlesByAsset.set(a.id, (dataset.candles.get(a.id) ?? []).filter((c) => c.resolution === '1m' && instantToMs(c.observedAt) <= cutoffMs).sort((x, y) => instantToMs(x.bucketTime) - instantToMs(y.bucketTime)));
-  const visibleIndex = new Map<Uuid, number>();
+  /**
+   * When a candle becomes readable. Source time is bucket close plus the availability lag; under
+   * `OBSERVED_TIME` a backfilled candle is additionally unreadable until it was observed, which is
+   * what separates a captured-market run from a reconstruction. The two orderings differ — a late
+   * backfill arrives out of bucket order — so the cursor walks availability order while the window
+   * the feature engine reads stays in bucket order.
+   */
+  const availableAtMs = (c: Candle): number => {
+    const source = instantToMs(c.bucketTime) + MINUTE + cost.candleAvailabilityLagMs;
+    return observationDiscipline === 'OBSERVED_TIME' ? Math.max(source, instantToMs(c.observedAt)) : source;
+  };
+  const byAvailability = new Map<Uuid, Candle[]>();
+  for (const [id, all] of candlesByAsset) byAvailability.set(id, [...all].sort((x, y) => availableAtMs(x) - availableAtMs(y)));
+  const availabilityCursor = new Map<Uuid, number>();
+  // Only the newest `lookback` buckets ever reach a feature vector, so the visible window is bounded;
+  // a backfill older than the whole window is genuinely too old to change any feature.
+  const WINDOW_CAP = lookback + 8;
+  const visibleWindow = new Map<Uuid, Candle[]>();
   const visibleCandles = (asset: ReplayAsset, until: Instant): Candle[] => {
     assertReadable('candles', until, guard);
-    const all = candlesByAsset.get(asset.id) ?? [];
-    let i = visibleIndex.get(asset.id) ?? 0;
-    const limit = instantToMs(until) - MINUTE - cost.candleAvailabilityLagMs;
-    while (i < all.length && instantToMs(all[i]!.bucketTime) <= limit) i++;
-    visibleIndex.set(asset.id, i);
-    return all.slice(0, i);
+    const all = byAvailability.get(asset.id) ?? [];
+    const window = visibleWindow.get(asset.id) ?? [];
+    let i = availabilityCursor.get(asset.id) ?? 0;
+    const untilMs = instantToMs(until);
+    while (i < all.length && availableAtMs(all[i]!) <= untilMs) {
+      const c = all[i]!;
+      const at = instantToMs(c.bucketTime);
+      let lo = 0;
+      let hi = window.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (instantToMs(window[mid]!.bucketTime) <= at) lo = mid + 1;
+        else hi = mid;
+      }
+      window.splice(lo, 0, c);
+      i++;
+    }
+    if (window.length > WINDOW_CAP) window.splice(0, window.length - WINDOW_CAP);
+    availabilityCursor.set(asset.id, i);
+    visibleWindow.set(asset.id, window);
+    return window;
   };
   const latestEligibility = (asset: ReplayAsset, at: Instant): AssetEligibility | null => {
     const rows = guardedRows('eligibility', (dataset.eligibility.get(asset.id) ?? []).map((e) => ({ ...e, firstSeenAt: e.evaluatedAt })), at, guard);
@@ -122,7 +177,6 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
   const lastTerminalAt = new Map<Uuid, Instant | null>();
   let candidateCount = 0;
   const pending: PendingEntry[] = [];
-  const lookback = Math.max(...Object.values(policies.featureSpec.lookbackBuckets)) + 2;
   let tickCount = 0;
   let lastDay = Math.floor(instantToMs(run.window.from) / 86_400_000);
 
@@ -272,6 +326,7 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
       snapshot,
       proceeds: 0n,
       feesSettlement: amountToBigInt(exec.fill.fees.routerBaseUnits),
+      feesLamports: amountToBigInt(lamports),
       slippageSettlement: shortfall !== null && shortfall > 0 ? (amountToBigInt(exec.fill.inputAmount) * BigInt(Math.round(shortfall))) / 10_000n : 0n,
       entryShortfallBps: shortfall,
       decisionToFillMs: instantToMs(exec.fill.filledAt) - instantToMs(now),
@@ -279,6 +334,8 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
       exitReason: 'OPEN',
       quantityClosed: 0n,
       quantityOpened: amountToBigInt(exec.fill.outputAmount),
+      costBasisOpened: amountToBigInt(exec.fill.inputAmount),
+      unquotableSince: null,
     });
   }
 
@@ -293,11 +350,31 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
 
   const request = (intent: TradeIntent, now: Instant): ExecutionRequest => ({ intent, capitalAuthority: 'PAPER', authorization: null, approvalHash: null, executionPath: cost.executionPath, requestedAt: now });
 
+  /**
+   * How long a position may stay unquotable before the run books it as unexitable. Live behaviour
+   * is not to ignore it: `position-monitor` logs the missing route and held-asset safety escalates
+   * NO_EXIT_PATH → UNABLE_TO_EXIT, a CRITICAL dead-man class. Skipping the position instead left
+   * the single worst outcome the system exists to survive scoring as neither a loss nor a trade,
+   * while equity carried it at its last pre-rug mark (review 2026-09-09, H-8).
+   */
+  const UNQUOTABLE_EXIT_AFTER_MS = 15 * MINUTE;
+
   async function managePositions(stream: Stream, now: Instant, forceReason: string | null): Promise<void> {
     for (const p of [...stream.book.positions]) {
       const led = stream.ledger.get(p.id)!;
       const quote = await tryQuote(p.quantity, p.mint, account.settlementMint, now);
-      if (!quote) continue;
+      if (!quote) {
+        led.unquotableSince ??= now;
+        const strandedMs = instantToMs(now) - instantToMs(led.unquotableSince);
+        if (forceReason !== null || strandedMs >= UNQUOTABLE_EXIT_AFTER_MS) {
+          // Nothing can be sold, so nothing can be marked: the honest value is zero until a route
+          // exists again, and the trade is booked as the total loss it is.
+          markPosition(stream.book, p.id, '0' as Amount, p.averageEntryPrice);
+          finishClose(stream, p, '0' as Amount, '0' as Amount, 0n, 'UNQUOTABLE', now, amountToBigInt(p.quantity));
+        }
+        continue;
+      }
+      led.unquotableSince = null;
       const price = impliedPrice(quote.expectedOutputAmount, account.settlementDecimals, p.quantity, p.decimals);
       markPosition(stream.book, p.id, quote.expectedOutputAmount, price ?? p.averageEntryPrice);
       if (led.horizonMark === null && instantToMs(now) - instantToMs(p.openedAt) >= run.calibrationTarget.horizonMs) led.horizonMark = quote.expectedOutputAmount;
@@ -323,11 +400,6 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
       }
       const requested = action === 'EXIT' ? p.quantity : mulDiv(p.quantity, BigInt(Math.round(fraction * 1_000_000)), 1_000_000n, 'FLOOR');
       if (amountToBigInt(requested) === 0n) continue;
-      if (forceReason === 'WINDOW_END') {
-        // Window end: close at the last executable mark without another modelled attempt, so every position has an outcome.
-        finishClose(stream, p, quote.expectedOutputAmount, '0' as Amount, 0n, forceReason, now, amountToBigInt(p.quantity));
-        continue;
-      }
       const intent: TradeIntent = {
         id: newId(),
         idempotencyKey: `replay:${run.id}:${stream.key}:${p.id}:${counter}` as TradeIntent['idempotencyKey'],
@@ -353,8 +425,17 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
       };
       const exec: DetailedExecution = await adapter.executeDetailed(request(intent, now));
       const lamports = exec.fill ? addLamports(exec.fill.fees.networkBaseUnits, exec.fill.fees.priorityBaseUnits) : exec.attempt.state === 'NOT_LANDED' ? addLamports(cost.fill.fees.networkLamports, cost.fill.fees.priorityLamports) : ('0' as Amount);
+      // A window-end close pays the same adverse allowance, fees and failure draw as any other
+      // exit. Liquidating at the last mark for free biased every position open at window end
+      // upward and made WINDOW_END a legitimate-looking exit-reason row (review 2026-09-09, M-13).
       if (!exec.fill || failureDraw(`exit:${stream.key}:${p.id}:${now}`)) {
         stream.book.feesLamports = bigIntToAmount(amountToBigInt(stream.book.feesLamports) + amountToBigInt(lamports));
+        led.feesLamports += amountToBigInt(lamports);
+        if (forceReason === 'WINDOW_END') {
+          // The window ends with this attempt; there is no next tick to retry on. The position is
+          // booked at the executable mark it could not actually reach, under its own exit reason.
+          finishClose(stream, p, quote.expectedOutputAmount, '0' as Amount, 0n, 'WINDOW_END_UNFILLED', now, amountToBigInt(p.quantity));
+        }
         continue; // stays open; the next tick tries again (a live position would still be protected by its stop)
       }
       const shortfall = exec.fill.executionShortfallBps;
@@ -370,6 +451,7 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
     const led = stream.ledger.get(p.id)!;
     led.proceeds += amountToBigInt(proceeds);
     led.feesSettlement += feesSettlement;
+    led.feesLamports += amountToBigInt(lamports);
     led.quantityClosed += quantitySold;
     led.exitReason = reason;
     const remaining = amountToBigInt(p.quantity) - quantitySold;
@@ -407,6 +489,7 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
       cost: Number(totalCost) / scale,
       proceeds: Number(led.proceeds) / scale,
       fees: Number(led.feesSettlement) / scale,
+      feesLamports: Number(led.feesLamports),
       slippageCost: Number(led.slippageSettlement) / scale,
       executionShortfallBps: led.entryShortfallBps,
       executionPath: cost.executionPath,
@@ -431,10 +514,9 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
   }
 
   function costBasisTotal(stream: Stream, p: ReplayPosition): bigint {
-    const led = stream.ledger.get(p.id)!;
-    // The remaining cost basis plus what partial reductions already released: original cost = remaining × opened / remaining quantity.
-    const remainingQty = amountToBigInt(p.quantity);
-    return remainingQty > 0n ? (amountToBigInt(p.costBasisBaseUnits) * led.quantityOpened) / remainingQty : amountToBigInt(p.costBasisBaseUnits);
+    // Recorded at entry, not reconstructed: rescaling the remaining basis by the remaining quantity
+    // drifts once a partial reduction has floored its share of the cost (review 2026-09-09, E1).
+    return stream.ledger.get(p.id)!.costBasisOpened;
   }
 
   // --- main loop ---------------------------------------------------------------------------------------
@@ -536,8 +618,18 @@ export async function runReplay(deps: ReplayEngineDeps): Promise<ReplayOutput> {
     finalEquity: equityOf(s.book),
     realizedPnlBaseUnits: s.book.realizedPnl.toString(),
   }));
-  deps.logger.info('replay_run_completed', { runId: run.id, fidelity: run.fidelity, ticks: tickCount, candidates: candidateCount, streams: perStrategy.map((p) => ({ strategy: p.strategyVersionId, variant: p.variant, decisions: p.decisions, fills: p.fills, closed: p.closedTrades, realized: p.realizedPnlBaseUnits })) });
-  return { run, decisions: streams.flatMap((s) => s.decisions), trades: streams.flatMap((s) => s.trades), perStrategy, candidates: candidateCount, ticks: tickCount };
+  // What the dataset can actually support, measured rather than asserted: a Level B label over a
+  // series that was mostly backfilled long after its buckets is, for candle-derived features,
+  // indistinguishable from Level A (review 2026-09-09, H-1).
+  const lag = observationLagReport([...candlesByAsset.values()].flat(), MINUTE, cost.candleAvailabilityLagMs);
+  const dataset_: ReplayOutput['dataset'] = {
+    observationDiscipline,
+    candles: lag,
+    universe: dataset.universe ?? { requested: null, selected: dataset.assets.length, available: dataset.assets.length, truncated: false, selectionRule: 'unknown' },
+    solPriceSettlement: dataset.solPriceSettlement ?? null,
+  };
+  deps.logger.info('replay_run_completed', { runId: run.id, fidelity: run.fidelity, ticks: tickCount, candidates: candidateCount, dataset: dataset_, streams: perStrategy.map((p) => ({ strategy: p.strategyVersionId, variant: p.variant, decisions: p.decisions, fills: p.fills, closed: p.closedTrades, realized: p.realizedPnlBaseUnits })) });
+  return { run, decisions: streams.flatMap((s) => s.decisions), trades: streams.flatMap((s) => s.trades), perStrategy, candidates: candidateCount, ticks: tickCount, dataset: dataset_, latencyMatchedMs: run.latencyMatchedBaseline && latencyMatchedMs > 0 ? latencyMatchedMs : null };
 }
 
 function takeProfitOf(p: ReplayPosition, policy: RiskPolicy): RiskPolicy['takeProfit'] {

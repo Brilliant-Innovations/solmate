@@ -16,7 +16,11 @@ export type IncrementalCategory =
   | 'AI_FILTERED_LOSER'
   | 'AI_REJECTED_WINNER'
   | 'AI_ADMITTED_NOT_BASELINE'
-  | 'BOTH_PASSED';
+  | 'BOTH_PASSED'
+  /** The strategy wanted the trade and the deterministic risk core refused it: not AI filtering. */
+  | 'RISK_BLOCKED_AI'
+  | 'RISK_BLOCKED_BASELINE'
+  | 'RISK_BLOCKED_BOTH';
 
 export interface IncrementalValue {
   baselineStrategyVersionId: VersionId;
@@ -28,10 +32,20 @@ export interface IncrementalValue {
   modelCost: number;
   /** AI net − baseline net − model cost, per candidate opportunity. */
   incrementalNetExpectancy: number | null;
+  /**
+   * Candidates the deterministic risk core refused for one side or both. They are excluded from
+   * every AI-filtering category and from the expectancy denominator, because a sleeve-capacity or
+   * drawdown refusal says nothing about the model's judgement (review 2026-09-09, M-12).
+   */
+  riskBlocked: number;
 }
 
 function traded(d: ReplayDecision | undefined): boolean {
   return !!d && d.cycleState === 'CLEARED' && d.fill !== null && d.rejection === null;
+}
+/** A refusal by the deterministic risk core rather than by the strategy: `RISK:<reason>` (engine convention). */
+function riskBlocked(d: ReplayDecision | undefined): boolean {
+  return !!d && !traded(d) && d.action === 'ENTER' && (d.rejection?.startsWith('RISK:') ?? false);
 }
 function realized(d: ReplayDecision | undefined): number {
   return d?.outcome ? num(d.outcome.realizedPnlBaseUnits) : 0;
@@ -52,17 +66,31 @@ export function incrementalValue(decisions: readonly ReplayDecision[], baseline:
     byCandidate.set(d.candidateId, slot);
   }
   const empty = () => ({ count: 0, baselineNet: 0, aiNet: 0 });
-  const byCategory: IncrementalValue['byCategory'] = { BOTH_TRADED: empty(), AI_FILTERED_LOSER: empty(), AI_REJECTED_WINNER: empty(), AI_ADMITTED_NOT_BASELINE: empty(), BOTH_PASSED: empty() };
+  const byCategory: IncrementalValue['byCategory'] = { BOTH_TRADED: empty(), AI_FILTERED_LOSER: empty(), AI_REJECTED_WINNER: empty(), AI_ADMITTED_NOT_BASELINE: empty(), BOTH_PASSED: empty(), RISK_BLOCKED_AI: empty(), RISK_BLOCKED_BASELINE: empty(), RISK_BLOCKED_BOTH: empty() };
   let baselineNetTotal = 0;
   let aiNetTotal = 0;
   let candidates = 0;
+  let riskBlockedCount = 0;
   for (const { b, a } of byCandidate.values()) {
     if (!b && !a) continue;
-    candidates++;
     const bT = traded(b);
     const aT = traded(a);
     const bNet = bT ? realized(b) / settlementScale : 0;
     const aNet = aT ? realized(a) / settlementScale : 0;
+    const bR = riskBlocked(b);
+    const aR = riskBlocked(a);
+    if (bR || aR) {
+      // Risk refusals sit in their own buckets and never enter the incremental expectancy: the
+      // candidate was not an AI decision either way.
+      riskBlockedCount++;
+      const cat: IncrementalCategory = bR && aR ? 'RISK_BLOCKED_BOTH' : aR ? 'RISK_BLOCKED_AI' : 'RISK_BLOCKED_BASELINE';
+      const c = byCategory[cat];
+      c.count++;
+      c.baselineNet += bNet;
+      c.aiNet += aNet;
+      continue;
+    }
+    candidates++;
     const cat: IncrementalCategory = bT && aT ? 'BOTH_TRADED' : bT && !aT ? (bNet <= 0 ? 'AI_FILTERED_LOSER' : 'AI_REJECTED_WINNER') : !bT && aT ? 'AI_ADMITTED_NOT_BASELINE' : 'BOTH_PASSED';
     const c = byCategory[cat];
     c.count++;
@@ -80,6 +108,7 @@ export function incrementalValue(decisions: readonly ReplayDecision[], baseline:
     aiNetTotal,
     modelCost,
     incrementalNetExpectancy: candidates ? (aiNetTotal - baselineNetTotal - modelCost) / candidates : null,
+    riskBlocked: riskBlockedCount,
   };
 }
 
@@ -161,9 +190,26 @@ export interface LatencyCost {
   averageDecisionLatencyMs: number | null;
   /** FULL net minus LATENCY_MATCHED net for the same strategy: edge attributable to speed alone (plan M10 latency-matched baseline). */
   edgeLostToLatency: number | null;
+  /**
+   * Counters this run's data resolution cannot produce, and why. A modelled quote resolves to the
+   * candle bucket containing the request, so when the whole latency difference lands inside one
+   * bucket the comparison measures the grid rather than latency, and `CHASE_EXCEEDED` /
+   * `QUOTE_STALE` are unreachable by construction (review 2026-09-09, M-8, M-9). Reporting the
+   * zeros as measurements would be reporting an artefact.
+   */
+  structurallyUnreachable: string[];
 }
 
-export function latencyCost(decisions: readonly ReplayDecision[], strategy: VersionId, baseline: VersionId, settlementScale: number): LatencyCost {
+export interface LatencyCostOptions {
+  /** Bar size the quote source resolves prices at; 60 000 for the 1m series replay uses. */
+  dataResolutionMs: number;
+  /** Modelled delay between deciding and taking the executable quote, from the run's cost model. */
+  submissionDelayMs: number;
+  /** Latency the LATENCY_MATCHED variant decided at, when the run produced one. */
+  latencyMatchedMs: number | null;
+}
+
+export function latencyCost(decisions: readonly ReplayDecision[], strategy: VersionId, baseline: VersionId, settlementScale: number, opts?: LatencyCostOptions): LatencyCost {
   const mine = decisions.filter((d) => d.strategyVersionId === strategy && d.variant === 'FULL');
   const expired = mine.filter((d) => d.cycleState === 'EXPIRED');
   const chase = mine.filter((d) => d.rejection === 'CHASE_EXCEEDED');
@@ -182,6 +228,17 @@ export function latencyCost(decisions: readonly ReplayDecision[], strategy: Vers
   const matched = decisions.filter((d) => d.strategyVersionId === strategy && d.variant === 'LATENCY_MATCHED');
   const sum = (ds: ReplayDecision[]) => ds.filter(traded).reduce((a, d) => a + realized(d) / settlementScale, 0);
   const lat = mine.map((d) => d.decisionLatencyMs);
+  const meanLatency = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null;
+
+  const unreachable: string[] = [];
+  if (opts) {
+    // Decision and execution quotes that land in the same bar carry the same price, so no
+    // repricing can be observed between them.
+    if (opts.submissionDelayMs < opts.dataResolutionMs) unreachable.push('CHASE_EXCEEDED', 'QUOTE_STALE');
+    const delta = opts.latencyMatchedMs === null || meanLatency === null ? null : Math.abs(meanLatency - opts.latencyMatchedMs);
+    if (delta !== null && delta < opts.dataResolutionMs) unreachable.push('EDGE_LOST_TO_LATENCY');
+  }
+  const edgeMeasurable = !unreachable.includes('EDGE_LOST_TO_LATENCY');
   return {
     strategyVersionId: strategy,
     decisions: mine.length,
@@ -189,8 +246,9 @@ export function latencyCost(decisions: readonly ReplayDecision[], strategy: Vers
     chaseRejected: chase.length,
     staleQuoteRejected: stale.length,
     missedBaselineNet: missedCount ? missed : null,
-    averageDecisionLatencyMs: lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null,
-    edgeLostToLatency: matched.length ? sum(mine) - sum(matched) : null,
+    averageDecisionLatencyMs: meanLatency,
+    edgeLostToLatency: matched.length && edgeMeasurable ? sum(mine) - sum(matched) : null,
+    structurallyUnreachable: [...new Set(unreachable)],
   };
 }
 

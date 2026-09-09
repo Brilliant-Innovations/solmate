@@ -1,5 +1,5 @@
 import { addMs, type Instant, type ReplayRun, type Uuid, type VersionId } from '@sol-agent-trader/contracts';
-import { listActiveMemberships, listEligibilityBetween, listEventsBetween, listFeatureValuesByMint, listQuoteProbesBetween, listRecordedDecisionsBetween, listReplayAssets, loadCandles, type Sql } from '@sol-agent-trader/db/server';
+import { listActiveMemberships, listCandlesByMint, listEligibilityBetween, listEventsBetween, listFeatureValuesByMint, listQuoteProbesBetween, listRecordedDecisionsBetween, listReplayUniverse, loadCandles, type Sql } from '@sol-agent-trader/db/server';
 import type { ReplayDataset } from './types.js';
 
 /**
@@ -19,7 +19,8 @@ export async function loadReplayDataset(sql: Sql, run: ReplayRun, assetIds: read
   const from = run.window.from;
   const to = run.window.datasetCutoff;
   const back = addMs(from, -opts.lookbackMs);
-  const assets = await listReplayAssets(sql, from, run.window.to, assetIds);
+  const universe = await listReplayUniverse(sql, from, run.window.to, assetIds);
+  const assets = universe.assets;
   const candles = new Map<Uuid, Awaited<ReturnType<typeof loadCandles>>>();
   const eligibility = new Map<Uuid, Awaited<ReturnType<typeof listEligibilityBetween>>>();
   const quoteProbes = new Map<Uuid, Awaited<ReturnType<typeof listQuoteProbesBetween>>>();
@@ -28,12 +29,17 @@ export async function loadReplayDataset(sql: Sql, run: ReplayRun, assetIds: read
     eligibility.set(a.id, await listEligibilityBetween(sql, a.id, addMs(from, -86_400_000), to));
     quoteProbes.set(a.id, run.fidelity === 'B_CAPTURED' ? await listQuoteProbesBetween(sql, a.id, back, to) : []);
   }
-  const [events, memberships, recorded, sol] = await Promise.all([
+  const [events, memberships, recorded, sol, solCandles] = await Promise.all([
     listEventsBetween(sql, addMs(from, -86_400_000), to),
     listActiveMemberships(sql, opts.taxonomyVersion),
     opts.recordedStrategyVersionIds.length ? listRecordedDecisionsBetween(sql, opts.recordedStrategyVersionIds, from, to) : Promise.resolve([]),
     listFeatureValuesByMint(sql, opts.solMint, 'ret_1h', back, to),
+    // Network and priority fees are paid in SOL; without a price they cannot enter the reported
+    // net P&L at all, which is how a modelled fee ended up charged to nothing (review 2026-09-09,
+    // M-14). The window's mean SOL close is the honest, dataset-local conversion.
+    listCandlesByMint(sql, opts.solMint, '1m', from, run.window.to),
   ]);
+  const solCloses = solCandles.map((c) => c.close).filter((x) => x > 0);
   return {
     assets: assets.map((a) => ({ id: a.id, mint: a.mint as never, symbol: a.symbol, decimals: a.decimals, tokenProgram: a.tokenProgram })),
     candles,
@@ -50,5 +56,7 @@ export async function loadReplayDataset(sql: Sql, run: ReplayRun, assetIds: read
       decidedAt: r.decidedAt,
     })),
     solReturn1h: new Map(sol.map((v) => [v.asOf as string, v.value] as [Instant, number])),
+    universe: { requested: universe.requested, selected: assets.length, available: universe.available, truncated: universe.truncated, selectionRule: universe.selectionRule },
+    solPriceSettlement: solCloses.length ? solCloses.reduce((a, b) => a + b, 0) / solCloses.length : null,
   };
 }

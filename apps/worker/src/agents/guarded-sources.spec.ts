@@ -29,7 +29,7 @@ function fakeSources(calls: string[]): ContextSources {
 describe('look-ahead guard over skill context sources (§18.3, INV-13)', () => {
   it('every ContextSources method is mapped to its asOf argument and passes at or before the clock', async () => {
     const calls: string[] = [];
-    const g = guardedContextSources(fakeSources(calls), { clock: new SimulatedClock(T0), datasetCutoff: T0 });
+    const g = guardedContextSources(fakeSources(calls), { clock: new SimulatedClock(T0), datasetCutoff: T0, observationDiscipline: 'OBSERVED_TIME' as const });
     const keys = Object.keys(CONTEXT_SOURCE_AS_OF) as (keyof ContextSources)[];
     expect(keys.sort()).toEqual((Object.keys(fakeSources([])) as (keyof ContextSources)[]).sort());
     await g.candidate(ID, T0);
@@ -41,7 +41,7 @@ describe('look-ahead guard over skill context sources (§18.3, INV-13)', () => {
 
   it('a tool call that asks for a later moment than the replay clock fails before the repository is read', async () => {
     const calls: string[] = [];
-    const g = guardedContextSources(fakeSources(calls), { clock: new SimulatedClock(T0), datasetCutoff: addMs(T0, 3_600_000) });
+    const g = guardedContextSources(fakeSources(calls), { clock: new SimulatedClock(T0), datasetCutoff: addMs(T0, 3_600_000), observationDiscipline: 'OBSERVED_TIME' as const });
     expect(() => g.eventsVisibleAt(ID, addMs(T0, 1), 10)).toThrow(LookAheadError);
     expect(() => g.executionPreview(ID, 'SELL', addMs(T0, 1))).toThrow(LookAheadError);
     expect(() => g.featureSnapshotAt(ID, 'not-an-instant' as Instant)).toThrow(LookAheadError);

@@ -167,5 +167,20 @@ export const ReplayResults = z.object({
   perStrategy: z.array(z.record(z.string(), z.unknown())),
   candidates: z.number().int().nonnegative(),
   ticks: z.number().int().nonnegative(),
+  /**
+   * What the dataset could actually support, measured rather than asserted (§18.1): the observation
+   * discipline the fidelity level implied, how much of the candle series was observed later than
+   * its source time would suggest, how the universe was chosen and whether it was cut. Optional so
+   * runs recorded before the measurement existed still parse (review 2026-09-09, H-1, M-10).
+   */
+  dataset: z
+    .object({
+      observationDiscipline: z.enum(['SOURCE_TIME', 'OBSERVED_TIME']),
+      candles: z.object({ total: z.number().int().nonnegative(), withObservedAt: z.number().int().nonnegative(), lateObserved: z.number().int().nonnegative(), medianLagMs: z.number().nullable(), maxLagMs: z.number().nullable() }),
+      universe: z.object({ requested: z.number().int().nonnegative().nullable(), selected: z.number().int().nonnegative(), available: z.number().int().nonnegative(), truncated: z.boolean(), selectionRule: z.string().min(1).max(200) }),
+      solPriceSettlement: z.number().nullable(),
+    })
+    .nullable()
+    .default(null),
 });
 export type ReplayResults = z.infer<typeof ReplayResults>;
