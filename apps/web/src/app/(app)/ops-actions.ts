@@ -104,3 +104,49 @@ export async function requestResearchRefresh(form: FormData): Promise<void> {
   const back = String(form.get('back') ?? '/scanner');
   await request('REQUEST_RESEARCH_REFRESH', { assetId: uuidField(form, 'assetId'), source: 'scanner' }, back.startsWith('/') ? back : '/scanner');
 }
+
+/**
+ * File a replay run (RUN_REPLAY, FAST: research rows only, no capital). The worker's replay role
+ * validates versions and window, binds every current version and the dataset cutoff, then
+ * executes the run under the simulated clock (§18, §20.15).
+ */
+export async function requestRunReplay(form: FormData): Promise<void> {
+  const name = String(form.get('name') ?? '').trim().slice(0, 120);
+  const fidelity = String(form.get('fidelity') ?? 'B_CAPTURED');
+  const stamp = (field: string, required: boolean): string | null => {
+    const raw = String(form.get(field) ?? '').trim();
+    if (!raw) {
+      if (required) throw new Error(`${field} is required`);
+      return null;
+    }
+    const d = new Date(raw.endsWith('Z') ? raw : `${raw}${raw.length === 16 ? ':00' : ''}Z`);
+    if (Number.isNaN(d.getTime())) throw new Error(`${field} is not a date-time`);
+    return d.toISOString();
+  };
+  const from = stamp('from', true) as string;
+  const to = stamp('to', true) as string;
+  const holdout = stamp('holdout', false);
+  const strategies = form.getAll('strategy').map((s) => String(s).trim()).filter((s) => /^[A-Za-z0-9_.@-]{1,64}$/.test(s));
+  const baseline = String(form.get('baseline') ?? '').trim();
+  if (!name) throw new Error('name is required');
+  if (!['A_HISTORICAL', 'B_CAPTURED'].includes(fidelity)) throw new Error('fidelity must be A_HISTORICAL or B_CAPTURED');
+  if (strategies.length === 0) throw new Error('pick at least one strategy version');
+  if (!strategies.includes(baseline)) throw new Error('the baseline must be one of the selected strategy versions');
+  const seed = Number(String(form.get('seed') ?? '0'));
+  if (!Number.isInteger(seed) || seed < 0) throw new Error('seed must be a non-negative integer');
+  const assetsRaw = String(form.get('assets') ?? '').trim();
+  const assetIds = assetsRaw ? assetsRaw.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  if (assetIds && assetIds.some((a) => !UUID.test(a))) throw new Error('assets must be comma-separated asset ids');
+  await request('RUN_REPLAY', {
+    name,
+    fidelity,
+    window: { from, to, inSampleUntil: holdout },
+    strategyVersionIds: strategies,
+    baselineStrategyVersionId: baseline,
+    seed,
+    latencyMatchedBaseline: form.get('latencyMatched') !== null,
+    proposerOnlyShadow: form.get('proposerOnly') !== null,
+    assetIds,
+    source: 'replay-lab',
+  }, '/replay');
+}
