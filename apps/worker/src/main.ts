@@ -1637,6 +1637,18 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
   }
   const { sql } = shared;
   const drillExecutor = env.EXECUTION_SERVICE_URL && env.INTERNAL_API_SECRET ? new ExecutorClient({ baseUrl: env.EXECUTION_SERVICE_URL, secretHex: env.INTERNAL_API_SECRET, clock: systemClock, timeoutMs: 15_000 }) : null;
+  /**
+   * Live signer health for SIGNER_POLICY_DIGEST_MATCHES. Undefined without an executor (P1A), so the
+   * row is not computed at all rather than computed as a failure of something that is not deployed.
+   */
+  const signerHealth = drillExecutor
+    ? async () => {
+        const h = (await drillExecutor.health()) as { signer?: { backend?: unknown; state?: unknown; policyDigest?: unknown } };
+        const sg = h.signer;
+        if (!sg || typeof sg.backend !== 'string' || typeof sg.state !== 'string') return null;
+        return { backend: sg.backend, state: sg.state as 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE', policyDigest: typeof sg.policyDigest === 'string' ? sg.policyDigest : null };
+      }
+    : undefined;
   const settlementMint = DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress;
   // Profile 0/1 worker: the account is the paper account (ensurePaperAccount refuses anything else), so the LIVE-only rows fail by construction until Profile 2.
   const account = await ensurePaperAccount(sql, { id: randomUUID() as Uuid, name: `paper-${env.SOLANA_CLUSTER}`, cluster: env.SOLANA_CLUSTER, tradingWallet: env.PAPER_TRADING_WALLET, settlementMint });
@@ -1705,6 +1717,7 @@ async function readinessLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
     clock: systemClock,
     logger,
     // M11 automated drills (§29, P10): executed here on an admin's EXECUTE_READINESS_DRILL, recorded with the transcript.
+    signerHealth,
     drills: {
       CRITICAL_ALERT_DELIVERY: alertDeliveryDrill({
         senders: notificationSenders(env),

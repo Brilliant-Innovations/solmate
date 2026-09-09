@@ -26,6 +26,13 @@ export interface ReadinessFacts {
   presence: { attended: boolean; lastPresenceHeartbeatAt: Instant | null } | null;
   chainHealth: ChainHealthSnapshot | null;
   sleeveConflicts: { mint: string; sleeves: number }[];
+  /**
+   * What the executor's signer reports right now, and what the operator attested when they recorded
+   * SIGNER_DENY_EXPORT_PINNED. Held apart on purpose: one is live, one is a claim, and the row exists
+   * to notice when they stop agreeing (D50 applied to D55).
+   */
+  signer?: { backend: string; state: 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE'; policyDigest: string | null } | null;
+  pinnedSignerPolicyDigest?: string | null;
 }
 
 export interface ReadinessRepo {
@@ -52,6 +59,11 @@ export interface ReadinessDeps {
   clock: Clock;
   logger: Logger;
   newId?: () => Uuid;
+  /**
+   * Live signer health from the executor, for the digest-match row. Absent (P1A, no executor) means
+   * the row is simply not computed, rather than computed as a failure of something not deployed.
+   */
+  signerHealth?: () => Promise<{ backend: string; state: 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE'; policyDigest: string | null } | null>;
   /** M11 automated drills, keyed by readiness row; a row without an executor is refused as NOT_AUTOMATED. */
   drills?: Partial<Record<AutomatedDrillRow, DrillExecutor>>;
 }
@@ -83,6 +95,18 @@ export function computeRows(f: ReadinessFacts, deps: Pick<ReadinessDeps, 'reserv
   const nowMs = instantToMs(now);
   const fail = (rowId: ReadinessRowId, reason: string, extra: Record<string, unknown> = {}) => out.push({ rowId, verdict: 'FAIL', detail: { reason, ...extra } });
   const pass = (rowId: ReadinessRowId, extra: Record<string, unknown> = {}) => out.push({ rowId, verdict: 'PASS', detail: extra });
+
+  // signer policy digest: attested versus running
+  if (f.signer !== undefined) {
+    const pinned = f.pinnedSignerPolicyDigest ?? null;
+    const live = f.signer?.policyDigest ?? null;
+    if (!f.signer) fail('SIGNER_POLICY_DIGEST_MATCHES', 'the executor did not report signer health');
+    else if (f.signer.backend === 'SOFTWARE_DEV') fail('SIGNER_POLICY_DIGEST_MATCHES', 'the development signer has no policy layer, so nothing is attested (D47)', { backend: f.signer.backend });
+    else if (pinned === null) fail('SIGNER_POLICY_DIGEST_MATCHES', 'no signer policy digest attested; record SIGNER_DENY_EXPORT_PINNED with the pinned digest (Probe A)');
+    else if (live === null) fail('SIGNER_POLICY_DIGEST_MATCHES', 'the signer reports no policy digest', { pinned });
+    else if (live !== pinned) fail('SIGNER_POLICY_DIGEST_MATCHES', 'the running signer policy is not the one attested', { pinned, live });
+    else pass('SIGNER_POLICY_DIGEST_MATCHES', { digest: live, backend: f.signer.backend });
+  }
 
   // reconciliation
   if (!f.reconciliation) fail('RECONCILIATION_CLEAN', 'no reconciliation recorded');
@@ -245,8 +269,22 @@ export async function runReadinessCycle(deps: ReadinessDeps): Promise<ReadinessR
   }
 
   // 2. Computed rows, appended only when their outcome changed.
-  const facts = await deps.repo.facts();
+  const baseFacts = await deps.repo.facts();
   const latest = await deps.repo.latestRows();
+  // The attested digest is whatever the operator recorded on the Probe A row; the live one comes from
+  // the executor. Only compare when there is an executor to ask (see `signerHealth` above).
+  const pinnedRow = latest.find((r) => r.rowId === 'SIGNER_DENY_EXPORT_PINNED');
+  const pinnedDigest = typeof pinnedRow?.detail['policyDigest'] === 'string' ? (pinnedRow.detail['policyDigest'] as string) : null;
+  let signer: Awaited<ReturnType<NonNullable<ReadinessDeps['signerHealth']>>> | undefined;
+  if (deps.signerHealth) {
+    try {
+      signer = await deps.signerHealth();
+    } catch (err) {
+      signer = null;
+      deps.logger.warn('readiness_signer_health_failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  const facts: ReadinessFacts = signer === undefined ? baseFacts : { ...baseFacts, signer, pinnedSignerPolicyDigest: pinnedDigest };
   const computed = computeRows(facts, deps, now);
   const rows = new Map(latest.map((r) => [r.rowId, r] as const));
   for (const c of computed) {

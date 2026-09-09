@@ -9,7 +9,8 @@ const row = (rowId: ReadinessRowId, over: Partial<ReadinessRow> = {}): Readiness
   const spec = TINY_LIVE_ROW_SET.find((s) => s.rowId === rowId)!;
   return { id: `${String(++n).padStart(8, '0')}-0000-4000-8000-000000000000` as Uuid, rowId, kind: spec.kind, verdict: 'PASS', strategyClass: 'DETERMINISTIC', binding, detail: {}, evidenceRef: null, recordedBy: 'test', evaluatedAt: addMs(T0, -1_000), expiresAt: null, ...over };
 };
-const allPass = (): ReadinessRow[] => TINY_LIVE_ROW_SET.filter((s) => s.requiresCapability === null).map((s) => row(s.rowId));
+/** A PASS for every row this deployment actually requires: the unconditional ones plus those LIVE_SIGNING turns on. */
+const allPass = (): ReadinessRow[] => TINY_LIVE_ROW_SET.filter((s) => s.requiresCapability === null || s.requiresCapability === 'LIVE_SIGNING').map((s) => row(s.rowId));
 const compute = (rows: ReadinessRow[], over: Partial<Parameters<typeof computeReadiness>[0]> = {}) => computeReadiness({ id: ID, name: 'READY_FOR_ATTENDED_TINY_LIVE', spec: TINY_LIVE_ROW_SET, rows, binding, strategyClass: 'DETERMINISTIC', enabledCapabilities: ['LIVE_SIGNING'], policy: DEFAULT_READINESS_POLICY, now: T0, ...over });
 
 describe('readiness verdict (§29, ADR-0004, ADR-0010)', () => {

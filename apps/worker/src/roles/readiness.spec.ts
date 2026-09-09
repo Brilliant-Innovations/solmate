@@ -23,7 +23,7 @@ const healthy = (): ReadinessFacts => ({
 const depsOf = (over: Partial<ReadinessDeps> = {}): Pick<ReadinessDeps, 'reservePolicy' | 'presenceTimeoutMs' | 'reconciliationMaxAgeMs' | 'policy'> & Partial<ReadinessDeps> => ({ reservePolicy: DEFAULT_WALLET_RESERVE_POLICY, presenceTimeoutMs: 180_000, reconciliationMaxAgeMs: 300_000, policy: DEFAULT_READINESS_POLICY, ...over });
 const rowMap = (rows: ReturnType<typeof computeRows>) => Object.fromEntries(rows.map((r) => [r.rowId, r.verdict === 'PASS' ? 'PASS' : `FAIL:${r.detail['reason']}`]));
 
-function fake(over: { facts?: ReadinessFacts; rows?: ReadinessRow[]; verdict?: ReadinessVerdict | null; requests?: PendingControlRequest[]; role?: 'operator' | 'admin' | 'viewer' | null; stepUp?: boolean } = {}) {
+function fake(over: { facts?: ReadinessFacts; rows?: ReadinessRow[]; verdict?: ReadinessVerdict | null; requests?: PendingControlRequest[]; role?: 'operator' | 'admin' | 'viewer' | null; stepUp?: boolean; signerHealth?: ReadinessDeps['signerHealth'] } = {}) {
   const inserted: ReadinessRow[] = [];
   const verdicts: ReadinessVerdict[] = [];
   const resolutions: { id: Uuid; state: string; resolution: Record<string, unknown> }[] = [];
@@ -50,10 +50,14 @@ function fake(over: { facts?: ReadinessFacts; rows?: ReadinessRow[]; verdict?: R
     clock: fixedClock(T0),
     logger,
     newId: () => `${String(++n).padStart(8, '0')}-0000-4000-8000-00000000abcd` as Uuid,
+    signerHealth: over.signerHealth,
   };
   return { deps, inserted, verdicts, resolutions };
 }
 const evidenceRow = (rowId: ReadinessRowId, over: Partial<ReadinessRow> = {}): ReadinessRow => ({ id: `${rowId}`.slice(0, 8).padEnd(8, '0').toLowerCase().replace(/[^0-9a-f]/g, '0') + '-0000-4000-8000-000000000000' as Uuid, rowId, kind: TINY_LIVE_ROW_SET.find((s) => s.rowId === rowId)!.kind, verdict: 'PASS', strategyClass: 'DETERMINISTIC', binding, detail: {}, evidenceRef: 'ci:run/1', recordedBy: 'operator:x', evaluatedAt: addMs(T0, -60_000), expiresAt: null, ...over });
+/** The digest the operator pinned on the Probe A row, and the one a healthy signer reports back. */
+const SIGNER_DIGEST = 'a'.repeat(64);
+const signerHealth = (policyDigest: string | null = SIGNER_DIGEST) => async () => ({ backend: 'TURNKEY', state: 'HEALTHY' as const, policyDigest });
 const request = (payload: Record<string, unknown>, id = IDS.message as Uuid): PendingControlRequest => ({ id, requestedBy: IDS.operator as Uuid, kind: 'RUN_READINESS_DRILL', payload, createdAt: T0 });
 
 describe('computed readiness rows from stored facts (§29, ADR-0004)', () => {
@@ -96,7 +100,11 @@ describe('worker readiness role: rows, evidence requests and the verdict', () =>
     expect(r1.verdict).toBe('NOT_READY');
     expect(r1.rowsAppended).toHaveLength(8);
     expect(r1.verdictAppended).toBe(true);
-    expect(r1.missing.sort()).toEqual(TINY_LIVE_ROW_SET.filter((s) => s.kind !== 'COMPUTED' && s.requiresCapability === null).map((s) => s.rowId).sort());
+    // SIGNER_POLICY_DIGEST_MATCHES is COMPUTED, but nothing computes it without an executor to ask,
+    // so it is *missing* rather than quietly absent: a LIVE_SIGNING deployment whose signer cannot
+    // be reached must not be READY. What it computes when there is one is the last suite in this file.
+    const evidenceRowIds = TINY_LIVE_ROW_SET.filter((s) => s.kind !== 'COMPUTED' && s.requiresCapability === null).map((s) => s.rowId);
+    expect(r1.missing.sort()).toEqual([...evidenceRowIds, 'SIGNER_POLICY_DIGEST_MATCHES'].sort());
     expect(f.verdicts[0]).toMatchObject({ name: 'READY_FOR_ATTENDED_TINY_LIVE', profile: 'P2', releaseId: IDS.release, verdict: 'NOT_READY', notApplicable: ['TRIGGER_LIFECYCLE'] });
     const g = fake({ rows: f.inserted, verdict: f.verdicts[0] });
     g.deps.clock = fixedClock(addMs(T0, 60_000));
@@ -106,12 +114,16 @@ describe('worker readiness role: rows, evidence requests and the verdict', () =>
   });
 
   it('with every evidence row recorded against the same binding the verdict is READY; a changed commit makes the evidence stale again', async () => {
-    const evidence = TINY_LIVE_ROW_SET.filter((s) => s.kind !== 'COMPUTED' && s.requiresCapability === null).map((s) => evidenceRow(s.rowId));
-    const f = fake({ rows: evidence });
+    // The pinned signer-policy digest rides on the Probe A row's detail, which is where the operator
+    // records it, so READY also requires the running signer to be mirroring that same policy.
+    const evidence = TINY_LIVE_ROW_SET.filter((s) => s.kind !== 'COMPUTED' && s.requiresCapability === null).map((s) =>
+      evidenceRow(s.rowId, s.rowId === 'SIGNER_DENY_EXPORT_PINNED' ? { detail: { policyDigest: SIGNER_DIGEST } } : {}),
+    );
+    const f = fake({ rows: evidence, signerHealth: signerHealth() });
     const r = await runReadinessCycle(f.deps);
     expect(r).toMatchObject({ verdict: 'READY', missing: [], stale: [], failed: [] });
     expect(f.verdicts[0]?.verdict).toBe('READY');
-    const moved = fake({ rows: evidence });
+    const moved = fake({ rows: evidence, signerHealth: signerHealth() });
     moved.deps.binding = { ...binding, gitSha: 'abcdef2' };
     const r2 = await runReadinessCycle(moved.deps);
     expect(r2.verdict).toBe('NOT_READY');
@@ -183,5 +195,38 @@ describe('automated drills (M11): EXECUTE_READINESS_DRILL runs the executor and 
     none.deps.drills = {};
     expect((await runReadinessCycle(none.deps)).evidence.refused).toEqual({ NOT_AUTOMATED: 1 });
     expect(none.inserted.filter((r) => r.kind === 'DRILL')).toHaveLength(0);
+  });
+});
+describe('SIGNER_POLICY_DIGEST_MATCHES: what is attested must be what is running (D50, D55)', () => {
+  const DIGEST = SIGNER_DIGEST;
+  const OTHER = 'b'.repeat(64);
+  const turnkey = (policyDigest: string | null) => ({ backend: 'TURNKEY', state: 'HEALTHY' as const, policyDigest });
+  const verdict = (facts: Partial<ReadinessFacts>) => rowMap(computeRows({ ...healthy(), ...facts }, depsOf(), T0))['SIGNER_POLICY_DIGEST_MATCHES'];
+
+  it('is not computed at all without an executor to ask', () => {
+    // `signer` undefined means no execution-service is configured (P1A). A row that cannot be
+    // evaluated must be absent, not a FAIL against something that is not deployed.
+    expect(rowMap(computeRows(healthy(), depsOf(), T0))).not.toHaveProperty('SIGNER_POLICY_DIGEST_MATCHES');
+  });
+
+  it('passes only when the attested digest is the one the signer reports', () => {
+    expect(verdict({ signer: turnkey(DIGEST), pinnedSignerPolicyDigest: DIGEST })).toBe('PASS');
+  });
+
+  it('fails when the running policy is not the attested one — the case the row exists for', () => {
+    expect(verdict({ signer: turnkey(OTHER), pinnedSignerPolicyDigest: DIGEST })).toBe('FAIL:the running signer policy is not the one attested');
+  });
+
+  it('fails when nothing was attested, rather than passing on an absent claim', () => {
+    expect(verdict({ signer: turnkey(DIGEST), pinnedSignerPolicyDigest: null })).toMatch(/^FAIL:no signer policy digest attested/);
+  });
+
+  it('fails when the signer reports no digest, and when the executor cannot be reached', () => {
+    expect(verdict({ signer: turnkey(null), pinnedSignerPolicyDigest: DIGEST })).toBe('FAIL:the signer reports no policy digest');
+    expect(verdict({ signer: null, pinnedSignerPolicyDigest: DIGEST })).toBe('FAIL:the executor did not report signer health');
+  });
+
+  it('fails for the development signer, which has no policy layer to attest (D47)', () => {
+    expect(verdict({ signer: { backend: 'SOFTWARE_DEV', state: 'HEALTHY', policyDigest: null }, pinnedSignerPolicyDigest: DIGEST })).toMatch(/^FAIL:the development signer has no policy layer/);
   });
 });

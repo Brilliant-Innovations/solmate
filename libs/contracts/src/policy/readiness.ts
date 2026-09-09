@@ -15,6 +15,7 @@ import { Amount, Instant, Milliseconds, Sha256Hex, SolanaAddress, SolanaCluster,
 export const ReadinessRowId = z.enum([
   'RISK_AUTHORIZER_ISOLATION_TAMPER',
   'SIGNER_DENY_EXPORT_PINNED',
+  'SIGNER_POLICY_DIGEST_MATCHES',
   'PERSIST_BEFORE_SUBMIT_DRILL',
   'APPROVAL_BINDING_REPLAY',
   'TINY_LIVE_RELEASE_BOUND',
@@ -179,6 +180,11 @@ export type DrillExecutionPayload = z.infer<typeof DrillExecutionPayload>;
 export const TINY_LIVE_ROW_SET: readonly ReadinessRowSpec[] = [
   spec('RISK_AUTHORIZER_ISOLATION_TAMPER', 'CI_EVIDENCE', 'risk-authorizer isolation and DB-tamper tests (envelope and projection) green'),
   spec('SIGNER_DENY_EXPORT_PINNED', 'PROBE', 'deny-export active and verified for both Turnkey principals; signer policy id/digest pinned (Probe A)'),
+  // The D50 pattern applied to the signer: an artifact is only attested while what runs still matches
+  // what was attested. The operator pins a digest in SIGNER_DENY_EXPORT_PINNED; the executor reports
+  // the digest of the policy it is actually mirroring. A silent SIGNER_POLICY_JSON edit moves one and
+  // not the other, and this row is what notices.
+  spec('SIGNER_POLICY_DIGEST_MATCHES', 'COMPUTED', 'the signer policy the executor reports matches the digest attested in SIGNER_DENY_EXPORT_PINNED (D50, D55)', { requiresCapability: 'LIVE_SIGNING' }),
   spec('PERSIST_BEFORE_SUBMIT_DRILL', 'DRILL', 'persist-before-submit drill green in the target environment'),
   spec('APPROVAL_BINDING_REPLAY', 'CI_EVIDENCE', 'approval hash binding and replay tests green'),
   spec('TINY_LIVE_RELEASE_BOUND', 'COMPUTED', 'tiny-live variant bound to a LIVE_APPROVAL Release with a valid step-up attestation'),

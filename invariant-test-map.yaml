@@ -551,11 +551,15 @@ invariants:
     tests:
       - libs/execution/src/signer/policy.spec.ts
       - libs/execution/src/signer/turnkey.spec.ts
+      - apps/worker/src/roles/readiness.spec.ts
     evidence:
       - docs/CHANGELOG.md
       - docs/decisions/ADR-0008-signer-policy-at-profile-2.md
     # The enforcing layer is the provider, by D55's design; these tests cover the artifact that
     # renders the pinned conditions and the adapter that refuses a denied shape before asking.
+    # SIGNER_POLICY_DIGEST_MATCHES in the readiness spec closes the remaining gap: a policy edited
+    # at the provider without re-attestation is a bypass, so the digest the executor reports must be
+    # the one pinned on SIGNER_DENY_EXPORT_PINNED or the deployment is not READY (D50, D55).
     # Probe A case (a), the deny-export and policy-administration restrictions on both principals,
     # needs the live provider account and is recorded in MP, not here.
     status: mapped
