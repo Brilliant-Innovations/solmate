@@ -15,3 +15,4 @@ export * from './safety.js';
 export * from './onchain.js';
 export * from './wallet-events.js';
 export * from './quotes.js';
+export * from './replay.js';

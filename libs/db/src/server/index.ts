@@ -38,3 +38,4 @@ export * from './readiness-repo.js';
 export * from './notifications-repo.js';
 export * from './journal-import-repo.js';
 export * from './emergency-route-repo.js';
+export * from './replay-repo.js';

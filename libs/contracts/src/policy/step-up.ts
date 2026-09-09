@@ -49,6 +49,8 @@ export const STEP_UP_POLICY: Readonly<Record<ControlRequestKind, StepUpRequireme
   RETIRE_RELEASE: 'REQUIRED',
   // §20.18: the operator's external wallet prompt is the signing authority; recording it widens nothing.
   FUND_TRADING_WALLET: 'FAST',
+  // §18 / M10: a replay reads captured data and writes research rows; it touches no capital.
+  RUN_REPLAY: 'FAST',
 };
 
 /** Zod mirror of the table so the digest changes when a classification changes (D50). */

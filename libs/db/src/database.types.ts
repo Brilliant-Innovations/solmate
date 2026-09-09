@@ -1107,6 +1107,7 @@ export type Database = {
         | "REQUEST_RESEARCH_REFRESH"
         | "RETIRE_RELEASE"
         | "FUND_TRADING_WALLET"
+        | "RUN_REPLAY"
       control_request_state: "PENDING" | "ACCEPTED" | "REJECTED" | "EXPIRED"
       custody_kind:
         | "TRADING_WALLET"
@@ -3260,6 +3261,336 @@ export type Database = {
         }
         Relationships: []
       }
+      replay_decisions: {
+        Row: {
+          action: Database["enums"]["Enums"]["trading_action_type"] | null
+          adversary_verdict:
+            | Database["enums"]["Enums"]["adversary_verdict"]
+            | null
+          asset_id: string
+          at: string
+          candidate_id: string
+          cycle_state: Database["enums"]["Enums"]["action_cycle_state"]
+          decision_latency_ms: number
+          fill: Json | null
+          id: string
+          outcome: Json | null
+          proposer_confidence: number | null
+          reason_codes: string[]
+          rejection: string | null
+          run_id: string
+          sample: string
+          strategy_version_id: string
+          variant: string
+        }
+        Insert: {
+          action?: Database["enums"]["Enums"]["trading_action_type"] | null
+          adversary_verdict?:
+            | Database["enums"]["Enums"]["adversary_verdict"]
+            | null
+          asset_id: string
+          at: string
+          candidate_id: string
+          cycle_state: Database["enums"]["Enums"]["action_cycle_state"]
+          decision_latency_ms: number
+          fill?: Json | null
+          id: string
+          outcome?: Json | null
+          proposer_confidence?: number | null
+          reason_codes?: string[]
+          rejection?: string | null
+          run_id: string
+          sample: string
+          strategy_version_id: string
+          variant: string
+        }
+        Update: {
+          action?: Database["enums"]["Enums"]["trading_action_type"] | null
+          adversary_verdict?:
+            | Database["enums"]["Enums"]["adversary_verdict"]
+            | null
+          asset_id?: string
+          at?: string
+          candidate_id?: string
+          cycle_state?: Database["enums"]["Enums"]["action_cycle_state"]
+          decision_latency_ms?: number
+          fill?: Json | null
+          id?: string
+          outcome?: Json | null
+          proposer_confidence?: number | null
+          reason_codes?: string[]
+          rejection?: string | null
+          run_id?: string
+          sample?: string
+          strategy_version_id?: string
+          variant?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_attribution"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_calibration"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_disagreement"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_economic_pnl"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_incremental_value"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_latency_cost"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_leaderboard"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_decisions_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      replay_runs: {
+        Row: {
+          asset_ids: string[] | null
+          baseline_strategy_version_id: string
+          calibration_target: Json
+          completed_at: string | null
+          control_request_id: string | null
+          created_at: string
+          dataset_cutoff: string
+          decisions_digest: string | null
+          error: string | null
+          fidelity: string
+          id: string
+          in_sample_until: string | null
+          latency_matched_baseline: boolean
+          models: Json
+          name: string
+          proposer_only_shadow: boolean
+          requested_by: string | null
+          results: Json | null
+          results_digest: string | null
+          seed: number
+          started_at: string | null
+          status: string
+          strategy_version_ids: unknown[]
+          versions: Json
+          window_from: string
+          window_to: string
+        }
+        Insert: {
+          asset_ids?: string[] | null
+          baseline_strategy_version_id: string
+          calibration_target: Json
+          completed_at?: string | null
+          control_request_id?: string | null
+          created_at?: string
+          dataset_cutoff: string
+          decisions_digest?: string | null
+          error?: string | null
+          fidelity: string
+          id: string
+          in_sample_until?: string | null
+          latency_matched_baseline?: boolean
+          models?: Json
+          name: string
+          proposer_only_shadow?: boolean
+          requested_by?: string | null
+          results?: Json | null
+          results_digest?: string | null
+          seed?: number
+          started_at?: string | null
+          status?: string
+          strategy_version_ids: unknown[]
+          versions: Json
+          window_from: string
+          window_to: string
+        }
+        Update: {
+          asset_ids?: string[] | null
+          baseline_strategy_version_id?: string
+          calibration_target?: Json
+          completed_at?: string | null
+          control_request_id?: string | null
+          created_at?: string
+          dataset_cutoff?: string
+          decisions_digest?: string | null
+          error?: string | null
+          fidelity?: string
+          id?: string
+          in_sample_until?: string | null
+          latency_matched_baseline?: boolean
+          models?: Json
+          name?: string
+          proposer_only_shadow?: boolean
+          requested_by?: string | null
+          results?: Json | null
+          results_digest?: string | null
+          seed?: number
+          started_at?: string | null
+          status?: string
+          strategy_version_ids?: unknown[]
+          versions?: Json
+          window_from?: string
+          window_to?: string
+        }
+        Relationships: []
+      }
+      replay_trades: {
+        Row: {
+          asset_id: string
+          attributes: Json
+          candidate_id: string | null
+          closed_at: string
+          cost: number
+          decision_to_fill_ms: number | null
+          execution_path: Database["enums"]["Enums"]["execution_path"]
+          execution_shortfall_bps: number | null
+          exit_reason: string
+          fees: number
+          id: string
+          opened_at: string
+          proceeds: number
+          run_id: string
+          sample: string
+          slippage_cost: number
+          strategy_version_id: string
+          variant: string
+        }
+        Insert: {
+          asset_id: string
+          attributes?: Json
+          candidate_id?: string | null
+          closed_at: string
+          cost: number
+          decision_to_fill_ms?: number | null
+          execution_path: Database["enums"]["Enums"]["execution_path"]
+          execution_shortfall_bps?: number | null
+          exit_reason: string
+          fees: number
+          id: string
+          opened_at: string
+          proceeds: number
+          run_id: string
+          sample: string
+          slippage_cost: number
+          strategy_version_id: string
+          variant: string
+        }
+        Update: {
+          asset_id?: string
+          attributes?: Json
+          candidate_id?: string | null
+          closed_at?: string
+          cost?: number
+          decision_to_fill_ms?: number | null
+          execution_path?: Database["enums"]["Enums"]["execution_path"]
+          execution_shortfall_bps?: number | null
+          exit_reason?: string
+          fees?: number
+          id?: string
+          opened_at?: string
+          proceeds?: number
+          run_id?: string
+          sample?: string
+          slippage_cost?: number
+          strategy_version_id?: string
+          variant?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_attribution"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_calibration"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_disagreement"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_economic_pnl"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_incremental_value"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_latency_cost"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_leaderboard"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       strategy_versions: {
         Row: {
           active_from: string
@@ -3376,7 +3707,227 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      replay_attribution: {
+        Row: {
+          dimension: string | null
+          execution_shortfall_bps: number | null
+          expectancy: number | null
+          fidelity: string | null
+          group_key: string | null
+          max_drawdown: number | null
+          net_pnl: number | null
+          run_id: string | null
+          run_name: string | null
+          sample_supported: boolean | null
+          strategy_version_id: string | null
+          trades: number | null
+          win_rate: number | null
+        }
+        Relationships: []
+      }
+      replay_calibration: {
+        Row: {
+          bin: string | null
+          bin_count: number | null
+          brier_score: number | null
+          fidelity: string | null
+          hit_rate: number | null
+          mean_confidence: number | null
+          realized_expectancy: number | null
+          run_id: string | null
+          run_name: string | null
+          scored: number | null
+          strategy_version_id: string | null
+          target_kind: string | null
+        }
+        Relationships: []
+      }
+      replay_disagreement: {
+        Row: {
+          challenged: number | null
+          confirmed: number | null
+          disagreement_rate: number | null
+          expectancy_after_challenge: number | null
+          expectancy_after_confirm: number | null
+          fidelity: string | null
+          full_net: number | null
+          proposer_only_net: number | null
+          rejected: number | null
+          rejected_counterfactual_net: number | null
+          rejected_with_counterfactual: number | null
+          reviewed: number | null
+          run_id: string | null
+          run_name: string | null
+          strategy_version_id: string | null
+          top_objections: Json | null
+        }
+        Relationships: []
+      }
+      replay_economic_pnl: {
+        Row: {
+          allocation: string | null
+          cost_to_edge_ratio: number | null
+          direct_cost_usd: number | null
+          fidelity: string | null
+          platform_cost_for_window_usd: number | null
+          platform_economic_usd: number | null
+          platform_share_usd: number | null
+          run_id: string | null
+          run_name: string | null
+          strategy_economic_usd: number | null
+          strategy_version_id: string | null
+          trading_net_usd: number | null
+          window_days: number | null
+        }
+        Relationships: []
+      }
+      replay_exit_outcomes: {
+        Row: {
+          average_execution_shortfall_bps: number | null
+          average_hold_ms: number | null
+          exit_reason: string | null
+          expectancy: number | null
+          net_pnl: number | null
+          run_id: string | null
+          sample: string | null
+          strategy_version_id: string | null
+          trades: number | null
+          variant: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_attribution"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_calibration"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_disagreement"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_economic_pnl"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_incremental_value"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_latency_cost"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_leaderboard"
+            referencedColumns: ["run_id"]
+          },
+          {
+            foreignKeyName: "replay_trades_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "replay_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      replay_incremental_value: {
+        Row: {
+          admitted_not_baseline: number | null
+          admitted_not_baseline_net: number | null
+          baseline_net_total: number | null
+          baseline_strategy_version_id: string | null
+          both_passed: number | null
+          both_traded: number | null
+          candidates: number | null
+          fidelity: string | null
+          filtered_losers: number | null
+          filtered_losers_baseline_net: number | null
+          incremental_net_expectancy: number | null
+          model_cost: number | null
+          rejected_winners: number | null
+          rejected_winners_baseline_net: number | null
+          run_id: string | null
+          run_name: string | null
+          strategy_net_total: number | null
+          strategy_version_id: string | null
+          window_from: string | null
+          window_to: string | null
+        }
+        Relationships: []
+      }
+      replay_latency_cost: {
+        Row: {
+          average_decision_latency_ms: number | null
+          chase_rejected: number | null
+          decisions: number | null
+          edge_lost_to_latency: number | null
+          expired_by_latency: number | null
+          fidelity: string | null
+          missed_baseline_net: number | null
+          run_id: string | null
+          run_name: string | null
+          stale_quote_rejected: number | null
+          strategy_version_id: string | null
+        }
+        Relationships: []
+      }
+      replay_leaderboard: {
+        Row: {
+          average_decision_to_fill_ms: number | null
+          baseline_strategy_version_id: string | null
+          completed_at: string | null
+          execution_shortfall_bps: number | null
+          expectancy: number | null
+          failed_execution_rate: number | null
+          fees: number | null
+          fidelity: string | null
+          gross_pnl: number | null
+          in_sample_until: string | null
+          max_drawdown: number | null
+          max_drawdown_fraction: number | null
+          net_pnl: number | null
+          profit_factor: number | null
+          run_id: string | null
+          run_name: string | null
+          sample: string | null
+          sharpe: number | null
+          slippage_cost: number | null
+          sortino: number | null
+          strategy_version_id: string | null
+          tail_loss: number | null
+          time_in_market_fraction: number | null
+          trades: number | null
+          turnover: number | null
+          variant: string | null
+          win_rate: number | null
+          window_from: string | null
+          window_to: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never
@@ -5106,6 +5657,7 @@ export const Constants = {
         "REQUEST_RESEARCH_REFRESH",
         "RETIRE_RELEASE",
         "FUND_TRADING_WALLET",
+        "RUN_REPLAY",
       ],
       control_request_state: ["PENDING", "ACCEPTED", "REJECTED", "EXPIRED"],
       custody_kind: [

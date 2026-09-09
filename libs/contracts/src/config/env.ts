@@ -210,6 +210,11 @@ export const WorkerEnv = Common.extend({
   S0_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   /** Git commit of the running build, recorded on strategy versions it registers (§6.21). */
   GIT_SHA: z.string().regex(/^[0-9a-f]{7,40}$/).default('0000000'),
+  /** M10 replay role: platform run-rate allocated in the three-layer economic P&L (docs/costs.md), and how often queued runs are picked up. */
+  REPLAY_PLATFORM_MONTHLY_USD: z.coerce.number().nonnegative().default(84),
+  REPLAY_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+  /** JSON map of model id → training-cutoff ISO instant for the §18.5 model-weight look-ahead label; unknown models are labelled UNKNOWN. */
+  MODEL_TRAINING_CUTOFFS: z.string().default('{}'),
   /** Tracked-wallet polling cadence (§3.2); webhooks replace polling once a public receiver exists. */
   TRACKED_WALLETS_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(120_000),
   MARKET_INGEST_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),

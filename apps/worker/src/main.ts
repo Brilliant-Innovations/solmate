@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_AUTOMATION_SET, DEFAULT_DISCRETIONARY_CYCLE_POLICY, DEFAULT_SPEND_LIMITS, MODEL_POLICY_V1, type SpendBudget, DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_COHORT_TAXONOMY, DEFAULT_CORRELATION_CLUSTER_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, DEFAULT_MARKET_REGIME_POLICY, FEATURE_ENGINE_V2, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type SolanaCluster, type Uuid } from '@sol-agent-trader/contracts';
+import { DEFAULT_AUTOMATION_SET, DEFAULT_DISCRETIONARY_CYCLE_POLICY, DEFAULT_SPEND_LIMITS, MODEL_POLICY_V1, type SpendBudget, DEFAULT_EARLY_ACCELERATION_TRIGGER_POLICY, DEFAULT_ELIGIBILITY_POLICY, DEFAULT_FRESHNESS_REQUIREMENTS, DEFAULT_MOMENTUM_TRIGGER_POLICY, DEFAULT_PAPER_FILL_POLICY, DEFAULT_REPLAY_COST_MODEL, DEFAULT_COHORT_TAXONOMY, DEFAULT_CORRELATION_CLUSTER_POLICY, REFERENCE_SERIES_MINTS, WSOL_MINT, DEFAULT_RECONCILIATION_POLICY, DEFAULT_RISK_POLICY, DEFAULT_S0_SAFETY_GATE_POLICY, DEFAULT_SAFETY_POLICY, DEFAULT_SELF_INFLUENCE_POLICY, DEFAULT_SESSION_POLICY, DEFAULT_MARKET_REGIME_POLICY, FEATURE_ENGINE_V2, mulDiv, getContractSetDigest, parseWorkerEnv, systemClock, type CandleResolution, type MintAddress, type SolanaCluster, type Uuid } from '@sol-agent-trader/contracts';
 import {
   applyExit,
+  claimQueuedReplayRun,
+  completeReplayRun,
+  failReplayRun,
+  insertReplayDecisions,
+  insertReplayRun,
+  insertReplayTrades,
   coldStartFacts,
   createIntent,
   createRuntimeSession,
@@ -195,6 +201,10 @@ import { runManualActionsCycle, type ManualActionsDeps } from './roles/manual-ac
 import { ensureStepUpJudged, runOperatorSecurityCycle, type OperatorSecurityDeps } from './roles/operator-security.js';
 import { runWatchlistCycle, type WatchlistDeps } from './roles/watchlist.js';
 import { runFundingCycle, type FundingDeps } from './roles/funding.js';
+import { runReplayExecutionCycle, runReplayRequestsCycle, type ReplayRoleDeps } from './roles/replay.js';
+import { loadReplayDataset } from './replay/dataset.js';
+import { guardedContextSources } from './agents/guarded-sources.js';
+import { liveGuardContext } from '@sol-agent-trader/replay';
 import { runStartupRecovery } from './roles/recovery.js';
 import { runAuditCheckpointCycle, type AuditCheckpointDeps } from './roles/audit-checkpoint.js';
 import { runReadinessCycle, type ReadinessDeps } from './roles/readiness.js';
@@ -298,7 +308,7 @@ async function main(): Promise<void> {
   logger.info('startup', { contractSetDigest: digest.digest, contractSetFormat: digest.format, schemaCount: digest.schemaCount, cluster: env.SOLANA_CLUSTER, roles: env.WORKER_ROLES });
 
   const roles = new Set(env.WORKER_ROLES.split(',').map((r) => r.trim()).filter(Boolean));
-  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals' || r === 'operator-security' || r === 'watchlist' || r === 'funding');
+  const wanted = [...roles].filter((r) => r === 'market-ingest' || r === 'eligibility' || r === 'held-asset-safety' || r === 'reconciliation' || r === 'tracked-wallets' || r === 'features' || r === 'candidates' || r === 's0' || r === 'paper-entry' || r === 'position-monitor' || r === 'session' || r === 'cohorts' || r === 'agents' || r === 'trading-actions' || r === 'intel-ingest' || r === 'state-projector' || r === 'chain-health' || r === 'manual-actions' || r === 'audit-checkpoint' || r === 'readiness' || r === 'notifications' || r === 'shadow-sync' || r === 'journal-import' || r === 'emergency-dry-run' || r === 'live-entry' || r === 'approvals' || r === 'operator-security' || r === 'watchlist' || r === 'funding' || r === 'replay');
   if (wanted.length > 0) await runRoles(env, logger, new Set(wanted));
   await telemetry.shutdown();
 }
@@ -436,6 +446,7 @@ async function runRoles(env: WorkerEnv, logger: Logger, roles: Set<string>): Pro
   if (roles.has('operator-security')) loops.push(operatorSecurityLoop(env, logger, shared));
   if (roles.has('watchlist')) loops.push(watchlistLoop(env, logger, shared));
   if (roles.has('funding')) loops.push(fundingLoop(env, logger, shared));
+  if (roles.has('replay')) loops.push(replayLoop(env, logger, shared));
   if (roles.has('readiness')) loops.push(readinessLoop(env, logger, shared));
   if (roles.has('notifications')) loops.push(notificationsLoop(env, logger, shared));
   if (roles.has('shadow-sync')) loops.push(shadowSyncLoop(env, logger, shared));
@@ -894,7 +905,8 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
   ];
   for (const b of platformBudgets) await ensureSpendBudget(sql, b);
   await primeContractDigest();
-  const sources = createRepoContextSources({
+  // §18.3 across proposer, adversary and every skill tool: a source read for a moment after now is refused before the repository is touched (INV-13).
+  const sources = guardedContextSources(createRepoContextSources({
     sql,
     account: { id: account.id, settlementMint, settlementDecimals: 6, startingCapital: env.PAPER_STARTING_CAPITAL_BASE_UNITS },
     taker,
@@ -907,7 +919,7 @@ async function agentsLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promi
       const [r] = await sql<{ mint_address: string }[]>`select mint_address from core.assets where id = ${assetId}`;
       return r ? (r.mint_address as MintAddress) : null;
     },
-  });
+  }), liveGuardContext(systemClock));
   const repo = {
     listCandidateTargets: (versionId: Parameters<typeof listCandidateTargets>[1], now: Parameters<typeof listCandidateTargets>[2], maxAgeMs: number, limit: number, families: readonly string[]) => listCandidateTargets(sql, versionId, now, maxAgeMs, limit, families),
     listPositionTargets: (versionId: Parameters<typeof listPositionTargets>[1], limit: number) => listPositionTargets(sql, versionId, limit),
@@ -1443,6 +1455,80 @@ async function watchlistLoop(env: WorkerEnv, logger: Logger, shared: Shared): Pr
   await loopUnderLease('watchlist', intervalMs, logger, shared, async () => {
     const r = await runWatchlistCycle(deps);
     if (r.requests > 0) logger.info('watchlist_cycle', { ...r });
+  });
+}
+
+/** Role replay (§18, §19, P9; M10): queues RUN_REPLAY requests as reproducibility records and executes one run at a time under the simulated clock. */
+async function replayLoop(env: WorkerEnv, logger: Logger, shared: Shared): Promise<void> {
+  const intervalMs = env.REPLAY_INTERVAL_MS;
+  const { sql } = shared;
+  const activeFrom = systemClock.now();
+  const skill = tradingSkillVersion(env.GIT_SHA, activeFrom);
+  const strategies: Record<string, ReturnType<typeof s0StrategyVersion>> = {};
+  for (const v of [s0StrategyVersion('RAW', env.GIT_SHA, activeFrom), s0StrategyVersion('SAFE', env.GIT_SHA, activeFrom), ...llmStrategyVersions(env.GIT_SHA, activeFrom, { proposer: env.AGENT_PROPOSER_MODEL, adversary: env.AGENT_ADVERSARY_MODEL })]) strategies[v.versionId] = v;
+  let modelCutoffs: Record<string, string> = {};
+  try {
+    modelCutoffs = JSON.parse(env.MODEL_TRAINING_CUTOFFS) as Record<string, string>;
+  } catch {
+    logger.warn('replay_model_cutoffs_invalid', { detail: 'MODEL_TRAINING_CUTOFFS is not JSON; every model is labelled UNKNOWN' });
+  }
+  const policies = {
+    featureSpec: FEATURE_ENGINE_V2,
+    momentum: DEFAULT_MOMENTUM_TRIGGER_POLICY,
+    gate: DEFAULT_S0_SAFETY_GATE_POLICY,
+    risk: DEFAULT_RISK_POLICY,
+    costModel: DEFAULT_REPLAY_COST_MODEL,
+    eligibility: DEFAULT_ELIGIBILITY_POLICY,
+    regime: DEFAULT_MARKET_REGIME_POLICY,
+  };
+  const lookbackMs = (Math.max(...Object.values(FEATURE_ENGINE_V2.lookbackBuckets)) + 2) * 60_000;
+  const recordedIds = Object.values(strategies).filter((v) => v.strategyId !== 'S0_RAW' && v.strategyId !== 'S0_SAFE').map((v) => v.versionId);
+  const deps: ReplayRoleDeps = {
+    repo: {
+      listPending: (kinds, limit) => listPendingControlRequests(sql, kinds, limit),
+      operatorRole: async (userId) => {
+        const [r] = await sql<{ role: 'operator' | 'admin' | 'viewer' }[]>`select role from ops.operators where user_id = ${userId} and disabled_at is null`;
+        return r?.role ?? null;
+      },
+      resolve: (id, state, resolution, at) => resolveControlRequest(sql, id, state, resolution, at),
+      insertRun: (run, extra) => insertReplayRun(sql, run, extra),
+      claimQueued: (now) => claimQueuedReplayRun(sql, now),
+      complete: (id, done) => completeReplayRun(sql, id, done),
+      fail: (id, error, at) => failReplayRun(sql, id, error, at),
+      insertDecisions: (rows) => insertReplayDecisions(sql, rows),
+      insertTrades: (rows) => insertReplayTrades(sql, rows),
+    },
+    clock: systemClock,
+    logger,
+    versions: {
+      gitSha: env.GIT_SHA,
+      contractSetDigest: (await getContractSetDigest()).digest,
+      strategies,
+      skillVersionId: skill.versionId,
+      guidelineVersionId: skill.guidelineVersion,
+      modelCutoffs: modelCutoffs as Record<string, never>,
+      providerDatasetVersions: { birdeye: 'ohlcv-v3', helius: 'parsed-events-v1', jupiter: 'quote-v1' },
+    },
+    policies,
+    account: {
+      settlementMint: DEFAULT_ELIGIBILITY_POLICY.settlementMints[0] as MintAddress,
+      settlementDecimals: 6,
+      startingCapital: env.PAPER_STARTING_CAPITAL_BASE_UNITS,
+      virtualSolLamports: '1000000000',
+      sleeveCap: mulDiv(env.PAPER_STARTING_CAPITAL_BASE_UNITS, 40n, 100n, 'FLOOR'),
+      sleeveRiskBudget: mulDiv(env.PAPER_STARTING_CAPITAL_BASE_UNITS, 5n, 100n, 'FLOOR'),
+    },
+    platformMonthlyUsd: env.REPLAY_PLATFORM_MONTHLY_USD,
+    loadDataset: (run, assetIds) => loadReplayDataset(sql, run, assetIds, { lookbackMs, taxonomyVersion: DEFAULT_COHORT_TAXONOMY.version, solMint: WSOL_MINT, recordedStrategyVersionIds: recordedIds.filter((id) => run.strategyVersionIds.includes(id)) }),
+    newId: () => randomUUID() as Uuid,
+    config: { batchSize: 10, maxWindowMs: 14 * 86_400_000 },
+  };
+  logger.info('replay_starting', { intervalMs, strategies: Object.keys(strategies), costModel: DEFAULT_REPLAY_COST_MODEL.version, platformMonthlyUsd: env.REPLAY_PLATFORM_MONTHLY_USD, holder: shared.holder });
+  await loopUnderLease('replay', intervalMs, logger, shared, async () => {
+    const q = await runReplayRequestsCycle(deps);
+    if (q.requests > 0) logger.info('replay_requests_cycle', { ...q });
+    const x = await runReplayExecutionCycle(deps);
+    if (x.claimed) logger.info('replay_execution_cycle', { ...x });
   });
 }
 

@@ -294,6 +294,7 @@ export const ControlRequestKind = z.enum([
   'REQUEST_RESEARCH_REFRESH',
   'RETIRE_RELEASE',
   'FUND_TRADING_WALLET',
+  'RUN_REPLAY',
 ]);
 export type ControlRequestKind = z.infer<typeof ControlRequestKind>;
 

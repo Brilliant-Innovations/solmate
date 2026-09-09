@@ -150,7 +150,7 @@ jobs:
       - name: Build the libraries the seed imports
         env:
           NX_DAEMON: 'false'
-        run: pnpm nx run-many -t build -p @sol-agent-trader/contracts @sol-agent-trader/db --skip-nx-cache
+        run: pnpm nx run-many -t build -p @sol-agent-trader/contracts @sol-agent-trader/db @sol-agent-trader/wallet-ui --skip-nx-cache
       - name: Playwright (seeds, builds the web app, runs desktop + mobile projects)
         env:
           CI: 'true'
