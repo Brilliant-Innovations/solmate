@@ -23,9 +23,13 @@ id.json
 supabase/.branches
 supabase/.temp
 
-# terraform (M11)
+# terraform (M11): state and operator variables never enter the repository
 .terraform/
 *.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
 *.tfstate.*
 *.tfvars
 

@@ -1,0 +1,111 @@
+#cloud-config
+# Solmate host bootstrap (${profile}, ${hostname}). Installs Docker, mounts one Block Storage volume
+# per service, and installs one hardened systemd unit per service that runs the GHCR image with the
+# same container restrictions as deploy/profile-0/docker-compose.yml: read-only root, all
+# capabilities dropped, no new privileges, init, private-address listeners. Secrets are never here:
+# each unit needs /etc/solmate/<service>.env placed by the operator after apply.
+hostname: ${hostname}
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - unattended-upgrades
+  - fail2ban
+  - curl
+  - jq
+users:
+  - name: ${operator}
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+ssh_pwauth: false
+disable_root: true
+write_files:
+  - path: /etc/solmate/README
+    permissions: '0644'
+    content: |
+      Solmate ${profile} host ${hostname}. Place one env file per service here (mode 0600, owner root):
+%{ for s in services ~}
+        /etc/solmate/${s.name}.env
+%{ endfor ~}
+      Then: systemctl start solmate-<service>. Listen addresses are written by solmate-listen.service
+      from the Droplet's private VPC address; do not put INTERNAL_API_LISTEN / OUT_OF_BAND_LISTEN in
+      the env files. Images: ${registry}/solmate-<service>:${image_tag}.
+  - path: /usr/local/sbin/solmate-listen
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Writes the private-address listener env for every service from the Droplet metadata service.
+      set -eu
+      ip=$(curl -fsS http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address)
+      install -d -m 0750 /etc/solmate
+%{ for s in services ~}
+      {
+%{ for key, port in s.listen ~}
+        echo "${key}=$ip:${port}"
+%{ endfor ~}
+      } > /etc/solmate/${s.name}.listen.env
+      chmod 0640 /etc/solmate/${s.name}.listen.env
+%{ endfor ~}
+  - path: /etc/systemd/system/solmate-listen.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Solmate private listener addresses from Droplet metadata
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/solmate-listen
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+%{ for s in services ~}
+  - path: /etc/systemd/system/solmate-${s.name}.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Solmate ${s.name} (${profile})
+      After=docker.service solmate-listen.service var-lib-solmate-${s.name}.mount
+      Requires=docker.service solmate-listen.service var-lib-solmate-${s.name}.mount
+      ConditionPathExists=/etc/solmate/${s.name}.env
+      [Service]
+      Restart=always
+      RestartSec=5
+      TimeoutStopSec=90
+      ExecStartPre=-/usr/bin/docker stop solmate-${s.name}
+      ExecStartPre=-/usr/bin/docker rm solmate-${s.name}
+      ExecStartPre=/usr/bin/docker pull ${registry}/solmate-${s.name}:${image_tag}
+      ExecStart=/usr/bin/docker run --rm --name solmate-${s.name} \
+        --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp \
+        --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+        --env-file /etc/solmate/${s.name}.env --env-file /etc/solmate/${s.name}.listen.env \
+        -e DEPLOYMENT_PROFILE=${profile} -e SERVICE_INSTANCE_ID=${hostname}-${s.name} -e ${s.journal_env}=/journal \
+%{ for k, v in s.extra_env ~}
+        -e ${k}=${v} \
+%{ endfor ~}
+        --network host \
+        -v /var/lib/solmate/${s.name}:/journal \
+        ${registry}/solmate-${s.name}:${image_tag}
+      ExecStop=/usr/bin/docker stop solmate-${s.name}
+      [Install]
+      WantedBy=multi-user.target
+%{ endfor ~}
+mounts:
+%{ for s in services ~}
+  - [ "/dev/disk/by-id/scsi-0DO_Volume_${volumes[s.name]}", "/var/lib/solmate/${s.name}", "ext4", "defaults,nofail,discard", "0", "2" ]
+%{ endfor ~}
+runcmd:
+  - systemctl enable --now docker
+  - install -d -m 0750 /etc/solmate
+%{ for s in services ~}
+  - install -d -m 0750 -o 1000 -g 1000 /var/lib/solmate/${s.name}
+  - chown 1000:1000 /var/lib/solmate/${s.name}
+%{ endfor ~}
+  - systemctl daemon-reload
+  - systemctl enable --now solmate-listen.service
+%{ for s in services ~}
+  - systemctl enable solmate-${s.name}.service
+%{ endfor ~}
+  - systemctl enable --now fail2ban

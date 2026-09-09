@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored). No secret belongs here: the DigitalOcean token comes from
+# DIGITALOCEAN_TOKEN in the operator's shell and every service secret is placed on its host by hand.
+region         = "nyc3"
+ssh_key_ids    = ["12345678"]
+operator_cidrs = ["203.0.113.10/32"]
+image_tag      = "sha-0000000000000000000000000000000000000000"
