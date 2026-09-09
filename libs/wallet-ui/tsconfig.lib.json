@@ -16,7 +16,8 @@
       "dom",
       "dom.iterable",
       "esnext"
-    ]
+    ],
+    "emitDeclarationOnly": false
   },
   "exclude": [
     "out-tsc",

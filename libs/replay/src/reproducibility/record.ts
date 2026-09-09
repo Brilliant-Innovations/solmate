@@ -8,13 +8,14 @@ import { canonicalHash, modelWeightLookAhead, type Instant, type ReplayDecision,
  */
 
 export function orderDecisions(decisions: readonly ReplayDecision[]): ReplayDecision[] {
-  return [...decisions].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.strategyVersionId < b.strategyVersionId ? -1 : a.strategyVersionId > b.strategyVersionId ? 1 : a.variant < b.variant ? -1 : a.variant > b.variant ? 1 : a.candidateId < b.candidateId ? -1 : a.candidateId > b.candidateId ? 1 : 0));
+  const key = (d: ReplayDecision) => `${d.at}|${d.strategyVersionId}|${d.variant}|${d.assetId}|${d.cycleState}|${d.reasonCodes.join(',')}`;
+  return [...decisions].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
-/** Digest over the decision content; ids and run ids are excluded so a re-run with fresh ids still matches. */
+/** Digest over the decision content; row ids, run ids and the run-scoped synthetic candidate ids are excluded so a re-run with fresh ids still matches (a candidate is identified by its asset and discovery moment). */
 export async function decisionsDigest(decisions: readonly ReplayDecision[]): Promise<Sha256Hex> {
   const rows = orderDecisions(decisions).map((d) => {
-    const { id: _id, runId: _runId, ...content } = d;
+    const { id: _id, runId: _runId, candidateId: _candidateId, ...content } = d;
     return content;
   });
   return canonicalHash(rows);
