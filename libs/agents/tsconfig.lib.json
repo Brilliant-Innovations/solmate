@@ -6,22 +6,21 @@
     "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
     "emitDeclarationOnly": false,
     "forceConsistentCasingInFileNames": true,
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src/**/*.ts"
-  ],
+  "include": ["src/**/*.ts"],
   "references": [
+    {
+      "path": "../observability/tsconfig.lib.json"
+    },
+    {
+      "path": "../skills/tsconfig.lib.json"
+    },
     {
       "path": "../contracts/tsconfig.lib.json"
     },
     {
       "path": "../execution/tsconfig.lib.json"
-    },
-    {
-      "path": "../skills/tsconfig.lib.json"
     }
   ],
   "exclude": [

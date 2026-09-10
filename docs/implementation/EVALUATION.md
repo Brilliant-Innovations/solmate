@@ -153,6 +153,13 @@ is precisely the discretion this document exists to remove.
 > running, **whichever is later**, after the first real key, are a **burn-in**: excluded from the
 > Stage 1 sample by rule. Stage 1 has not started until the burn-in closes.
 
+**The burn-in has an output, not only an exclusion.** Provider error bodies are already retained on
+failed runs (the first 300 characters reach `schemaValidation.errors`, credentials redacted), so the
+burn-in is the window in which real failure shapes accumulate as fixtures — rate-limit bodies, schema
+drift, whatever a provider actually returns. Those fixtures are what later lets the cost estimator and
+any error-body parsing be built from observation rather than assumption. A burn-in that produced only
+an exclusion window would leave the next question exactly as unanswerable as it is now.
+
 **Whichever is *later*, not either.** Fifty cycles in twenty minutes gives no exposure to rate limits
 or drift; four hours at three cycles gives no exposure to anything. The purpose is meeting the
 provider's failure modes, and that needs both volume and wall-clock.

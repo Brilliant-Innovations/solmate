@@ -140,7 +140,29 @@ error bodies become available; capturing them as fixtures is what should precede
 ### The open WP4 question, with a recommendation
 
 **Whether a D43 budget should charge an estimate for an UNKNOWN run instead of zero.** Recommended:
-**charge an estimate, at a high percentile of measured cost rather than the mean.**
+**charge a per-run floor with a bounded estimate on top** — which is better than the high percentile
+this section first proposed, and better for a specific reason.
+
+~~Charge at a high percentile of measured cost rather than the mean.~~ A percentile applies one number
+to a heterogeneous population. There is more information available than that:
+
+> **The input half is known locally.** We built the prompt, so its token count does not depend on the
+> provider answering. Only the **output** half is unknown when a call times out. So an aborted call is
+> never worth zero and never has to be guessed in full — it is *known input cost* plus an unknown
+> output component.
+
+And the output half has a principled estimator rather than a convention: **observed tokens-per-second
+on MEASURED runs of the same model, times the elapsed time to our abort deadline.** That uses data
+already being collected (`tokens` and `latencyMs` are on every MEASURED run), it is per-model rather
+than pooled, and it degrades sensibly — a call aborted at 2 s is charged less than one aborted at 30 s,
+which a percentile cannot express.
+
+The percentile argument survives only as a fallback for the case where too few MEASURED runs of a
+model exist to fit a rate.
+
+**What the burn-in must confirm:** whether providers actually bill input tokens on an aborted
+generation. If they do not, the floor is zero after all and only the estimator applies. That is a
+question about billing behaviour, not about code, and it is answerable from the first real invoice.
 
 The percentile matters because of the bias already identified: UNKNOWN is concentrated on timeouts,
 timeouts are by definition long generations, so the mean of MEASURED calls systematically understates

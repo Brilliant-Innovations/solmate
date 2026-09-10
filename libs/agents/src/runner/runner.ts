@@ -22,6 +22,7 @@ import {
 import { checkProposal, newRunLedger } from '@sol-agent-trader/skills';
 import { allowedActions, latestCutoff, newActionCycle, transition, type ActionCycleEvent, type TransitionOptions } from '../action-cycle/machine.js';
 import type { SpendGateResult } from '../budget/spend-gate.js';
+import { redactString } from '@sol-agent-trader/observability';
 import { ModelTimeoutError, type ModelCall, type ReasoningModel } from './model.js';
 
 /**
@@ -227,7 +228,17 @@ async function callModel<T>(deps: CycleRunnerDeps, role: AgentRole, cycle: Actio
     clearTimeout(timer);
     const latencyMs = Math.max(0, clock.nowMs() - started);
     if (e instanceof ModelTimeoutError || controller.signal.aborted) return { kind: 'TIMEOUT', run: failedRun(latencyMs, 'timeout') };
-    const error = (e instanceof Error ? e.message : String(e)).slice(0, 512);
+    /**
+     * The provider's error body reaches this string (providers.ts slices 300 chars of it into the
+     * message) and is persisted on the run as a schema-validation error. That is deliberate - it is
+     * the only place real provider failure shapes accumulate, and the burn-in needs them as fixtures.
+     *
+     * Two bounds on what it may carry. Credentials are redacted here, because a 401 body can echo the
+     * key we sent. Prompt echo is bounded only by the 300-character truncation upstream: an error body
+     * that quotes part of the request could carry evidence text. The request itself is never stored
+     * alongside it, so this is a fragment without its context, which is the intended limit.
+     */
+    const error = redactString((e instanceof Error ? e.message : String(e)).slice(0, 512));
     return { kind: 'OUTAGE', run: failedRun(latencyMs, error), error };
   }
   clearTimeout(timer);
