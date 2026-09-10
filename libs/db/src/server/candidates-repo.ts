@@ -45,6 +45,7 @@ export async function listScanInputs(sql: Sql, limit: number): Promise<{ snapsho
       id: r['id'] as Uuid,
       assetId: r['asset_id'] as Uuid,
       asOf: new Date(r['as_of'] as string).toISOString() as Instant,
+      newestInputAt: r['newest_input_at'] ? (new Date(r['newest_input_at'] as string).toISOString() as Instant) : null,
       featureEngineVersion: r['feature_engine_version'] as FeatureSnapshot['featureEngineVersion'],
       provenance: r['provenance'] as FeatureSnapshot['provenance'],
       marketSnapshotId: r['market_snapshot_id'] as Uuid | null,

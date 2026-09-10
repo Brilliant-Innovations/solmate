@@ -36,6 +36,22 @@ export function evaluateS0SafetyGate(input: S0GateInput): S0GateResult {
   if (candidateAge > policy.maxCandidateAgeMs) objections.push({ code: 'CANDIDATE_STALE', detail: `candidate age ${candidateAge}ms > ${policy.maxCandidateAgeMs}ms` });
   const featureAge = nowMs - instantToMs(snapshot.asOf);
   if (featureAge > policy.maxFeatureAgeMs) objections.push({ code: 'FEATURES_STALE', detail: `feature age ${featureAge}ms > ${policy.maxFeatureAgeMs}ms` });
+
+  /**
+   * ADR-0011's candle bound, applied per asset where the decision is actually made (WP1b, 2026-09-09).
+   *
+   * `FEATURES_STALE` above measures when the snapshot was *computed*, and the engine recomputes every
+   * 60 s whether or not its inputs moved — measured at roughly 200x the rate the candles beneath it
+   * changed — so it stays fresh over arbitrarily old data. `ops.provider_health` cannot cover the gap
+   * either: it is one row per (provider, dataClass) reading newest-across-the-set, which is easiest to
+   * satisfy exactly when the tracked set is small and one asset is active, so narrowing the universe
+   * makes it weaker rather than stronger.
+   *
+   * An absent input age is stale by definition: absence stays the unsafe direction, as everywhere else.
+   */
+  const inputAge = snapshot.newestInputAt === null ? null : nowMs - instantToMs(snapshot.newestInputAt);
+  if (inputAge === null) objections.push({ code: 'INPUTS_STALE', detail: 'no closed input bucket behind these features' });
+  else if (inputAge > policy.maxInputAgeMs) objections.push({ code: 'INPUTS_STALE', detail: `input age ${inputAge}ms > ${policy.maxInputAgeMs}ms` });
   const missing = policy.requiredFeatures.filter((name) => typeof f[name] !== 'number');
   if (missing.length) objections.push({ code: 'FEATURE_MISSING', detail: `missing ${missing.join(',')}` });
   if (snapshot.selfInfluenceSuppressed) objections.push({ code: 'SELF_INFLUENCE_SUPPRESSED', detail: 'own fill inside the suppression window' });

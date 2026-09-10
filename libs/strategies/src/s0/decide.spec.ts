@@ -12,7 +12,7 @@ const SAFE = s0StrategyVersion('SAFE', 'abcdef1', NOW);
 
 const goodFeatures: Record<string, number | null> = { ret_5m: 0.01, ret_15m: 0.03, ret_1h: 0.08, atr_14_pct: 0.02, rsi_14: 65, ema_9_over_21: 0.01, rel_volume_60: 3, breakout_20: 1, liquidity_usd: 800_000, impact_bps_small: 30, sell_route_confirmed: 1 };
 const snapshot = (over: Partial<FeatureSnapshot> = {}): FeatureSnapshot => ({
-  id: id(1), assetId: id(2), asOf: addMs(NOW, -60_000), featureEngineVersion: 'features-v1' as FeatureSnapshot['featureEngineVersion'], provenance: 'LIVE', marketSnapshotId: null,
+  id: id(1), assetId: id(2), asOf: addMs(NOW, -60_000), newestInputAt: addMs(NOW, -60_000), featureEngineVersion: 'features-v1' as FeatureSnapshot['featureEngineVersion'], provenance: 'LIVE', marketSnapshotId: null,
   features: goodFeatures, regime: 'RISK_ON_TREND', marketSessions: ['US'], selfInfluenceSuppressed: false, ...over,
 });
 const candidate = (over: Partial<Candidate> = {}): Candidate => ({
@@ -21,6 +21,36 @@ const candidate = (over: Partial<Candidate> = {}): Candidate => ({
 });
 const input = (variant: 'RAW' | 'SAFE', over: Partial<S0DecisionInput> = {}): S0DecisionInput => ({
   variant, ids: { cycleId: id(10), proposalId: id(11), reviewId: id(12) }, candidate: candidate(), snapshot: snapshot(), strategy: variant === 'RAW' ? RAW : SAFE, gatePolicy: DEFAULT_S0_SAFETY_GATE_POLICY, now: NOW, ...over,
+});
+
+describe('per-asset input age at the gate (ADR-0011, WP1b)', () => {
+  /**
+   * The case measured on 2026-09-09: the feature engine recomputes every 60 s whether or not its
+   * inputs moved, so `asOf` was seconds old over candles five hours stale and `FEATURES_STALE` passed.
+   * `ops.provider_health` could not cover it either — one row per (provider, dataClass), read as
+   * newest-across-the-set, which the WP1b narrowing makes *easier* to satisfy, not harder.
+   */
+  it('a freshly computed snapshot over stale candles is refused, which FEATURES_STALE alone cannot catch', () => {
+    const justComputed = addMs(NOW, -1_000);
+    const fiveHoursStale = addMs(NOW, -5 * 3_600_000);
+    const g = evaluateS0SafetyGate({ candidate: candidate(), snapshot: snapshot({ asOf: justComputed, newestInputAt: fiveHoursStale }), policy: DEFAULT_S0_SAFETY_GATE_POLICY, cutoffVersion: 1, now: NOW });
+
+    expect(g.verdict).toBe('REJECT');
+    expect(g.objections.map((o) => o.code)).toContain('INPUTS_STALE');
+    // The point of the test: the computation-time check is perfectly happy with this snapshot.
+    expect(g.objections.map((o) => o.code)).not.toContain('FEATURES_STALE');
+  });
+
+  it('an absent input age is stale, not unknown', () => {
+    const g = evaluateS0SafetyGate({ candidate: candidate(), snapshot: snapshot({ newestInputAt: null }), policy: DEFAULT_S0_SAFETY_GATE_POLICY, cutoffVersion: 1, now: NOW });
+    expect(g.objections.map((o) => o.code)).toContain('INPUTS_STALE');
+  });
+
+  it('inputs inside the bound clear it, so the check is not simply always on', () => {
+    const g = evaluateS0SafetyGate({ candidate: candidate(), snapshot: snapshot({ newestInputAt: addMs(NOW, -60_000) }), policy: DEFAULT_S0_SAFETY_GATE_POLICY, cutoffVersion: 1, now: NOW });
+    expect(g.objections.map((o) => o.code)).not.toContain('INPUTS_STALE');
+    expect(g.verdict).toBe('CONFIRM');
+  });
 });
 
 describe('S0 decisions as action cycles (§12.1, D30, M5a)', () => {

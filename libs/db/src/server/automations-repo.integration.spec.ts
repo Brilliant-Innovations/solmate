@@ -45,7 +45,7 @@ describe.skipIf(!url)('automations repository (§6.10C, §11.7)', () => {
     const [asset] = await upsertDiscoveredAssets(sql, [{ mintAddress: mint as DiscoveredToken['mintAddress'], symbol: 'AUT', name: 'Auto', decimals: 9, source: 'MANUAL', rank: null, liquidityUsd: null, volume24hUsd: null, priceUsd: null, marketCapUsd: null, listedAt: null, providerUpdatedAt: null, observedAt: NOW }], NOW);
     const assetId = asset!.id;
     const snapshotId = randomUUID() as Uuid;
-    await insertFeatureSnapshot(sql, { id: snapshotId, assetId, asOf: addMs(NOW, -60_000), featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: {}, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+    await insertFeatureSnapshot(sql, { id: snapshotId, assetId, asOf: addMs(NOW, -60_000), newestInputAt: null, featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: {}, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
     const eligibilityId = randomUUID() as Uuid;
     await sql`insert into core.asset_eligibility (id, asset_id, evaluated_at, policy_version, eligible, hard_reject, rejection_reasons, grade, liquidity_usd, mint_authority, freeze_authority, jupiter_route_available, settlement_route_confirmed, price_impact_probes, freshness)
       values (${eligibilityId}, ${assetId}, ${NOW}, 'eligibility-v1', true, false, '{}', 80, 500000, 'NONE', 'NONE', true, true, '[]'::jsonb, '{"securityProviderAt": null, "chainReadAt": "2026-09-08T18:00:00.000Z", "chainSlot": 1}'::jsonb)`;

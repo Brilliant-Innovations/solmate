@@ -10,6 +10,8 @@ export const FeatureSnapshot = z.object({
   id: Uuid,
   assetId: Uuid,
   asOf: Instant,
+  /** Newest closed input bucket behind these features. `asOf` is computation time; this is data age (WP1b). */
+  newestInputAt: Instant.nullable(),
   featureEngineVersion: VersionId,
   provenance: DataProvenance,
   marketSnapshotId: Uuid.nullable(),

@@ -1,119 +1,133 @@
-# ADR-0014 — `CANDLES` freshness is one number standing in for three consumers with different tolerances
+# ADR-0014 — Candle freshness is a function of the consuming trigger's window, not a constant per data class
 
-**Status:** Proposed — operator decision required, nothing implemented
-**Date:** 2026-09-09
-**Class (§31 taxonomy):** DEFECT (a class-level bound blocks entries on a criterion the entry path does not depend on, while the criterion it does depend on has no per-asset check at all)
+**Status:** Proposed — operator decision required. Item 3 (the per-asset check) was implemented separately on 2026-09-09 because it holds under every option here.
+**Date:** 2026-09-09 (revised the same day; the first draft's central claim is withdrawn — see "What this ADR no longer claims")
+**Class (§31 taxonomy):** DEFECT (a class-level constant cannot express a per-trigger, per-asset quantity; the entry path has no per-asset input-age check at all)
 **Blueprint text affected:** §21.1, §21.2
-**§31-protected decision affected:** "critical stale data fails closed for entries" — this proposal must not weaken it, and §"Why this is not the forbidden shortcut" below is the part to attack.
-**Supersedes in part:** ADR-0011 (the `CANDLES` row of `FRESHNESS_REQUIREMENTS` only; everything else in ADR-0011 stands)
+**§31-protected decision affected:** "critical stale data fails closed for entries" — this proposal **tightens** it. See "Why this is not the forbidden shortcut."
+**Refines:** ADR-0011 (the `CANDLES` row of `FRESHNESS_REQUIREMENTS`; everything else in ADR-0011 stands unchanged)
 
-## Why this ADR exists at all, and the objection to answer first
+## What this ADR no longer claims
 
-ADR-0011 was written because of operator review item 12: *"unacceptable shortcut: widening freshness
-limits merely to fit the purchased tier."* It records the §31 decision as **"strengthened, not
-weakened."**
+The first draft argued that 90 s was the wrong number and that the bound should be re-derived, in a
+session that had just measured a budget shortfall. The operator's response killed that argument and it
+is withdrawn rather than edited away:
 
-This ADR proposes changing a freshness bound in a session that has just measured a budget shortfall.
-That is exactly the shape ADR-0011 exists to forbid, and the burden of proof is therefore on this
-document. **If the reasoning below does not stand on its own with the budget removed from the page,
-reject it.** The operator's instruction was explicit: the reason has to be that the bound was wrong,
-not that it is expensive.
+> The 15 min ÷ 10 derivation is strong, and it weakens my "the number is wrong" position
+> considerably. But I don't think either candidate number is right, because both are constants.
 
-## Context — what was measured
+**90 seconds stands for momentum.** What is wrong is not the value but its *type*: a constant per data
+class, where the principled quantity is a function of the window the consuming trigger actually reads.
 
-`FRESHNESS_REQUIREMENTS` (`libs/contracts/src/policy/freshness.ts`) carries one row for candles,
-identical across all three speed tiers:
+`candidateTtlMs` (10 min) is also rejected as a candidate, on the operator's reasoning: ten minutes is
+how long a made candidate may *sit*, which is the same category error this ADR already rejects for
+forty-five minutes. It measures the wrong thing, just less wrongly.
 
-```
-{ dataClass: 'CANDLES', freshMaxAgeMs: 90_000, degradedMaxAgeMs: 300_000, effectOnEntries: 'BLOCK', effectOnExits: 'NONE' }
-```
+## The proposed quantity
 
-Until 2026-09-09 that row could never fire — DEFECT-4, the evaluator measured call recency rather than
-datum age. It now fires. Which makes it worth asking what it is protecting, and the answer differs by
-consumer. Verified in code, not assumed:
+> Input-age tolerance = (shortest analytic window the consuming trigger reads) ÷ 10.
 
-| Consumer | What it actually reads | Its own tolerance | Does the 90 s candle bound protect it? |
+Not because a tenth is magic, but because it is the tolerance already implicit in today's value, and
+making it explicit is what lets it vary correctly: a 10% error on a four-hour window is a different
+number from 10% of fifteen minutes.
+
+Computed from the trigger policies as they stand (`libs/contracts/src/policy/candidates.ts`):
+
+| Trigger | Shortest window it reads | Derived tolerance | vs today's flat 90 s |
 | --- | --- | --- | --- |
-| **Execution price** at swap time | live Jupiter quote | `DEFAULT_RISK_POLICY.maxQuoteAgeMs` = **15 s**, enforced as `QUOTE_STALE` (`libs/risk/src/rules/entry.ts:115`), plus `maxSlippageBps` | **No.** Independent, and stricter. |
-| **Position exit monitoring** | `deps.exitQuote(...)` — a live exit quote at the full quantity, the executable mark (§17.2, `position-monitor.ts:81`) | same quote bounds | **No.** The safety-critical continuous price is a quote, not a candle. |
-| **Trailing-stop high-water mark** | `repo.highSince(assetId, openedAt, now)` — candles | none recorded | **Partly, and in the loosening direction** — see below. |
-| **Signal inputs** (features, momentum trigger) | candles | shortest analytic window `minReturn15m` = **15 min**; `candidateTtlMs` = **10 min**; strategy `maxCandidateAgeMs` 20–45 min | **This is the only consumer the bound is really about.** |
+| `EARLY_ACCELERATION` | `minReturnAccel5m` — 5 min | **30 s** | **stricter** |
+| `MOMENTUM_CONTINUATION` | `minReturn15m` — 15 min | **90 s** | unchanged |
+| `CATALYST_RESPONSE` | `minReturn15m` — 15 min | **90 s** | unchanged |
+| `HOLDER_LIQUIDITY_EXPANSION` (hybrid) | `alignmentWindowMs` — 30 min | **180 s** | looser |
 
-Two of the three things a reader would assume the candle bound protects are protected by something
-else, and something stricter.
+The deployment's effective bound is the strictest trigger in force. S0 runs both
+`MOMENTUM_CONTINUATION` and `EARLY_ACCELERATION`, so **applying this function tightens the effective
+candle bound from 90 s to 30 s.**
 
-## The part that argues *against* simply relaxing it
+That is the answer to the question of whether this is cost-motivated. It is not: the principled shape
+makes the system *more* expensive, not less. Any relief the slower triggers get is a consequence of
+the derivation rather than a motive for it, which is the only form of relief worth having.
 
-Three findings cut the other way and belong in the record:
+## Evidence: the fourth consumer, measured
 
-1. **90 s is probably not arbitrary.** The momentum trigger's shortest window is `minReturn15m`, and
-   15 min ÷ 10 = 90 s. That is a conventional 10%-of-window tolerance, and if it was chosen that way
-   it is a *derived* number that simply was not written down as derived. Nobody should relax it
-   without knowing whether that is where it came from.
-2. **The trailing high does use candles, with a safety consequence.** `highSince` feeds
-   `high = Math.max(candleHigh ?? 0, price, averageEntryPrice)` and the trailing level is a fraction
-   below that high. A stale candle **understates** the high, which puts the trailing stop **lower** —
-   looser protection, not tighter. It is bounded by the current price and the entry, so it is a
-   degradation rather than a hole, but it is a genuine candle-dependent safety path that the
-   three-way decomposition misses.
-3. **The class-level row cannot express the thing that matters.** `ops.provider_health` is one row per
-   `(provider, dataClass)`. It can say "the candle feed has stopped" — the failure that has now
-   happened twice — and it cannot say "this one asset is 8 hours stale while others are current."
-   After the WP1b narrowing, the newest-across-the-set reading will usually be minutes old and
-   `HEALTHY`, while an individual asset may be an hour stale and still produce a candidate. **The
-   entry path has no per-asset input-age check whatsoever.** That is a hole, and it is a hole in the
-   strengthening direction.
+The first draft noted that `highSince` reads candles for the trailing high-water mark and that a stale
+candle understates the high, putting the trailing stop lower — "bounded, but bounded by *you lose
+more*". That is now a number rather than a description.
+
+Method: at each hourly instant `T` across the observation window, for every eligible asset, compare
+the high we **knew** (candles with `observed_at <= T`, which is what `highSince` reads) against the
+high that was **true** (candles whose bucket had closed by `T`). 1,677 (asset, hour) observations:
+
+| | |
+| --- | --- |
+| Knew nothing at all — `highSince` returns null, `high` falls back to `max(price, entry)` | **170 (10.1%)** |
+| Mean shortfall in the trailing high | 0.62% |
+| Shortfall > 1% | 110 (6.6%) |
+| Shortfall > 5% | 52 (3.1%) |
+| **Worst observed shortfall** | **56.01%** |
+
+Because the trailing level is a fixed fraction below that high, a 56% understated high puts the
+trailing stop 56% lower than the policy intends — the position runs that much further down before the
+stop fires. It is bounded by the current price and the entry, so it is a degradation and not a hole,
+but the bound is "you lose more", and it was reached in this dataset.
+
+Caveats stated rather than buried: hourly sample points, 43 eligible assets, a 2.17-day window, and
+the ingestion that produced it was the broken one. The shape is evidence; the exact percentages are
+not a forecast.
 
 ## Decision proposed
 
-Not a number. A shape, with the numbers to be derived and then fixed by the operator:
-
-1. **Split the `CANDLES` requirement by consumer** rather than by speed tier alone. At minimum:
-   `SIGNAL_INPUT` (features and triggers), and `TRAILING_HIGH` (position protection). Execution and
-   exit marking are removed from the candle bound's stated scope because they never depended on it —
-   this is a documentation correction, not a relaxation.
-2. **Derive `SIGNAL_INPUT` from the trigger, in the open.** The two candidate derivations are
-   `shortest analytic window ÷ 10` (= 90 s, today's value) and `≤ candidateTtlMs` (= 10 min, on the
-   argument that inputs older than the TTL make a candidate's effective evidence age exceed the bound
-   already chosen to limit it). **This ADR does not choose between them**; it asks that whichever is
-   chosen be recorded with its derivation, so the next session cannot re-litigate it from cost.
-3. **Add a per-asset input-age check at the candidate**, which does not exist today, and let it carry
-   `BLOCK`. This is the strengthening half and it should land regardless of what happens to the
-   number: a per-class health row was never able to do this job.
-4. **Leave `effectOnEntries: BLOCK` in place throughout.** Nothing here proposes that stale data stop
+1. **Replace the single `CANDLES` row with a per-consumer requirement**, the signal-input leg derived
+   by the function above from the trigger bound to the Release, and the trailing-high leg treated as
+   its own requirement rather than inheriting the signal number by accident.
+2. **Remove execution price and exit marking from the candle bound's stated scope.** They are bounded
+   by a live quote at `maxQuoteAgeMs` 15 s (`QUOTE_STALE`, `libs/risk/src/rules/entry.ts:115`) and by
+   `exitQuote` at the full quantity respectively, and read no candles. This is a documentation
+   correction; nothing changes in behaviour.
+3. **~~Add a per-asset input-age check at the candidate.~~ Done 2026-09-09**, ahead of this decision,
+   because it holds whether the bound lands at 30 s, 90 s or ten minutes — and because it gets *more*
+   necessary after the WP1b narrowing, not less: a class-level row reading newest-across-the-set is
+   easiest to satisfy when the set is small and one asset is active.
+4. **Keep every existing `effectOnEntries: BLOCK`.** Nothing here proposes that stale data stop
    failing closed.
 
 ## Why this is not the forbidden shortcut
 
-The test ADR-0011 sets is whether the limit is being widened *to fit the tier*. Three checks:
+ADR-0011 exists because of operator review item 12 — *"unacceptable shortcut: widening freshness
+limits merely to fit the purchased tier"* — and records the §31 decision as strengthened, not
+weakened. Four checks:
 
-- **Two of the four consumers are unaffected either way.** Execution and exit marking are bounded by
-  a 15 s live quote regardless of what the candle row says. No budget outcome changes that.
-- **The proposal adds an entry-blocking check that does not exist** (per-asset input age) and keeps
-  every existing `BLOCK`. A pure cost-motivated change would not do that.
-- **It refuses to pick the number.** The cost-motivated version of this document would arrive at 45
-  minutes, because that is what `maxCandidateAgeMs` allows and what the tier affords. 45 minutes is
-  not proposed, and on the evidence above it is not defensible: `maxCandidateAgeMs` bounds how long a
-  candidate may *sit*, which is a different quantity from how old its inputs were when it was made.
+- **The proposal tightens the effective bound**, 90 s → 30 s, because `EARLY_ACCELERATION` reads a
+  five-minute window. A cost-motivated document does not do that.
+- **It withdraws its own original claim** that 90 s was wrong, on an argument the operator supplied.
+- **It rejects both cheaper candidates** — 45 min and `candidateTtlMs` — as category errors.
+- **The per-asset check it adds creates new refusals**, and landed before the decision rather than
+  after it.
 
-The honest residual: this ADR was written in a session that wanted the budget to be smaller, and a
-reviewer should weigh it accordingly.
+The honest residual is unchanged: this began in a session that wanted the budget to be smaller.
+
+## A gap this exposed: no §24.6 invariant owns freshness
+
+`node tools/check-invariant-map.mjs` reported **28 of 28 mapped and green throughout** the entire
+period in which `BIRDEYE:CANDLES` reported HEALTHY over five-hour-old data and ADR-0011's `BLOCK`
+could not fire. It was not wrong: none of the blueprint's 28 invariants owns
+`libs/market/src/freshness/`, `libs/strategies/src/s0/gate.ts` or `libs/signals/src/features/engine.ts`.
+There is no invariant of the form *"no decision is taken on inputs older than the bound for their
+class"* — the property that just failed for a day.
+
+Adding a 29th is not this session's to do: the set is blueprint §24.6 and the checker enforces its
+size, correctly. It is recorded here because a green invariant map was one of the reasons this went
+unnoticed, and because review #1 should know that the map's greenness says nothing about freshness.
 
 ## Consequences if accepted
 
-- `FRESHNESS_REQUIREMENTS` gains per-consumer candle rows; `libs/market/src/freshness/evaluate.ts`
-  and the candidate gate change; contract lock regenerates.
-- A per-asset input-age check at the candidate is new work and new refusals — expect fewer candidates.
-- The budget consequence is a **side effect and not a justification**: the tier that affords a given
-  refresh interval follows from whatever `SIGNAL_INPUT` is set to, over however many assets the
-  evaluation universe holds.
+The uncomfortable conclusion, stated plainly: for momentum, **90 seconds stands; REST polling cannot
+meet it at scale; and the answer is a single-digit universe or an architecture change, not a relaxed
+bound.** With `EARLY_ACCELERATION` in force it is 30 s, which is harder still. `FRESHNESS_REQUIREMENTS`
+gains per-consumer rows keyed by the Release's trigger set; the contract lock regenerates.
 
 ## Consequences if rejected
 
-Also acceptable, and the operator should be comfortable with either. Keeping 90 s means REST polling
-on Lite can hold roughly one asset genuinely fresh and about five at the degraded bound, so the
-evaluation universe is single digits or the architecture changes to a streaming tier. That is a real
-constraint honestly stated, and a small universe kept genuinely fresh produces better evidence than a
-large one on stale data.
-
-Item 3 — the per-asset check — should land in either case.
+The flat 90 s stays, `EARLY_ACCELERATION` continues to run on a bound three times looser than its own
+window justifies, and the trailing-high leg keeps inheriting a number that was never derived for it.
+The per-asset check (item 3) stays either way.

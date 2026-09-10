@@ -43,7 +43,7 @@ describe.skipIf(!url)('strategies repository (§6.21, §6.10D, §6.11)', () => {
     const eligibilityId = randomUUID() as Uuid;
     await sql`insert into core.asset_eligibility (id, asset_id, evaluated_at, policy_version, eligible, hard_reject, rejection_reasons, grade, mint_authority, freeze_authority, jupiter_route_available, settlement_route_confirmed, price_impact_probes, freshness)
       values (${eligibilityId}, ${assetId}, ${NOW}, 'eligibility-v1', true, false, '{}', 100, 'NONE', 'NONE', true, true, '[]'::jsonb, '{"securityProviderAt": null, "chainReadAt": "2026-09-08T14:00:00.000Z", "chainSlot": 1}'::jsonb)`;
-    const older: FeatureSnapshot = { id: randomUUID() as Uuid, assetId, asOf: addMs(NOW, -60_000), featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_1h: 0.05 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false };
+    const older: FeatureSnapshot = { id: randomUUID() as Uuid, assetId, asOf: addMs(NOW, -60_000), newestInputAt: null, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_1h: 0.05 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false };
     const newer: FeatureSnapshot = { ...older, id: randomUUID() as Uuid, asOf: NOW, features: { ret_1h: 0.9 } };
     await insertFeatureSnapshot(sql, older);
     await insertFeatureSnapshot(sql, newer);

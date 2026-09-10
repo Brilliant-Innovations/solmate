@@ -7,7 +7,7 @@ const NOW = toInstant(Date.UTC(2026, 8, 8, 15, 0, 0));
 const id = (n: number) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000` as Uuid;
 const logger = createLogger({ service: 'worker', sink: () => undefined });
 const good: Record<string, number | null> = { ret_15m: 0.03, ret_1h: 0.08, rsi_14: 65, ema_9_over_21: 0.01, rel_volume_60: 3, liquidity_usd: 800_000, impact_bps_small: 30, sell_route_confirmed: 1 };
-const snap = (n: number, features = good): FeatureSnapshot => ({ id: id(n), assetId: id(n + 50), asOf: addMs(NOW, -60_000), featureEngineVersion: 'features-v2' as FeatureSnapshot['featureEngineVersion'], provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+const snap = (n: number, features = good): FeatureSnapshot => ({ id: id(n), assetId: id(n + 50), asOf: addMs(NOW, -60_000), newestInputAt: addMs(NOW, -60_000), featureEngineVersion: 'features-v2' as FeatureSnapshot['featureEngineVersion'], provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
 const cand = (n: number): Candidate => ({ id: id(n + 100), assetId: id(n + 50), discoveredAt: addMs(NOW, -30_000), triggerFamily: 'MOMENTUM_CONTINUATION', triggerDetails: {}, scannerScore: 70, status: 'DETECTED', featureSnapshotId: id(n), eligibilityEvaluationId: id(200), expiresAt: addMs(NOW, 500_000), deterministicRejectionReason: null, dedupeKey: 'k', strategyVersionIds: [] });
 
 describe('worker role s0', () => {

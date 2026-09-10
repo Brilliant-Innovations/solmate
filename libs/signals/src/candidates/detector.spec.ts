@@ -15,7 +15,7 @@ const warmFeatures = (over: Record<string, number | null> = {}): Record<string, 
   for (const name of Object.keys(FEATURE_ENGINE_V1.lookbackBuckets)) f[name] = 0;
   return { ...f, ret_15m: 0.04, rel_volume_60: 3, ema_9_over_21: 0.01, atr_14_pct: 0.02, rsi_14: 62, liquidity_usd: 500_000, impact_bps_small: 20, breakout_20: 1, sell_route_confirmed: 1, ...over };
 };
-const snapshot = (features: Record<string, number | null>): FeatureSnapshot => ({ id: SNAP, assetId: ASSET, asOf: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+const snapshot = (features: Record<string, number | null>): FeatureSnapshot => ({ id: SNAP, assetId: ASSET, asOf: NOW, newestInputAt: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
 const input = (over: Partial<DetectorInput> = {}): DetectorInput => ({
   newId, now: NOW, snapshot: snapshot(warmFeatures()), spec: FEATURE_ENGINE_V1, policy: DEFAULT_MOMENTUM_TRIGGER_POLICY, solRelativeReturn1h: 0.01,
   entryGate: { allowed: true, reason: null, eligibilityEvaluationId: ELIG }, selfInfluence: { isOwned: () => false, ownSignatures: new Set(), windows: [], now: NOW },

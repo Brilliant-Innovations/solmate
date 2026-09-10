@@ -1,4 +1,4 @@
-import { instantToMs, type AssetEligibility, type Candle, type DataProvenance, type FeatureEngineSpec, type FeatureName, type FeatureSnapshot, type Instant, type MarketSession, type TokenOverview, type Uuid } from '@sol-agent-trader/contracts';
+import { instantToMs, toInstant, type AssetEligibility, type Candle, type DataProvenance, type FeatureEngineSpec, type FeatureName, type FeatureSnapshot, type Instant, type MarketSession, type TokenOverview, type Uuid } from '@sol-agent-trader/contracts';
 import { acceleration, atrPct, averageTradeSize, bollinger, breakout, breakoutRetest, candleAnatomy, drawdownFromHigh, ema, macdHistogramPct, realizedVolatility, relativeVolume, rsi, simpleReturn, trendPersistence, volumePriceDivergence, vwapDistance, type Bar } from './indicators.js';
 
 /**
@@ -39,6 +39,25 @@ export interface WarmupStatus {
 export interface FeatureResult {
   snapshot: FeatureSnapshot;
   warmup: WarmupStatus;
+}
+
+/**
+ * The newest closed 1m bucket that feeds this snapshot, or null when none does (WP1b, ADR-0011).
+ *
+ * This is the age that matters for a decision and the one nothing recorded: `asOf` is when the
+ * feature was computed, and the engine runs every 60s regardless of whether its inputs moved. Measured
+ * 2026-09-09, it ran about 200x more often than the candles beneath it changed, so `asOf` was fresh
+ * on inputs five hours old.
+ */
+export function newestClosedBar(candles: readonly Candle[], asOf: Instant): Instant | null {
+  const cutoff = instantToMs(asOf);
+  let newest: number | null = null;
+  for (const c of candles) {
+    if (c.resolution !== "1m") continue;
+    const t = instantToMs(c.bucketTime);
+    if (t + MINUTE <= cutoff && (newest === null || t > newest)) newest = t;
+  }
+  return newest === null ? null : toInstant(newest);
 }
 
 /** Closed 1m bars before asOf as a contiguous run ending at the last closed bucket; a gap truncates the run. */
@@ -128,6 +147,7 @@ export function computeFeatures(input: FeatureInputs): FeatureResult {
       id: input.id,
       assetId: input.assetId,
       asOf: input.asOf,
+      newestInputAt: newestClosedBar(input.candles1m, input.asOf),
       featureEngineVersion: input.spec.version,
       provenance: input.provenance,
       marketSnapshotId: input.marketSnapshotId,

@@ -35,8 +35,8 @@ describe.skipIf(!url)('point-in-time context reads (§11.3, §18.3; INV-13)', ()
     const assetId = asset!.id;
     // features and market snapshots before and after the cutoff
     const fBefore = randomUUID() as Uuid;
-    await insertFeatureSnapshot(sql, { id: fBefore, assetId, asOf: addMs(CUTOFF, -60_000), featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.02, atr_14_pct: null }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
-    await insertFeatureSnapshot(sql, { id: randomUUID() as Uuid, assetId, asOf: addMs(CUTOFF, 60_000), featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.09 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+    await insertFeatureSnapshot(sql, { id: fBefore, assetId, asOf: addMs(CUTOFF, -60_000), newestInputAt: null, featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.02, atr_14_pct: null }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+    await insertFeatureSnapshot(sql, { id: randomUUID() as Uuid, assetId, asOf: addMs(CUTOFF, 60_000), newestInputAt: null, featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.09 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
     const snap = (id: Uuid, at: ReturnType<typeof addMs>, price: number): MarketSnapshot => ({ id, assetId, asOf: at, observedAt: at, provenance: 'LIVE', priceUsd: price, liquidityUsd: 500_000, volumeUsd: { h1: 1000 }, buyVolumeUsd: {}, sellVolumeUsd: {}, buyCount: {}, sellCount: {}, relativeVolume: null, atr: null, realizedVolatility: null, returns: { s15: null, m1: null, m3: null, m5: null, m15: null, m30: null, h1: null, h4: null }, marketCapUsd: null, fdvUsd: null, solRelativeReturn: null, universeRelativeStrength: null, routeProbes: [] } as unknown as MarketSnapshot);
     const mBefore = randomUUID() as Uuid;
     await insertSnapshot(sql, snap(mBefore, addMs(CUTOFF, -30_000), 1.5));

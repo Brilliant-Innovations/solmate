@@ -34,6 +34,8 @@ export const S0SafetyGatePolicy = z.strictObject({
   /** Candidate older than this at decision time is stale (also the strategy's maxCandidateAgeMs). */
   maxCandidateAgeMs: Milliseconds,
   maxFeatureAgeMs: Milliseconds,
+  /** Per-asset input age: ADR-0011 CANDLES freshMaxAgeMs. `maxFeatureAgeMs` measures computation time, this measures data age. */
+  maxInputAgeMs: Milliseconds,
   /** Chasing: 1h return above this is a parabolic extension the momentum trigger ignores. */
   maxReturn1h: z.number().positive(),
   /** Exhaustion: RSI above this, tighter than the trigger's. */
@@ -54,6 +56,9 @@ export const DEFAULT_S0_SAFETY_GATE_POLICY: S0SafetyGatePolicy = {
   version: 's0-gate-v1' as VersionId,
   maxCandidateAgeMs: 10 * 60_000,
   maxFeatureAgeMs: 5 * 60_000,
+  // ADR-0011 CANDLES freshMaxAgeMs. ADR-0014 proposes deriving this per trigger instead of a constant;
+  // until that is decided, the accepted policy's number is the one applied.
+  maxInputAgeMs: 90_000,
   maxReturn1h: 0.25,
   maxRsi14: 80,
   maxRelativeVolume60: 25,
@@ -67,6 +72,7 @@ export const DEFAULT_S0_SAFETY_GATE_POLICY: S0SafetyGatePolicy = {
 export const S0_GATE_REASONS = [
   'CANDIDATE_STALE',
   'FEATURES_STALE',
+  'INPUTS_STALE',
   'FEATURE_MISSING',
   'SELF_INFLUENCE_SUPPRESSED',
   'SELL_ROUTE_UNCONFIRMED',

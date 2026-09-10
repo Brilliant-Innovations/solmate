@@ -16,7 +16,7 @@ const early = (over: Record<string, number | null> = {}): Record<string, number 
   for (const name of Object.keys(FEATURE_ENGINE_V2.lookbackBuckets)) f[name] = 0;
   return { ...f, ret_accel_5m: 0.02, ret_15m: 0.012, volume_accel_15: 1.2, trade_count_accel_15: 0.8, ema_9_over_21: 0.002, trend_persistence_20: 0.5, breakout_20: 0, bb_location_20: 0.7, atr_14_pct: 0.015, rsi_14: 58, liquidity_usd: 600_000, impact_bps_small: 25, sell_route_confirmed: 1, rel_volume_60: 1.4, ...over };
 };
-const snapshot = (features: Record<string, number | null>): FeatureSnapshot => ({ id: newId(), assetId: ASSET, asOf: NOW, featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+const snapshot = (features: Record<string, number | null>): FeatureSnapshot => ({ id: newId(), assetId: ASSET, asOf: NOW, newestInputAt: NOW, featureEngineVersion: 'features-v2' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
 const context = (features: Record<string, number | null>, over: Partial<DetectorContext> = {}): DetectorContext => ({
   newId, now: NOW, snapshot: snapshot(features), spec: FEATURE_ENGINE_V2, solRelativeReturn1h: 0.005,
   entryGate: { allowed: true, reason: null, eligibilityEvaluationId: newId() }, selfInfluence: { isOwned: () => false, ownSignatures: new Set(), windows: [], now: NOW },

@@ -40,7 +40,7 @@ describe.skipIf(!url)('executor repository (§15.3 step 1, §18.1)', () => {
     await sql`insert into core.asset_eligibility (id, asset_id, evaluated_at, policy_version, eligible, hard_reject, rejection_reasons, grade, liquidity_usd, mint_authority, freeze_authority, jupiter_route_available, settlement_route_confirmed, price_impact_probes, freshness)
       values (${eligibilityId}, ${assetId}, ${NOW}, 'eligibility-v1', true, false, '{}', 90, 750000, 'NONE', 'NONE', true, true, '[]'::jsonb, '{"securityProviderAt": null, "chainReadAt": "2026-09-08T14:00:00.000Z", "chainSlot": 1}'::jsonb)`;
     const snapshotId = randomUUID() as Uuid;
-    await insertFeatureSnapshot(sql, { id: snapshotId, assetId, asOf: addMs(NOW, -60_000), featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { atr_14_pct: 0.02 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+    await insertFeatureSnapshot(sql, { id: snapshotId, assetId, asOf: addMs(NOW, -60_000), newestInputAt: null, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { atr_14_pct: 0.02 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
     const candidateId = randomUUID() as Uuid;
     await insertCandidate(sql, { id: candidateId, assetId, discoveredAt: addMs(NOW, -30_000), triggerFamily: 'MOMENTUM_CONTINUATION', triggerDetails: {}, scannerScore: 70, status: 'QUALIFIED', featureSnapshotId: snapshotId, eligibilityEvaluationId: eligibilityId, expiresAt: addMs(NOW, 30 * 86_400_000), deterministicRejectionReason: null, dedupeKey: `${assetId}:exec:1`, strategyVersionIds: [versionId] });
     const cycleId = randomUUID() as Uuid;

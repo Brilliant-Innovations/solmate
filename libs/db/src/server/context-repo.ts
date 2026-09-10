@@ -14,7 +14,7 @@ export async function featureSnapshotAt(sql: Sql, assetId: Uuid, asOf: Instant):
     select * from signals.feature_snapshots where asset_id = ${assetId} and as_of <= ${asOf} order by as_of desc limit 1`;
   if (!r) return null;
   return {
-    id: r['id'] as Uuid, assetId: r['asset_id'] as Uuid, asOf: iso(r['as_of']), featureEngineVersion: r['feature_engine_version'] as FeatureSnapshot['featureEngineVersion'], provenance: r['provenance'] as FeatureSnapshot['provenance'],
+    id: r['id'] as Uuid, assetId: r['asset_id'] as Uuid, asOf: iso(r['as_of']), newestInputAt: r['newest_input_at'] ? iso(r['newest_input_at']) : null, featureEngineVersion: r['feature_engine_version'] as FeatureSnapshot['featureEngineVersion'], provenance: r['provenance'] as FeatureSnapshot['provenance'],
     marketSnapshotId: (r['market_snapshot_id'] as Uuid | null) ?? null, features: r['features'] as FeatureSnapshot['features'], regime: (r['regime'] as FeatureSnapshot['regime']) ?? null, marketSessions: r['market_sessions'] as FeatureSnapshot['marketSessions'], selfInfluenceSuppressed: r['self_influence_suppressed'] as boolean,
   };
 }

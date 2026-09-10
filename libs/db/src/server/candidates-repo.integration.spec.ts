@@ -26,7 +26,7 @@ describe.skipIf(!url)('candidates repository (§6.9)', () => {
     await sql`insert into core.asset_eligibility (id, asset_id, evaluated_at, policy_version, eligible, hard_reject, rejection_reasons, grade, mint_authority, freeze_authority, jupiter_route_available, settlement_route_confirmed, price_impact_probes, freshness)
       values (${eligibilityId}, ${assetId}, ${NOW}, 'eligibility-v1', true, false, '{}', 100, 'NONE', 'NONE', true, true, '[]'::jsonb, '{"securityProviderAt": null, "chainReadAt": "2026-09-08T14:00:00.000Z", "chainSlot": 1}'::jsonb)`;
     await sql`update core.assets set status = 'ELIGIBLE' where id = ${assetId}`;
-    const snapshot: FeatureSnapshot = { id: randomUUID() as Uuid, assetId, asOf: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.03 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false };
+    const snapshot: FeatureSnapshot = { id: randomUUID() as Uuid, assetId, asOf: NOW, newestInputAt: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_15m: 0.03 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false };
     await insertFeatureSnapshot(sql, snapshot);
     const inputs = await listScanInputs(sql, 10_000);
     const mine = inputs.find((i) => i.snapshot.assetId === assetId);

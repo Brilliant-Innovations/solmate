@@ -27,7 +27,7 @@ describe.skipIf(!url)('reference series and own fills (§9.1 relative strength, 
     expect((await listTrackedAssets(sql, 10_000, [mint])).some((a) => a.id === asset!.id)).toBe(true);
     expect((await listAssetsForFeatures(sql, 10_000)).some((a) => a.id === asset!.id)).toBe(false);
     expect((await listAssetsForFeatures(sql, 10_000, [mint])).some((a) => a.id === asset!.id)).toBe(true);
-    await insertFeatureSnapshot(sql, { id: randomUUID() as Uuid, assetId: asset!.id, asOf: addMs(NOW, -3 * 60_000), featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_1h: 0.021 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+    await insertFeatureSnapshot(sql, { id: randomUUID() as Uuid, assetId: asset!.id, asOf: addMs(NOW, -3 * 60_000), newestInputAt: null, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_1h: 0.021 }, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
     expect(await latestFeatureValueByMint(sql, mint, 'ret_1h', 10 * 60_000, NOW)).toBeCloseTo(0.021);
     expect(await latestFeatureValueByMint(sql, mint, 'ret_1h', 60_000, NOW)).toBeNull(); // too old for a one-minute window
     expect(await latestFeatureValueByMint(sql, mint, 'ret_4h', 10 * 60_000, NOW)).toBeNull(); // feature absent

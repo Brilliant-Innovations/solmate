@@ -30,7 +30,7 @@ export async function listCandidatesAwaitingStrategy(sql: Sql, strategyVersionId
   const rows = await sql<Record<string, unknown>[]>`
     select c.id, c.asset_id, c.discovered_at, c.trigger_family, c.trigger_details, c.scanner_score, c.status, c.feature_snapshot_id, c.eligibility_evaluation_id, c.expires_at,
       c.deterministic_rejection_reason, c.dedupe_key, c.strategy_version_ids,
-      f.id as f_id, f.as_of as f_as_of, f.feature_engine_version as f_engine, f.provenance as f_provenance, f.market_snapshot_id as f_market_snapshot_id, f.features as f_features,
+      f.id as f_id, f.as_of as f_as_of, f.newest_input_at as f_newest_input_at, f.feature_engine_version as f_engine, f.provenance as f_provenance, f.market_snapshot_id as f_market_snapshot_id, f.features as f_features,
       f.regime as f_regime, f.market_sessions as f_sessions, f.self_influence_suppressed as f_suppressed
     from signals.candidates c
     join signals.feature_snapshots f on f.id = c.feature_snapshot_id
@@ -58,6 +58,7 @@ export async function listCandidatesAwaitingStrategy(sql: Sql, strategyVersionId
       id: r['f_id'] as Uuid,
       assetId: r['asset_id'] as Uuid,
       asOf: new Date(r['f_as_of'] as string).toISOString() as Instant,
+      newestInputAt: r['f_newest_input_at'] ? (new Date(r['f_newest_input_at'] as string).toISOString() as Instant) : null,
       featureEngineVersion: r['f_engine'] as VersionId,
       provenance: r['f_provenance'] as FeatureSnapshot['provenance'],
       marketSnapshotId: (r['f_market_snapshot_id'] as Uuid | null) ?? null,

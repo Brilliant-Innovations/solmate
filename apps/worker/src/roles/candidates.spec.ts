@@ -13,7 +13,7 @@ const warm = (over: Record<string, number | null> = {}): Record<string, number |
   for (const name of Object.keys(FEATURE_ENGINE_V1.lookbackBuckets)) f[name] = 0;
   return { ...f, ret_15m: 0.04, rel_volume_60: 3, ema_9_over_21: 0.01, atr_14_pct: 0.02, rsi_14: 62, liquidity_usd: 500_000, impact_bps_small: 20, breakout_20: 1, sell_route_confirmed: 1, ret_1h: 0.05, ...over };
 };
-const snapshot = (assetId: Uuid, features: Record<string, number | null>): FeatureSnapshot => ({ id: `1111${assetId.slice(4)}` as Uuid, assetId, asOf: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
+const snapshot = (assetId: Uuid, features: Record<string, number | null>): FeatureSnapshot => ({ id: `1111${assetId.slice(4)}` as Uuid, assetId, asOf: NOW, newestInputAt: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features, regime: null, marketSessions: ['US'], selfInfluenceSuppressed: false });
 const eligible = (assetId: Uuid, over: Partial<AssetEligibility> = {}): AssetEligibility => ({ id: ELIG, assetId, evaluatedAt: NOW, policyVersion: DEFAULT_ELIGIBILITY_POLICY.version, eligible: true, hardReject: false, rejectionReasons: [], grade: 100, ...over }) as unknown as AssetEligibility;
 
 class MemoryRepo implements CandidatesRepo {

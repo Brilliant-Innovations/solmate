@@ -28,8 +28,8 @@ export async function listAssetsForFeatures(sql: Sql, limit: number, referenceMi
 
 export async function insertFeatureSnapshot(sql: Sql, s: FeatureSnapshot): Promise<void> {
   await sql`
-    insert into signals.feature_snapshots (id, asset_id, as_of, feature_engine_version, provenance, market_snapshot_id, features, regime, market_sessions, self_influence_suppressed)
-    values (${s.id}, ${s.assetId}, ${s.asOf}, ${s.featureEngineVersion}, ${s.provenance}, ${s.marketSnapshotId}, ${sql.json(asJson(s.features))}, ${s.regime}, ${s.marketSessions}, ${s.selfInfluenceSuppressed})`;
+    insert into signals.feature_snapshots (id, asset_id, as_of, newest_input_at, feature_engine_version, provenance, market_snapshot_id, features, regime, market_sessions, self_influence_suppressed)
+    values (${s.id}, ${s.assetId}, ${s.asOf}, ${s.newestInputAt}, ${s.featureEngineVersion}, ${s.provenance}, ${s.marketSnapshotId}, ${sql.json(asJson(s.features))}, ${s.regime}, ${s.marketSessions}, ${s.selfInfluenceSuppressed})`;
 }
 
 /** One feature from the newest snapshot of a mint, or null when there is none young enough (reference series such as SOL). */
@@ -51,6 +51,7 @@ export async function latestFeatureSnapshot(sql: Sql, assetId: Uuid): Promise<Fe
     id: r['id'] as Uuid,
     assetId: r['asset_id'] as Uuid,
     asOf: new Date(r['as_of'] as string).toISOString() as Instant,
+    newestInputAt: r['newest_input_at'] ? (new Date(r['newest_input_at'] as string).toISOString() as Instant) : null,
     featureEngineVersion: r['feature_engine_version'] as FeatureSnapshot['featureEngineVersion'],
     provenance: r['provenance'] as FeatureSnapshot['provenance'],
     marketSnapshotId: r['market_snapshot_id'] as Uuid | null,

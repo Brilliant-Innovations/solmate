@@ -27,7 +27,7 @@ describe.skipIf(!url)('feature snapshots repository (§6.8, immutable)', () => {
     expect(await latestFeatureSnapshot(sql, a!.id)).toBeNull();
     expect(await latestMarketSnapshotId(sql, a!.id, NOW)).toBeNull();
 
-    const snapshot: FeatureSnapshot = { id: randomUUID() as Uuid, assetId: a!.id, asOf: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_5m: 0.01, rsi_14: null }, regime: null, marketSessions: ['EUROPE', 'US', 'EUROPE_US_OVERLAP'], selfInfluenceSuppressed: false };
+    const snapshot: FeatureSnapshot = { id: randomUUID() as Uuid, assetId: a!.id, asOf: NOW, newestInputAt: NOW, featureEngineVersion: 'features-v1' as never, provenance: 'LIVE', marketSnapshotId: null, features: { ret_5m: 0.01, rsi_14: null }, regime: null, marketSessions: ['EUROPE', 'US', 'EUROPE_US_OVERLAP'], selfInfluenceSuppressed: false };
     await insertFeatureSnapshot(sql, snapshot);
     await insertFeatureSnapshot(sql, { ...snapshot, id: randomUUID() as Uuid, asOf: addMs(NOW, 60_000), features: { ret_5m: 0.02, rsi_14: 61 } });
     const latest = await latestFeatureSnapshot(sql, a!.id);
