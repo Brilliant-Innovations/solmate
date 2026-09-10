@@ -49,6 +49,37 @@ table above for what changed and what to weigh. What remains open is one deliber
   **What is still worth a reviewer's attention:** this makes a worker-side role able to halt trading,
   which is correct here but is a capability worth confirming is narrowly held.
 
+### The question this review should answer that no tool can
+
+`node tools/check-invariant-map.mjs` answers *"are the 28 invariants mapped to green tests?"* It has
+answered **yes, 28 of 28** continuously, including throughout the day on which the candle freshness
+gate was provably inert and entries were being taken against five-hour-old data. It was not wrong.
+None of the 28 owns `libs/market/src/freshness/`, `libs/strategies/src/s0/gate.ts` or
+`libs/signals/src/features/engine.ts`, and there is no invariant of the form *"no decision is taken on
+inputs older than the bound for their class."*
+
+That is a different failure from the ones catalogued below. Those are detectors reporting the wrong
+quantity. This is a detector reporting correctly on **a set that never contained the thing**.
+
+So the question worth putting to this review is not the one the checker already answers. It is:
+
+> **What decisions can this system make that no invariant constrains?**
+
+The set's *coverage* has been checked continuously and mechanically since M1. Its **completeness has
+never been reviewed by anyone** — not at M1, not since. Freshness is one answer, found by accident,
+after it had already cost every result collected to date. Nobody has asked whether there are others,
+and the method that found this one does not generalise: it took querying production and noticing a
+number was absurd.
+
+A reviewer approaching this should work from decisions outward rather than from the invariant list
+inward — enumerate what the system decides (enter, size, exit, pause, arm, authorize, resume) and for
+each ask which invariant would fail if that decision were made on wrong premises. Where the answer is
+"none", that is a finding of the same class as freshness, and it is structural rather than a bug.
+
+Adding a 29th invariant is not an implementing session's call — §24.6 is blueprint text and the
+checker enforcing the set's size is the mechanism working correctly. Proposing one, with the gap that
+motivates it, is exactly what a gate review is for.
+
 ### A sub-pattern worth its own search: the cause gets fixed, the detector does not
 
 DEFECT-4 (`docs/probes/data-budget-2026-09-09.md`) was **found once already and half-fixed**. On
@@ -64,11 +95,11 @@ to fire, check whether that monitor was changed.** In this repository the honest
 usually no. Candidate starting points — none of these have been audited, they are named because they
 are the same shape:
 
+- **`ops.watchdog_runs` first** — telemetry about a watcher, written by the watcher. The purest
+  instance of the pattern in the repository: nothing independent records whether the watchdog ran.
 - every `ops.provider_health` class other than `CANDLES` (`TOKEN_OVERVIEW`, `TOKEN_SECURITY` and
   `DISCOVERY_LIST` were fixed only incidentally, by the shared evaluator);
 - the cold-start gates (`WARMUP_SUFFICIENT`, `FEEDS_FRESH`) which consume that same health;
-- `ops.watchdog_runs` and the resume watchdog, whose own telemetry row is written by the thing it
-  watches;
 - the readiness drills, which report FAIL honestly today but have never reported PASS anywhere real.
 
 All four defects are instances of one class described at the end of that probe document: *a cheap

@@ -98,13 +98,88 @@ limits merely to fit the purchased tier"* — and records the §31 decision as s
 weakened. Four checks:
 
 - **The proposal tightens the effective bound**, 90 s → 30 s, because `EARLY_ACCELERATION` reads a
-  five-minute window. A cost-motivated document does not do that.
+  five-minute window. **A cost-motivated document does not make the system more expensive, and this one
+  does — twice.** It tightens the screening bound past what the current architecture can satisfy at
+  any price, and it opens an exit-path question whose complete answer costs $99–199/month for a
+  handful of positions. Every number in it moves away from the cheap outcome. That is the strongest
+  evidence available that the derivation drove the conclusion rather than the reverse, and it is
+  stated here explicitly because the first draft of this ADR *was* written under budget pressure and
+  had to be withdrawn.
 - **It withdraws its own original claim** that 90 s was wrong, on an argument the operator supplied.
 - **It rejects both cheaper candidates** — 45 min and `candidateTtlMs` — as category errors.
 - **The per-asset check it adds creates new refusals**, and landed before the decision rather than
   after it.
 
 The honest residual is unchanged: this began in a session that wanted the budget to be smaller.
+
+## The arithmetic that makes 30 s unsatisfiable, not merely expensive
+
+Check this in thirty seconds rather than taking it on trust. A bucket is usable only once closed
+(`libs/signals/src/features/engine.ts`, both `newestClosedBar` and `contiguousClosedBars`):
+
+```ts
+if (t + MINUTE <= cutoff)   // t is the bucket's start
+```
+
+So for the newest usable bucket, `t <= now − 60_000`, and input age is defined as `now − t`.
+Therefore:
+
+> **With 1-minute candles, input age is ≥ 60 s always.** Generally, with resolution `R`, minimum
+> input age is exactly `R`.
+
+A bound `B` is therefore satisfiable only when `R ≤ B`, and no request rate, provider tier or amount
+of money changes that — it is a property of bucketing, not of budget. Two consequences:
+
+- **`EARLY_ACCELERATION`'s derived 30 s bound cannot be met on 1m candles at any price.** Applied as
+  written it would refuse 100% of candidates, permanently. This is the architecture finding, and it
+  should be read before anyone tries to run S0 under the function, not discovered afterwards.
+- Holding age ≤ `B` additionally requires refreshing at least every `B − R`, which is the part money
+  *can* buy. Both conditions bind; the first one is the one that cannot be bought.
+
+15 s candles (`R = 15_000`) already exist in the codebase and would make 30 s reachable. They are
+classified `POSITION` only (`RESOLUTIONS` in `market-ingest.ts`), which is the next section.
+
+## The exit path, which nobody derived a bound for
+
+The same derivation applied to a consumer it was never applied to. This section is why ADR-0014 covers
+the exit path rather than leaving it to a separate ADR: the reasoning is identical, only the consumer
+differs.
+
+`highSince` feeds `rHigh`, which gates whether the trailing stop activates at all. **A correction to
+the record first:** an understated high cannot move the stop *down* — `evaluateExitPolicy` raises only
+(`trailed > stop`) from the persisted stop, and `tightenStop` refuses anything at or below the stored
+level. The stop is already monotonic in two independent places, and a proposal to persist a separate
+high-water mark was built, found to be redundant against exactly that, and reverted on 2026-09-10. The
+damage is a stop that **fails to rise**, not one that falls.
+
+What the exit path's tolerance derives from is different from a screening trigger's lookback. The
+monitor marks from a **live exit quote every cycle**, so any peak at a cycle boundary is already
+captured by `price`. Candles add exactly one thing: peaks that occur *between* cycles. So the bound is
+the monitor's own cadence:
+
+- `POSITION_MONITOR_INTERVAL_MS` defaults to **30 s** (min 10 s).
+- Resolution must satisfy `R ≤ interval`, or intra-cycle peaks exist that no bucket can reveal. 1m
+  candles fail this by a factor of two; 15 s candles satisfy it.
+- Held positions are single digits by construction, and `POSITION` priority is already the
+  classification 15 s candles carry — so this is not a wide-universe problem and the 1m arithmetic
+  above does not bind here.
+
+**Its cost, stated rather than assumed.** "Affordable because the set is small" is too quick. One
+OHLCV request covers up to 1000 buckets, so cost is per *refresh*, not per bucket: 45 CU each. At a
+30 s refresh that is 2,880/day/position = **3.89 M CU/month per held position** — Starter ($99) for
+one or two positions, Premium ($199) by three. Real money for a small set.
+
+**The cheaper alternative, which should be weighed first.** The mark already comes from a Jupiter exit
+quote, which costs no Birdeye compute units at all. Shortening `POSITION_MONITOR_INTERVAL_MS` toward
+its 10 s floor samples that mark three times more often and attacks the "peaks between cycles"
+residual directly, for nothing on this budget. It does not capture a peak *within* 10 s, which 15 s
+candles also would not.
+
+So the exit-path decision is a genuine three-way choice, and this ADR does not make it: accept the
+residual, shorten the monitor interval (cheap, partial), or buy 15 s candles for held positions
+(complete to 15 s, and priced above). Whichever is chosen, it should be recorded with the derivation
+rather than inherited from the screening number, which is how the exit path came to have no bound of
+its own.
 
 ## A gap this exposed: no §24.6 invariant owns freshness
 
