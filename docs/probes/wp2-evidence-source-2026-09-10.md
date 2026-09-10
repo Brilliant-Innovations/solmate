@@ -1,5 +1,9 @@
 # WP2 first cut — what the evidence source is, how much exists, and how long a clean one takes
 
+**Naming:** this document says "Level A" and "Level B"; the enum is `ReplayFidelity = ['A_HISTORICAL',
+'B_CAPTURED', 'C_LIVE_PAPER']` (`libs/contracts/src/enums.ts:305`) and has a third member. `EVALUATION.md`
+uses the enum names; read "Level A" as `A_HISTORICAL` and "Level B" as `B_CAPTURED` below.
+
 Measured against the hosted archive on 2026-09-10. This answers the reframed WP2 question — *evidence
 source, volume, elapsed time* — and it changes the answer to the tier question rather than deferring
 it.
@@ -50,8 +54,10 @@ kills Level B, gap density kills Level A. Neither is fixed by the other.
 One caveat that matters for interpreting 28.9%: a thinly traded token has no bucket for a minute in
 which it did not trade, so some of the missing coverage is real market structure rather than ingestion
 failure. Eligibility already requires ≥$250k liquidity, but "eligible" is not the same as "trades
-every minute", and the evaluation universe should be chosen on observed bucket density rather than on
-eligibility alone.
+every minute". ~~The evaluation universe should therefore be chosen on observed bucket density.~~ **That
+conclusion is wrong and is superseded by `EVALUATION.md` §6:** density here reflects which assets the
+broken planner happened to serve, not which assets trade, so selecting on it would bias the universe
+by attention. Select by the stated eligibility rule and purchase contiguity for whatever it selects.
 
 ## 2. The finding that changes the tier question
 
@@ -103,7 +109,7 @@ is the *rate*, so that whatever sample size is pre-registered converts directly 
    a degraded control against a clean treatment, and any difference between them is confounded by data
    quality rather than by the thing under test. Defining the control on the momentum trigger compares
    like with like. See ADR-0014.
-3. **Universe selection by bucket density**, not by eligibility alone, for the reason in §1.
+3. ~~**Universe selection by bucket density**, not by eligibility alone.~~ **Superseded by `EVALUATION.md` §6, 2026-09-10.** Density in this archive is an artifact of the broken planner's priority ordering rather than a property of the market, and going forward it is a choice rather than an observation, since contiguity is purchasable at a twice-daily refresh for anything we point at. Selecting on it would pick whatever happened to receive attention. Select by the stated eligibility rule and buy contiguity for what it selects.
 4. **The three recorded quantities per decision** — required age, attained age, ratio — so degradation
    is visible on the decisions themselves rather than reconstructed afterwards (ADR-0014).
 
