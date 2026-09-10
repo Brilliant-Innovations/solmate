@@ -34,6 +34,16 @@ export const AgentRun = z.object({
   structuredOutput: JsonRecord.nullable(),
   tokens: z.object({ input: z.number().int().nonnegative(), output: z.number().int().nonnegative() }),
   costUsd: UsdValue,
+  /**
+   * Whether costUsd is what the provider billed, or a floor because we never learned (2026-09-10).
+   *
+   * A call we abandon on our own deadline may well have been generated and billed; a non-2xx may not
+   * have been. Recording 0 for both made a failed cycle look free, which understates D43 spend and -
+   * because EVALUATION.md 7(2) divides edge by model cost per decision - inflates the measured edge.
+   * Both errors point the same way, toward proceeding, so the uncertainty is recorded rather than
+   * rounded to zero.
+   */
+  costAccrual: z.enum(["MEASURED", "UNKNOWN"]),
   latencyMs: Milliseconds,
   success: z.boolean(),
   schemaValidation: z.object({ ok: z.boolean(), errors: z.array(z.string()) }),

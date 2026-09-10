@@ -214,9 +214,9 @@ async function callModel<T>(deps: CycleRunnerDeps, role: AgentRole, cycle: Actio
   const started = clock.nowMs();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new ModelTimeoutError()), budgetMs);
-  const base = (): Omit<AgentRun, 'provider' | 'model' | 'promptVersion' | 'temperature' | 'tokens' | 'costUsd' | 'structuredOutput' | 'success' | 'schemaValidation' | 'latencyMs'> => ({ id: deps.newId(), actionCycleId: cycle.id, candidateId: cycle.candidateId, positionId: cycle.positionId, role, reasoningConfig: null, inputEvidenceIds: context.evidence.map((e) => e.id), cutoffVersion: context.cutoffVersion, cutoffAt: context.cutoffAt, createdAt: clock.now() });
+  const base = (): Omit<AgentRun, 'provider' | 'model' | 'promptVersion' | 'temperature' | 'tokens' | 'costUsd' | 'costAccrual' | 'structuredOutput' | 'success' | 'schemaValidation' | 'latencyMs'> => ({ id: deps.newId(), actionCycleId: cycle.id, candidateId: cycle.candidateId, positionId: cycle.positionId, role, reasoningConfig: null, inputEvidenceIds: context.evidence.map((e) => e.id), cutoffVersion: context.cutoffVersion, cutoffAt: context.cutoffAt, createdAt: clock.now() });
   const identity = model.identity();
-  const failedRun = (latencyMs: number, error: string): AgentRun => ({ ...base(), provider: identity.provider, model: identity.model, promptVersion: identity.promptVersion, temperature: null, tokens: { input: 0, output: 0 }, costUsd: 0, structuredOutput: null, success: false, schemaValidation: { ok: false, errors: [error] }, latencyMs });
+  const failedRun = (latencyMs: number, error: string): AgentRun => ({ ...base(), provider: identity.provider, model: identity.model, promptVersion: identity.promptVersion, temperature: null, tokens: { input: 0, output: 0 }, costUsd: 0, costAccrual: 'UNKNOWN', structuredOutput: null, success: false, schemaValidation: { ok: false, errors: [error] }, latencyMs });
   let result: ModelCall;
   try {
     result = await Promise.race([
@@ -234,7 +234,7 @@ async function callModel<T>(deps: CycleRunnerDeps, role: AgentRole, cycle: Actio
   const latencyMs = Math.max(0, clock.nowMs() - started);
   const validated = validate(result.output);
   const structuredOutput = result.output !== null && typeof result.output === 'object' && !Array.isArray(result.output) ? (result.output as Record<string, unknown>) : null;
-  const run: AgentRun = { ...base(), provider: result.metadata.provider, model: result.metadata.model, promptVersion: result.metadata.promptVersion, temperature: result.metadata.temperature, tokens: result.metadata.tokens, costUsd: result.metadata.costUsd, structuredOutput, success: validated.ok, schemaValidation: validated.ok ? { ok: true, errors: [] } : { ok: false, errors: validated.errors.slice(0, 20) }, latencyMs };
+  const run: AgentRun = { ...base(), provider: result.metadata.provider, model: result.metadata.model, promptVersion: result.metadata.promptVersion, temperature: result.metadata.temperature, tokens: result.metadata.tokens, costUsd: result.metadata.costUsd, costAccrual: 'MEASURED', structuredOutput, success: validated.ok, schemaValidation: validated.ok ? { ok: true, errors: [] } : { ok: false, errors: validated.errors.slice(0, 20) }, latencyMs };
   if (!validated.ok) return { kind: 'MALFORMED', run, errors: validated.errors };
   return { kind: 'OK', value: validated.value, run };
 }

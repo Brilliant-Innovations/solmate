@@ -78,6 +78,27 @@ describe('worker role agents (§11.7–11.9, D39, D43)', () => {
     expect(f.charges).toEqual([{ ids: [uuid(8)], delta: { cycles: 1, modelUsd: 0.03, providerRequests: 2 } }]);
   });
 
+  /**
+   * WP3 items 1 and 4, which are one event: a cycle that does not resolve still writes a state and
+   * still accrues a cost. The happy path above was the only persistence ever asserted; an UNRESOLVED
+   * cycle takes the same unconditional persist and chargeSpend calls, and nothing proved it.
+   */
+  it("an unresolved cycle is persisted with its failed run, and charges what that run actually cost", async () => {
+    const f = fakeRepo({ candidates: [candidate] });
+    // Schema-valid JSON that is not a proposal: the call completed, was billed, and did not parse.
+    const report = await runAgentsCycle(deps(f.repo, () => ({ actionType: "ENTER" })));
+
+    expect(report).toMatchObject({ invoked: 1, outcomes: { UNRESOLVED_MALFORMED_OUTPUT: 1 }, errors: [] });
+    expect(f.persisted).toHaveLength(1);
+    expect(f.persisted[0]?.outcome.cycle).toMatchObject({ state: "UNRESOLVED", unresolvedReason: "MALFORMED_OUTPUT" });
+    // The failed run is persisted rather than dropped, with its schema errors.
+    const run = f.persisted[0]?.outcome.runs[0];
+    expect(run).toMatchObject({ role: "TRADING_PROPOSER", success: false, costAccrual: "MEASURED" });
+    expect(run!.schemaValidation.errors.length).toBeGreaterThan(0);
+    // And a failed cycle is not free: the billed call is charged to the D43 budget.
+    expect(f.charges).toEqual([{ ids: [uuid(8)], delta: { cycles: 1, modelUsd: 0.01, providerRequests: 1 } }]);
+  });
+
   it('skips on cooldown without a row, records other skips, and makes no model call when the budget is paused or the runtime is not active', async () => {
     const cooled = fakeRepo({ candidates: [candidate], history: { lastFiredAt: addMs(T0, -10_000) } });
     const r1 = await runAgentsCycle(deps(cooled.repo, () => { throw new Error('must not be called'); }));

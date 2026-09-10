@@ -66,8 +66,8 @@ export async function persistDiscretionaryOutcome(sql: Sql, o: DiscretionaryOutc
         ${c.proposedAction}, ${c.proposalId}, ${c.proposerRunIds}, ${c.adversaryRunIds}, ${c.verdict}, ${c.reasonCodes}, ${c.revisionRound}, ${c.state}, ${c.unresolvedReason}, ${t.json(asJson(c.cutoffs))}, ${c.clearedCutoffVersion}, ${c.riskEvaluationId}, ${c.intentId}, ${c.startedAt}, ${c.terminalAt})`;
     for (const r of o.runs) {
       await t`
-        insert into agents.runs (id, action_cycle_id, candidate_id, position_id, role, provider, model, prompt_version, temperature, reasoning_config, input_evidence_ids, cutoff_version, cutoff_at, structured_output, tokens, cost_usd, latency_ms, success, schema_validation, created_at)
-        values (${r.id}, ${r.actionCycleId}, ${r.candidateId}, ${r.positionId}, ${r.role}, ${r.provider}, ${r.model}, ${r.promptVersion}, ${r.temperature}, ${r.reasoningConfig ? t.json(asJson(r.reasoningConfig)) : null}, ${r.inputEvidenceIds}, ${r.cutoffVersion}, ${r.cutoffAt}, ${r.structuredOutput ? t.json(asJson(r.structuredOutput)) : null}, ${t.json(asJson(r.tokens))}, ${r.costUsd}, ${r.latencyMs}, ${r.success}, ${t.json(asJson(r.schemaValidation))}, ${r.createdAt})`;
+        insert into agents.runs (id, action_cycle_id, candidate_id, position_id, role, provider, model, prompt_version, temperature, reasoning_config, input_evidence_ids, cutoff_version, cutoff_at, structured_output, tokens, cost_usd, cost_accrual, latency_ms, success, schema_validation, created_at)
+        values (${r.id}, ${r.actionCycleId}, ${r.candidateId}, ${r.positionId}, ${r.role}, ${r.provider}, ${r.model}, ${r.promptVersion}, ${r.temperature}, ${r.reasoningConfig ? t.json(asJson(r.reasoningConfig)) : null}, ${r.inputEvidenceIds}, ${r.cutoffVersion}, ${r.cutoffAt}, ${r.structuredOutput ? t.json(asJson(r.structuredOutput)) : null}, ${t.json(asJson(r.tokens))}, ${r.costUsd}, ${r.costAccrual}, ${r.latencyMs}, ${r.success}, ${t.json(asJson(r.schemaValidation))}, ${r.createdAt})`;
     }
     for (const p of o.proposals) {
       await t`

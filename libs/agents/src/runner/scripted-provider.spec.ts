@@ -156,6 +156,31 @@ describe('WP3: the discretionary path over real provider adapters (scripted HTTP
     expect(out.cycle.unresolvedReason).toBe('TIMEOUT');
   });
 
+  /**
+   * WP3 item 4. A cycle that fails still spends: we abort a slow call on our own deadline, and the
+   * provider may well have generated and billed for it. Recording 0 made a failed cycle look free,
+   * which understates D43 spend AND - because EVALUATION.md 7(2) divides edge by model cost per
+   * decision - inflates the measured edge. Both point toward proceeding, so the uncertainty is now
+   * recorded rather than rounded away.
+   */
+  it("cost is MEASURED when the provider billed us, UNKNOWN when we never learned", async () => {
+    // Malformed output: the call completed and was billed. It just did not parse.
+    const malformed = scripted([anthropicTool({ actionType: "ENTER" })]);
+    const m = await runDiscretionaryCycle(depsFor(malformed), candidateInput());
+    expect(m.runs[0]).toMatchObject({ costAccrual: "MEASURED", success: false });
+    expect(m.runs[0]!.costUsd).toBeGreaterThan(0);
+
+    // Abort: we stopped waiting. Whether the provider billed is unknowable from here.
+    const timeout = scripted([async () => { const e = new Error("aborted"); e.name = "AbortError"; throw e; }]);
+    const t = await runDiscretionaryCycle(depsFor(timeout), candidateInput());
+    expect(t.runs[0]).toMatchObject({ costAccrual: "UNKNOWN", costUsd: 0 });
+
+    // Outage: likewise unknown rather than known-free.
+    const outage = scripted([{ status: 503, body: "{}" }]);
+    const o = await runDiscretionaryCycle(depsFor(outage), candidateInput());
+    expect(o.runs[0]).toMatchObject({ costAccrual: "UNKNOWN", costUsd: 0 });
+  });
+
   it('an exhausted spend budget ends the cycle before any provider is contacted', async () => {
     const s = scripted([anthropicTool(proposal(1))]);
     const out = await runDiscretionaryCycle(depsFor(s, { spendGate: () => ({ ok: false, checked: 1, block: { code: 'DAILY_USD_EXCEEDED', scope: 'ACCOUNT', budgetId: 'b1' } as never }) }), candidateInput());

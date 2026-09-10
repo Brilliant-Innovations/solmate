@@ -80,5 +80,45 @@ Named rather than left for a later session to discover:
 4. **Cost accounting under failure.** Cases 5–9 produce runs with token usage; whether `costUsd`
    accrues correctly against `D43` budgets when a cycle fails partway is asserted nowhere.
 
-Items 1 and 2 are the honest remainder of WP3 as originally scoped and are the natural next step. Item
-4 is the one most likely to matter with a metered key, since a failing cycle still spends.
+~~Items 1 and 2 are the honest remainder.~~ **Items 1 and 4 were taken together on 2026-09-10** — they
+are one event, not two, and splitting them would have visited the same code path twice. See below.
+Item 2 remains, and is the only one that touches a real database.
+
+## Items 1 and 4, done together: what the system records when a cycle does not resolve
+
+**Item 1 turned out to be a test gap, not a code gap.** `runAgentsCycle` calls `repo.persist(...)` and
+`repo.chargeSpend(...)` **unconditionally**, outside any branch on cycle state, so an UNRESOLVED cycle
+was already persisted with its failed runs and already charged. Nothing had asserted it; now
+`agents.spec.ts` does, including that the failed run keeps its schema errors rather than being dropped.
+
+**Item 4 was a real accounting gap, and it pointed the way the others have.** `modelUsd` is
+`sum(runs.costUsd)`, and `failedRun` recorded `costUsd: 0` for both timeout and outage. For an outage
+that is probably right. For a **timeout it is not**: we abort on *our own* deadline, and the provider
+may well have generated and billed the call. Worse, the undercount is biased toward the most expensive
+calls, because a timeout is by definition a long generation.
+
+Two consequences, both in the same direction:
+
+| | Effect of recording 0 |
+| --- | --- |
+| D43 spend budgets | undercounted, so the budget lasts longer than it should |
+| `EVALUATION.md` §7(2) | the threshold divides edge by **model cost per decision**; a small denominator inflates the measured edge |
+
+So a failed cycle looked free, and the error pushed toward *proceeding* — the fourth time this week an
+error has pointed at the comfortable answer.
+
+**Fixed by recording the uncertainty rather than rounding it away.** `AgentRun` gains
+`costAccrual: MEASURED | UNKNOWN`. MEASURED means the provider returned usage metadata and
+`costUsd` is what it billed — which **includes malformed output**, since that call completed and was
+billed, it merely failed to parse. UNKNOWN means the call ended without metadata and `costUsd` is a
+floor, not a measurement. Migration `20260910004700` backfills existing rows from what they already
+record: not successful and zero tokens means no metadata ever arrived.
+
+**What this obliges `EVALUATION.md` to do:** any metric that divides by model cost must report the
+UNKNOWN share alongside it, the same way the adversary stop reports its counterfactual coverage. A
+denominator assembled partly from floors is not a measurement, and the pre-registration should not
+treat it as one.
+
+Still not decided, and flagged rather than silently chosen: **whether a D43 budget should charge a
+conservative estimate for an UNKNOWN run** instead of zero. That is a spend-policy question for WP4,
+and the recording change is what makes it answerable.

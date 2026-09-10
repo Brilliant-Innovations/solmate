@@ -85,6 +85,19 @@ proposal is visible as its own category rather than folded into "not rejected".
 `RISK_BLOCKED_BASELINE` and `RISK_BLOCKED_BOTH` as categories distinct from `AI_FILTERED_LOSER` and
 `AI_REJECTED_WINNER`. A trade the deterministic risk core refused **is never credited to the model**.
 
+**The cost denominator is partly floors, and must report how much.** `AgentRun.costAccrual`
+distinguishes `MEASURED` (the provider returned usage metadata; `cost_usd` is what it billed —
+including malformed output, which was billed and merely failed to parse) from `UNKNOWN` (the call
+ended without metadata on timeout or outage; `cost_usd` is a **floor**, not a measurement). A timeout
+is aborted on *our* deadline, so the provider may well have billed it, and the undercount is biased
+toward the most expensive calls because a timeout is by definition a long generation.
+
+> §7(2) divides edge by model cost per decision, so an undercounted denominator **inflates the
+> measured edge**, in the direction of proceeding. Any metric dividing by model cost therefore reports
+> the **UNKNOWN share** alongside it, exactly as the adversary stop reports its counterfactual
+> coverage. A denominator assembled partly from floors is not a measurement, and this document does
+> not treat it as one. If the UNKNOWN share is material, the cost comparison is **INCONCLUSIVE**.
+
 **Model cost netting.** `direct_cost_usd` is the strategy's own model spend; `platform_share_usd` is
 its allocated share of shared operating cost, and `replay_economic_pnl.allocation` records the
 allocation basis in force — which is how a strategy trading in more than one book is charged. The
@@ -129,6 +142,21 @@ observations, and 0.25 is a judgement that a quarter of the rejections is the le
 the whole. A reviewer who wants them different should say so **now**. What is not negotiable is that
 some floor exists, because a rule empowered to end the programme must not do so from an unstated
 slice.
+
+**Burn-in, declared before the key exists.** Rate limits, mid-call truncation, provider-side schema
+drift and whatever else a real provider does will all be met for the **first time on the first metered
+run** (`wp3-discretionary-path-2026-09-10.md` item 3 — they are scripted as effects today, not
+observed). Those cycles will be unrepresentative, and the temptation to exclude them after seeing them
+is precisely the discretion this document exists to remove.
+
+> The first **[N — operator to set, suggested 50]** cycles, or **[H — suggested 4]** hours of running,
+> whichever comes first after the first real key, are a **burn-in**: excluded from the Stage 1 sample
+> by rule. Stage 1 has not started until the burn-in closes.
+
+Chosen now, while nobody knows what those cycles will look like. The burn-in also gives the key's
+first use its right shape: a deliberate, small, **observed** run whose purpose is meeting the provider
+— rate-limit behaviour, real token accounting, real latency — and which is explicitly *not* the pilot
+starting. Findings from it are recorded as provider observations, not as results.
 
 **Calendar stop.** If Stage 1 has not reached its pre-registered *n* by a stated date, that is not a
 reason to keep waiting. **Insufficient decision rate is itself a result**, and it changes the design
