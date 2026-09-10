@@ -49,7 +49,29 @@ table above for what changed and what to weigh. What remains open is one deliber
   **What is still worth a reviewer's attention:** this makes a worker-side role able to halt trading,
   which is correct here but is a capability worth confirming is narrowly held.
 
-All three defects are instances of one class described at the end of that probe document: *a cheap
+### A sub-pattern worth its own search: the cause gets fixed, the detector does not
+
+DEFECT-4 (`docs/probes/data-budget-2026-09-09.md`) was **found once already and half-fixed**. On
+2026-09-08 the symptom was recorded in the changelog in as many words — "`WARMUP_SUFFICIENT` never
+passed because 1m candles for every eligible asset had stopped hours earlier **while CANDLES reported
+HEALTHY**". The planner starvation underneath it was diagnosed and fixed. The detector that had just
+demonstrated it would report HEALTHY over hours-old data was left exactly as it was, and went on
+saying so for another day, until someone queried the table directly.
+
+A detector is code too, and the incident that exposes it is the only occasion anyone has reason to
+look at it. So: **wherever an incident report names a monitor, alarm, health row or gate that failed
+to fire, check whether that monitor was changed.** In this repository the honest answer so far is
+usually no. Candidate starting points — none of these have been audited, they are named because they
+are the same shape:
+
+- every `ops.provider_health` class other than `CANDLES` (`TOKEN_OVERVIEW`, `TOKEN_SECURITY` and
+  `DISCOVERY_LIST` were fixed only incidentally, by the shared evaluator);
+- the cold-start gates (`WARMUP_SUFFICIENT`, `FEEDS_FRESH`) which consume that same health;
+- `ops.watchdog_runs` and the resume watchdog, whose own telemetry row is written by the thing it
+  watches;
+- the readiness drills, which report FAIL honestly today but have never reported PASS anywhere real.
+
+All four defects are instances of one class described at the end of that probe document: *a cheap
 local value stands in for an expensive remote one, and the substitution is sound only while the two
 cannot diverge.* The 2026-09-09 review's two CRITICALs were the same family, making five. A reviewer
 looking for more of these is looking in a productive direction — and the audit that found DEFECT-2
