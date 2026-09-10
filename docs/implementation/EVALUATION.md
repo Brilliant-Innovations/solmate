@@ -149,9 +149,13 @@ run** (`wp3-discretionary-path-2026-09-10.md` item 3 — they are scripted as ef
 observed). Those cycles will be unrepresentative, and the temptation to exclude them after seeing them
 is precisely the discretion this document exists to remove.
 
-> The first **[N — operator to set, suggested 50]** cycles, or **[H — suggested 4]** hours of running,
-> whichever comes first after the first real key, are a **burn-in**: excluded from the Stage 1 sample
-> by rule. Stage 1 has not started until the burn-in closes.
+> The first **[N — operator to set, suggested 50]** cycles **and** **[H — suggested 4]** hours of
+> running, **whichever is later**, after the first real key, are a **burn-in**: excluded from the
+> Stage 1 sample by rule. Stage 1 has not started until the burn-in closes.
+
+**Whichever is *later*, not either.** Fifty cycles in twenty minutes gives no exposure to rate limits
+or drift; four hours at three cycles gives no exposure to anything. The purpose is meeting the
+provider's failure modes, and that needs both volume and wall-clock.
 
 Chosen now, while nobody knows what those cycles will look like. The burn-in also gives the key's
 first use its right shape: a deliberate, small, **observed** run whose purpose is meeting the provider

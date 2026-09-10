@@ -119,6 +119,46 @@ UNKNOWN share alongside it, the same way the adversary stop reports its counterf
 denominator assembled partly from floors is not a measurement, and the pre-registration should not
 treat it as one.
 
-Still not decided, and flagged rather than silently chosen: **whether a D43 budget should charge a
-conservative estimate for an UNKNOWN run** instead of zero. That is a spend-policy question for WP4,
-and the recording change is what makes it answerable.
+### Which branch could do better than UNKNOWN, checked rather than assumed
+
+UNKNOWN should be a fallback, not an automatic classification: some providers return usage on error
+responses. Checking what the transport actually retains splits the two branches, and they differ:
+
+- **Abort / timeout** (`providers.ts:77`). `fetchModelTransport` is non-streaming and `fetch` *rejects*
+  on abort, so there is no response object, no body and no usage. With this transport UNKNOWN is not a
+  fallback — it is the only answer available. Doing better would require a streaming transport that
+  retains what arrived before the abort, which is a different design, not a fix.
+- **Non-2xx / outage** (`providers.ts:80`). The body **is** in hand — it is sliced into the error
+  message and then discarded. If a provider returns usage on an error response, it is being thrown
+  away, and UNKNOWN here really is automatic rather than a fallback.
+
+**Deliberately not fixed by speculation.** Writing a parser for error-body usage across two providers
+without a recorded response from either is the "unexecuted code shipped as evidence" trap this
+repository has already been caught by. The burn-in run (`EVALUATION.md` §5a) is exactly when real
+error bodies become available; capturing them as fixtures is what should precede that change.
+
+### The open WP4 question, with a recommendation
+
+**Whether a D43 budget should charge an estimate for an UNKNOWN run instead of zero.** Recommended:
+**charge an estimate, at a high percentile of measured cost rather than the mean.**
+
+The percentile matters because of the bias already identified: UNKNOWN is concentrated on timeouts,
+timeouts are by definition long generations, so the mean of MEASURED calls systematically understates
+exactly the population that goes UNKNOWN. A mean would be an estimate built from the wrong sample.
+
+The argument for charging rather than zeroing is that **both consumers err toward stopping**, which is
+the correct way to be wrong about an unmeasurable quantity:
+
+| Consumer | Effect of charging an estimate | Direction |
+| --- | --- | --- |
+| D43 spend budgets | exhausts the budget sooner | conservative for a spend bound |
+| `EVALUATION.md` §7(2) | inflates the cost denominator, deflating measured edge — and since the baseline arm carries **no** model cost, it penalises only the LLM arms | conservative for a proceed decision |
+
+Zeroing errs toward proceeding in both. Charging errs toward stopping in both.
+
+**Report both figures regardless**: measured-only and estimate-inclusive, with the UNKNOWN share
+beside them, and have the pre-registered rule read the conservative one. That keeps the choice visible
+rather than baked into a single number nobody can later interrogate.
+
+Not implemented here — it changes spend behaviour and belongs to WP4 with the rest of the budget
+work. The `costAccrual` recording is what makes it answerable.

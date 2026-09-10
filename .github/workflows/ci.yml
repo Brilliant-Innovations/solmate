@@ -164,6 +164,9 @@ jobs:
         env:
           SUPABASE_DB_URL: postgresql://postgres:postgres@127.0.0.1:55322/postgres
           NX_DAEMON: 'false'
+          # Fails the run if the URL above ever goes missing, instead of skipping every integration
+          # spec and reporting green (db-required.spec.ts).
+          REQUIRE_DB_TESTS: '1'
         run: pnpm nx test @sol-agent-trader/db --skip-nx-cache
       - name: Generated database types match the migrations
         run: |
