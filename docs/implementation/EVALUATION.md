@@ -108,6 +108,41 @@ Therefore the thresholds are deliberately asymmetric. **Aggressive on stop, cons
 
 "Decisively" and "marginally" must be given numeric definitions **before the first run**, in §7.
 
+### 5a. When the rules are allowed to fire
+
+Two guards, pre-registered here because both must be chosen while it is still unknown which side of
+them the result will land on.
+
+**Minimum coverage for the adversary stop.** The `rejected_winners` stop in the table above is
+computed on the counterfactual subset described in §6a(iii) — rejections where the *control also
+traded* that candidate. That is not a random slice of what the adversary rejects: it is the overlap
+with the control's own gate. At low coverage the rule would be halting the programme on a small and
+non-randomly-selected corner of the adversary's behaviour.
+
+> The stop fires only when **both** `rejected_with_counterfactual ≥ 30` **and**
+> `rejected_with_counterfactual ÷ rejected ≥ 0.25`. Below either, the rule reports
+> **INCONCLUSIVE** — neither a stop nor a pass — and the coverage figure is reported with it.
+
+Both numbers are **conventions, not results**, and are marked as such for the same reason ADR-0014
+marks its divisor: 30 is the conventional floor at which a mean stops being dominated by individual
+observations, and 0.25 is a judgement that a quarter of the rejections is the least that can stand for
+the whole. A reviewer who wants them different should say so **now**. What is not negotiable is that
+some floor exists, because a rule empowered to end the programme must not do so from an unstated
+slice.
+
+**Calendar stop.** If Stage 1 has not reached its pre-registered *n* by a stated date, that is not a
+reason to keep waiting. **Insufficient decision rate is itself a result**, and it changes the design
+rather than extending the clock — a narrower universe produces too few decisions to evaluate, and that
+is a finding about the strategy family, not a scheduling problem.
+
+- The date is set **once the pilot gives a decision rate**, as `n ÷ observed decisions per day`, plus
+  a stated margin.
+- An **outer bound applies regardless**: if Stage 1 has not concluded within **90 days** of first
+  accumulation, it stops and the design is revisited whatever the rate turns out to be.
+
+Without the outer bound, slow accumulation becomes indefinite drift, and drift is how a programme
+avoids ever producing a verdict. The 90 days is likewise a convention to be confirmed, not derived.
+
 ## 6. Universe selection — by stated rule, not by density
 
 The evaluation universe is selected by the **existing eligibility criteria**
@@ -177,13 +212,37 @@ than derived from it:
    `wp2-evidence-source-2026-09-10.md` §3, so the number then converts directly to a date. Power and
    significance levels go here too, and they are also a rule rather than a result.
 
-2. **"Decisive" versus "marginal" — the operator's number, and the one to write first.** This is not a
-   statistical question and it is not the builder's to answer. It is: *what edge over `S0_SAFE`, net of
-   model cost, would make you willing to risk capital?* That comes from appetite and capital, not from
-   the data. It is also the single blank most easily contaminated by any exposure to a result, since a
-   threshold set after seeing a number tends to land just below it. **Write it before WP3 runs**, as a
-   threshold on the `strategy_economic_usd` difference and a minimum `cost_to_edge_ratio`. Everything
-   in (1) is derived from it, so it is the load-bearing blank.
+2. **"Decisive" versus "marginal" — the operator's number, and the one to write first.** Not a
+   statistical question and not the builder's to answer. Everything in (1) derives from it, so it is
+   the load-bearing blank, and it is the one most easily contaminated by exposure to a result — a
+   threshold set after seeing a number tends to land just below it. **Write it before WP3 runs.**
+
+   **What is actually being priced.** Not "is the edge positive". It is: *how much better than a
+   deterministic baseline must an LLM pair be to justify nondeterminism, a prompt-injection surface,
+   metered spend, and a review burden that has already consumed a week?* No amount of data answers
+   that, which is exactly why it is written before the data arrives.
+
+   **Express it per decision, not as a percentage of P&L.** At small *n* and small capital a
+   percentage is dominated by one or two trades; expectancy per decision is stable and comparable
+   across arms.
+
+   **A self-scaling form worth considering:** net edge over `S0_SAFE` per decision, as a **multiple of
+   model cost per decision**. That asks the question directly — is the pair worth what it costs to run
+   — and it does not need re-deriving when model prices move.
+
+   **Every band needs an action, not just a boundary.** This is the part that makes it a
+   pre-registration rather than a number:
+
+   | Band | Condition | Action — operator to state |
+   | --- | --- | --- |
+   | Above | edge/decision ≥ **[X]** × model cost/decision | Proceed to Stage 2 (and nothing else) |
+   | **Middle** | 0 < edge/decision < **[X]** × model cost/decision | **[state it: redesign, or stop]** |
+   | Below | edge/decision ≤ 0 | Stop |
+
+   **The middle band is the one that matters**, because almost every real result lands there, and
+   because "marginal" will be read as "proceed carefully" unless something else is written down. If
+   marginal means redesign, write *redesign*. If it means stop, write *stop*. A pre-registration whose
+   middle band is unstated has pre-registered nothing.
 3. **Paper-to-live discount.** The parity suite (`libs/execution/src/adapter/parity.ts`, eleven
    scenarios, green for the paper adapter since M5a) establishes that paper and live share lifecycle
    and refusal semantics. It does **not** yet quantify a fill-quality discount, because the live
