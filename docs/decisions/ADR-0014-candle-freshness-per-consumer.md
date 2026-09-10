@@ -31,6 +31,14 @@ Not because a tenth is magic, but because it is the tolerance already implicit i
 making it explicit is what lets it vary correctly: a 10% error on a four-hour window is a different
 number from 10% of fifteen minutes.
 
+**The divisor is a convention, not a result, and a reviewer should know which.** It is fitted to a
+single observed pair — (90 s, 15 min) — and one point determines a ratio, not a law. Nothing here
+establishes that a tenth is the right fraction for a four-hour window; it establishes only that the
+value already in the codebase is consistent with a tenth of the momentum window. Keeping it is
+reasonable and it is what this ADR proposes, but it is adopted, not derived, and if a reviewer wants
+it changed the argument should be about error tolerance in the indicators, not about this ADR's
+arithmetic. Stated here so it is accepted knowingly rather than discovered later.
+
 Computed from the trigger policies as they stand (`libs/contracts/src/policy/candidates.ts`):
 
 | Trigger | Shortest window it reads | Derived tolerance | vs today's flat 90 s |
@@ -139,6 +147,54 @@ of money changes that — it is a property of bucketing, not of budget. Two cons
 15 s candles (`R = 15_000`) already exist in the codebase and would make 30 s reachable. They are
 classified `POSITION` only (`RESOLUTIONS` in `market-ingest.ts`), which is the next section.
 
+## What happens when the requirement cannot be met
+
+The requirement does not change because the data cannot meet it. It gets **recorded as unmet**.
+
+Explicitly rejected: reshaping the formula as `max(R, window ÷ 10)` so the bound becomes satisfiable
+by construction. That would make every deployment compliant by definition and is the rationalization
+pattern wearing a derivation — the same shape as widening a limit to fit a tier, which is what
+ADR-0011 exists to forbid.
+
+So every decision records **three quantities**, not a boolean:
+
+| Quantity | Meaning |
+| --- | --- |
+| `requiredInputAgeMs` | the derived bound for the consuming trigger (window ÷ 10) |
+| `attainedInputAgeMs` | `now − newestInputAt`, what the data actually was |
+| ratio | `attained ÷ required` — 1.0 or below is compliant, above it is degraded and by how much |
+
+`EARLY_ACCELERATION` on 1m candles then runs at a ratio of roughly **2.0** — a declared, measured
+degradation attached to every decision it produced, rather than a silent pass or a permanent refusal.
+Evaluation can stratify on the ratio instead of being blocked by a stratum that is structurally empty,
+and the degradation is visible on the decisions themselves rather than reconstructed afterwards.
+
+**A third option, which is fail-closed and should be weighed before the second.** The choice is not
+only "silent pass or permanent refusal": a trigger whose data cannot support it need not run. Not
+running `EARLY_ACCELERATION` on 1m data refuses nothing at decision time, weakens no `BLOCK`, and
+needs no degradation accounting — the trigger is simply not enabled on a deployment that cannot feed
+it. That is the conservative reading and it is available.
+
+Which matters because **recording-and-continuing does weaken a block for that trigger**, and the
+weakening should be named rather than absorbed into the reporting change. A reader should be able to
+see that this ADR proposes letting a trigger run outside its own stated tolerance, however well
+measured. The two options also interact with the evaluation's control-arm choice below: if the
+baseline is defined on the momentum trigger, `EARLY_ACCELERATION` is not in the comparison at all and
+the question is moot for evaluation purposes, though not for live operation.
+
+## Consequence for the evaluation's control arm
+
+Recorded here because the derivation forces it, not because it is a freshness question.
+
+If `EARLY_ACCELERATION` runs at ratio ~2.0 on 1m data while the LLM strategies read momentum at 90 s —
+which the 60 s floor *does* satisfy — then a comparison of S0 against S1–S4 puts a **degraded control
+against a clean treatment**, and any difference between them is confounded by data quality rather than
+attributable to the thing being tested. That is not a small confound: it is the whole measurement.
+
+Defining the evaluation's control arm on the momentum trigger compares like with like. That is a
+change to what "S0" means in the comparison and it belongs in `EVALUATION.md` as a stated choice with
+its reasoning, not as an incidental configuration decision discovered in a config file later.
+
 ## The exit path, which nobody derived a bound for
 
 The same derivation applied to a consumer it was never applied to. This section is why ADR-0014 covers
@@ -180,6 +236,18 @@ residual, shorten the monitor interval (cheap, partial), or buy 15 s candles for
 (complete to 15 s, and priced above). Whichever is chosen, it should be recorded with the derivation
 rather than inherited from the screening number, which is how the exit path came to have no bound of
 its own.
+
+**But it does propose an order**, because two of the three are not independent:
+
+1. **Shorten `POSITION_MONITOR_INTERVAL_MS`** toward its 10 s floor. Free on this budget, and at 10 s
+   it is a *strictly better* cadence than 15 s candles would provide.
+2. **Re-run the measurement** — the same 1,677 asset-hour method, against the new cadence — and see
+   what residual is left.
+3. **Then** decide whether the residual justifies Premium.
+
+Buying a tier to close a gap that has not been re-measured after a free fix is the wrong order, and it
+is the same error as the run-rate arithmetic that opened WP1: acting on a number whose denominator had
+not been checked.
 
 ## A gap this exposed: no §24.6 invariant owns freshness
 
