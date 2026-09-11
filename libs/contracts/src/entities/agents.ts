@@ -46,6 +46,20 @@ export const AgentRun = z.object({
   costAccrual: z.enum(["MEASURED", "UNKNOWN"]),
   latencyMs: Milliseconds,
   success: z.boolean(),
+  /**
+   * Holds a wider population than the name implies, and anything counting it must say which half.
+   *
+   * Two unrelated failures land here: the model returned output that did not parse or fell outside
+   * scope, and the *provider* failed - a non-2xx body or an aborted call - which is a transport event
+   * and says nothing about model quality. A "schema failure rate" computed over this field without a
+   * filter would let provider outages inflate a model-quality number.
+   *
+   * The discriminator already exists: `success === false && costAccrual === "MEASURED"` is exactly the
+   * model-output population, because a transport failure never returns usage metadata. Nothing
+   * consumes this field today (checked 2026-09-10), so the hazard is latent - but any future metric,
+   * view or WP4 assertion over it must filter, and the coupling to `costAccrual` should be replaced
+   * with an explicit failure kind if a third cost state is ever added.
+   */
   schemaValidation: z.object({ ok: z.boolean(), errors: z.array(z.string()) }),
   createdAt: Instant,
 });

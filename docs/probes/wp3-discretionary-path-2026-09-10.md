@@ -151,8 +151,23 @@ to a heterogeneous population. There is more information available than that:
 > never worth zero and never has to be guessed in full — it is *known input cost* plus an unknown
 > output component.
 
-And the output half has a principled estimator rather than a convention: **observed tokens-per-second
-on MEASURED runs of the same model, times the elapsed time to our abort deadline.** That uses data
+And the output half has a principled estimator rather than a convention: **observed generation rate on
+MEASURED runs of the same model, times the elapsed time to our abort deadline** — with one correction
+that matters, below.
+
+**The naive rate fit is biased low, in the comfortable direction.** `tokens / latencyMs` on a MEASURED
+run includes **time to first token**, which is fixed overhead rather than generation. On short
+completions TTFT dominates the measurement, so a pooled rate comes out well below steady-state speed —
+and a low rate underestimates how much a timed-out call generated, which undercharges it. That is the
+fifth time an error in this area has pointed toward the comfortable answer, and it would have been
+introduced by the fix for the fourth.
+
+The correction is a fitting choice, not new collection, since `tokens` and `latencyMs` are already on
+every MEASURED run:
+
+> Model latency as `TTFT + tokens / rate` and fit **both** terms, rather than dividing tokens by total
+> latency. Failing that — too few runs per model to fit two parameters — fit the rate only on runs long
+> enough that TTFT is small relative to total, and say which subset was used. That uses data
 already being collected (`tokens` and `latencyMs` are on every MEASURED run), it is per-model rather
 than pooled, and it degrades sensibly — a call aborted at 2 s is charged less than one aborted at 30 s,
 which a percentile cannot express.
@@ -160,13 +175,27 @@ which a percentile cannot express.
 The percentile argument survives only as a fallback for the case where too few MEASURED runs of a
 model exist to fit a rate.
 
-**What the burn-in must confirm:** whether providers actually bill input tokens on an aborted
-generation. If they do not, the floor is zero after all and only the estimator applies. That is a
-question about billing behaviour, not about code, and it is answerable from the first real invoice.
+**What the burn-in must confirm, and how — a designed experiment, not an invoice.** Whether providers
+actually bill input tokens on an aborted generation decides whether the floor above is real or zero. A
+monthly invoice is the wrong instrument: it is aggregate, and reconciling one aborted call against it
+is guesswork.
 
-The percentile matters because of the bias already identified: UNKNOWN is concentrated on timeouts,
-timeouts are by definition long generations, so the mean of MEASURED calls systematically understates
-exactly the population that goes UNKNOWN. A mean would be an estimate built from the wrong sample.
+Most providers expose per-request usage at far finer granularity than billing. So during burn-in,
+**deliberately induce a timeout with a distinctive prompt** — a marker string, an unusual token count,
+a deadline set below the expected generation time — then look for that request in the provider’s own
+usage view and check whether it appears at all, and at what token count. That converts “provisional
+until the first invoice” into an answer inside the first hour, and produces a recorded fixture at the
+same time.
+
+**Unverified precondition:** what per-request usage granularity Anthropic and OpenAI actually expose,
+and whether an aborted request appears there at all. Confirm that before relying on the experiment,
+rather than assuming it because it is convenient.
+
+**And where the percentile fallback is used, it must not be a mean.** The same bias applies: UNKNOWN is
+concentrated on timeouts, timeouts are by definition long generations, so the mean of MEASURED calls
+systematically understates exactly the population that goes UNKNOWN. A mean would be an estimate built
+from the wrong sample — which is the same error as the TTFT-contaminated rate above, arriving by a
+different route.
 
 The argument for charging rather than zeroing is that **both consumers err toward stopping**, which is
 the correct way to be wrong about an unmeasurable quantity:
